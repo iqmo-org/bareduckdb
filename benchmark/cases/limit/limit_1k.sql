@@ -1,0 +1,1 @@
+select * from DATA_CATEGORY_DATE_PRICE limit 1000

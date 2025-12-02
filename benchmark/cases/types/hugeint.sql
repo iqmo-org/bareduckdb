@@ -1,0 +1,3 @@
+SELECT i::HUGEINT as value
+FROM DATA_RANGE t(i)
+WHERE i%3 = 0

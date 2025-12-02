@@ -1,0 +1,112 @@
+name: Build Wheels
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build_wheels:
+    name: 'Wheel: ${{ matrix.python }}-${{ matrix.platform.cibw_system }}_${{ matrix.platform.arch }}'
+    strategy:
+      fail-fast: false
+      matrix:
+        python: [cp312, cp314t]
+        platform:
+          - { os: ubuntu-latest,     arch: x86_64,     cibw_system: manylinux }
+          - { os: macos-latest,      arch: arm64,      cibw_system: macosx }
+          # - { os: macos-13,          arch: x86_64,     cibw_system: macosx }
+          # - { os: windows-latest,    arch: AMD64,      cibw_system: win }
+    runs-on: ${{ matrix.platform.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Initialize DuckDB submodule (headers only)
+        shell: bash
+        run: |
+          # Initialize the duckdb submodule with sparse checkout (headers only)
+          git submodule update --init external/duckdb
+          cd external/duckdb
+          git sparse-checkout init --cone
+          git sparse-checkout set src/include
+          cd ../..
+
+      - name: Install Astral UV
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: -${{ matrix.python }}-${{ matrix.platform.cibw_system }}_${{ matrix.platform.arch }}
+
+      - name: Setup Compiler
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform.os }}" = "ubuntu-latest" ]; then
+            # Ubuntu: Install and configure GCC 14 for the host
+            # Note: cibuildwheel uses its own compilers inside manylinux containers
+            sudo apt-get update
+            sudo apt-get install -y gcc-14 g++-14
+            sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+            sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
+            gcc --version
+            g++ --version
+          elif [ "${{ matrix.platform.os }}" = "macos-latest" ] || [ "${{ matrix.platform.os }}" = "macos-13" ]; then
+            # macOS: Use AppleClang (default) to match DuckDB's build
+            echo "Using default AppleClang compiler"
+            cc --version
+            c++ --version
+          fi
+
+      - name: Set test configuration for cp314t
+        if: matrix.python == 'cp314t'
+        run: |
+          echo "CIBW_TEST_REQUIRES=pandas" >> $GITHUB_ENV
+          echo "CIBW_ENVIRONMENT=UV_EXTRA_INDEX_URL=https://pypi.anaconda.org/scientific-python-nightly-wheels/simple UV_PRERELEASE=allow" >> $GITHUB_ENV
+
+      - name: Set test configuration for other Python versions
+        if: matrix.python != 'cp314t'
+        run: |
+          echo "CIBW_TEST_REQUIRES=polars" >> $GITHUB_ENV
+
+      - name: Build and test wheels
+        uses: pypa/cibuildwheel@v3.3
+        env:
+          CIBW_TEST_COMMAND: python -m pytest {project}/tests --ignore={project}/tests/experimental --ignore={project}/tests/downstream --ignore={project}/tests/comparison -v -n auto --cov=bareduckdb --cov-report=term-missing
+          CIBW_TEST_EXTRAS: "test"
+          CIBW_ARCHS: ${{ matrix.platform.arch }}
+          CIBW_BUILD: ${{ matrix.python }}-${{ matrix.platform.cibw_system }}_${{ matrix.platform.arch }}
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.python }}-${{ matrix.platform.cibw_system }}_${{ matrix.platform.arch }}
+          path: wheelhouse/*.whl
+          compression-level: 0
+
+  publish-wheels:
+    name: Publish Wheels to PyPI
+    needs: [build_wheels]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          pattern: wheel-*
+          merge-multiple: true
+
+      - name: List wheels
+        run: |
+          ls -lh dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

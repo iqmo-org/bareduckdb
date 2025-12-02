@@ -1,0 +1,1 @@
+select category, date, avg(price) from DATA_CATEGORY_DATE_PRICE group by category, date

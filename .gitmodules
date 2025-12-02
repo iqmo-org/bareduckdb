@@ -1,0 +1,8 @@
+[submodule "external/duckdb"]
+	# For headers. Needs to match the .so that we'll link against, for ABIs
+	path = external/duckdb
+	url = https://github.com/duckdb/duckdb.git
+[submodule "external/duckdb-python"]
+	# For tests only
+	path = external/duckdb-python
+	url = https://github.com/duckdb/duckdb-python

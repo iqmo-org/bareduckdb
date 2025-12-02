@@ -1,0 +1,1 @@
+select date, category, avg(price) over (partition by category order by date) from DATA_CATEGORY_DATE_PRICE

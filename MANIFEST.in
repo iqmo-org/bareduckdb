@@ -1,0 +1,16 @@
+# DuckDB headers
+recursive-include external/duckdb/src/include *.h *.hpp
+
+include LICENSE
+include README.md
+include pyproject.toml
+include setup.py
+
+recursive-include bareduckdb *.pyx *.pxd *.hpp *.cpp
+recursive-include bareduckdb/_libs *.dylib *.so
+
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude __pycache__
+global-exclude *.abi3.so
+global-exclude *.cpython-*.so

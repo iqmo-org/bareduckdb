@@ -1,0 +1,191 @@
+name: Extensive Tests
+
+# This tests is a more extensive suite that's likely more fragile and slower:
+# - parallel thread safety tests
+# - Nightly builds of pyarrow and pandas
+# - Downstream integration tests for common libraries
+# - Ensures pyarrow capsules (via polars) works without importing pyarrow
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  dev_versions:
+    name: 'Full Tests - Python ${{ matrix.python-version }} - ${{ matrix.os }}'
+    runs-on: ${{ matrix.os }}
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: '3.12'
+          - os: ubuntu-latest
+            python-version: '3.14t'
+          - os: macos-latest
+            python-version: '3.12'
+          - os: macos-latest
+            python-version: '3.14t'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@main
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Initialize DuckDB submodule (headers only)
+        shell: bash
+        run: |
+          # Initialize the duckdb submodule with sparse checkout (headers only)
+          git submodule update --init external/duckdb
+          cd external/duckdb
+          git sparse-checkout init --cone
+          git sparse-checkout set src/include
+          cd ../..
+
+      - name: Set up Python
+        uses: actions/setup-python@main
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@main
+        with:
+          enable-cache: true
+          cache-suffix: -dev-versions-${{ matrix.python-version }}
+
+      - name: Setup Compiler
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            # macOS: Use AppleClang (default) to match DuckDB's build
+            # DuckDB prebuilt binaries are compiled with AppleClang
+            echo "Using default AppleClang compiler"
+            cc --version
+            c++ --version
+          else
+            # Ubuntu: Install and configure GCC 14
+            sudo apt-get update
+            sudo apt-get install -y gcc-14 g++-14
+            sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+            sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
+            echo "CC=gcc-14" >> $GITHUB_ENV
+            echo "CXX=g++-14" >> $GITHUB_ENV
+            gcc --version
+            g++ --version
+          fi
+
+      - name: Build
+        shell: bash
+        run: |
+          uv sync --no-install-project --no-build
+          uv sync --reinstall-package bareduckdb -v
+
+      - name: Run core tests 1
+        shell: bash
+        if: matrix.python-version != '3.14t'  # polars doesn't support 3.14t yet
+        run: |
+          uv pip install polars
+          uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream --ignore=tests/comparison -v -n auto
+
+      - name: Test PyArrow is Optional
+        if: matrix.python-version != '3.14t'
+        shell: bash
+        run: |
+          # Test that bareduckdb works with polars without pyarrow installed
+          uv pip uninstall pyarrow
+          uv run --no-sync pytest tests/polars_only -v --cov=bareduckdb --cov-append
+          uv pip install pyarrow
+
+      - name: Run DuckDB comparison tests
+        if: matrix.python-version != '3.14t'
+        shell: bash
+        run: |
+          uv pip install "duckdb==1.4.*" --pre
+          uv run --no-sync pytest tests/comparison -v --tb=short --cov=bareduckdb --cov-append
+          uv pip uninstall duckdb
+
+      - name: Test PyPI DuckDB extensions
+        if: matrix.python-version != '3.14t'
+        shell: bash
+        run: |
+          uv pip install duckdb-extensions==1.4.2 duckdb-extension-httpfs
+
+          uv run --no-sync python -c "
+          import bareduckdb
+          conn = bareduckdb.Connection()
+
+          conn.load_extension('httpfs')
+
+          result = conn.execute('''SELECT * FROM duckdb_extensions() WHERE extension_name = 'httpfs' ''').fetchall()
+          assert len(result) > 0, 'httpfs extension not loaded'
+
+          extension_info = result[0]
+          assert extension_info[1] is False
+          assert extension_info[2] is True
+
+          conn.close()
+          "
+
+          uv pip uninstall duckdb-extensions duckdb-extension-httpfs
+
+      - name: Run downstream integration tests
+        if: matrix.python-version != '3.14t'  # duckdb doesn't support 3.14t
+        shell: bash
+        run: |
+          # magic-duckdb
+          uv sync --group downstream
+
+          # Run tests separately to avoid module contamination
+          uv run --no-sync pytest tests/downstream/test_sqlalchemy.py tests/downstream/test_magic_duckdb.py -v --cov=bareduckdb --cov-append
+          uv run --no-sync pytest tests/downstream/test_jupysql.py -v --cov=bareduckdb --cov-append
+
+      - name: Install dependencies nightly builds
+        shell: bash
+        run: |
+          # Install nightly builds of pyarrow and pandas
+          # These replace the stable versions installed by uv sync
+          uv pip install --pre --upgrade --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple --no-build pandas pyarrow
+          # uv pip install git+https://github.com/apache/arrow-adbc#subdirectory=python/adbc_driver_manager
+
+      - name: Rebuild with nightly PyArrow
+        shell: bash
+        run: |
+          uv pip install setuptools wheel Cython  # Build dependencies
+          uv pip uninstall bareduckdb  # Explicitly uninstall to ensure clean rebuild
+          uv pip install . --no-deps --no-build-isolation -v
+      
+      - name: Run core tests against Nightlys
+        shell: bash
+        run: |
+          uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream --ignore=tests/comparison -v --cov=bareduckdb --cov-append -n auto
+
+      - name: Run parallel thread safety tests
+        shell: bash
+        run: |
+          uv run --no-sync pytest tests/ --parallel-threads=4 --iterations=10 --tb=short -v -m "not asyncio" --ignore=tests/experimental --ignore=tests/comparison --ignore=tests/downstream --cov=bareduckdb --cov-append
+
+      - name: Generate coverage report
+        if: always()
+        shell: bash
+        run: |
+          uv run --no-sync coverage report --show-missing
+
+      - name: Count Lines of Code (cloc)
+        uses: djdefi/cloc-action@main
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          options: --exclude-dir=tests,external,.git,.github,benchmarks,notebooks
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@main
+        with:
+          name: dev-versions-test-results-${{ matrix.python-version }}
+          path: |
+            .pytest_cache/
+          retention-days: 7

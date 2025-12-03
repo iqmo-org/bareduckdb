@@ -43,7 +43,9 @@ def register_table(
     """
     from . import enable_dataset_support
 
-    enable_dataset_support(connection_base)
+    enabled = enable_dataset_support(connection_base)
+    if not enabled:
+        return False
 
     if hasattr(data, "collect") and type(data).__name__ == "LazyFrame":
         raise ValueError("Cannot register Polars LazyFrame directly. ")

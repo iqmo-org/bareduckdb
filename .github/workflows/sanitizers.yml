@@ -151,7 +151,7 @@ jobs:
 
               echo '=== Installing build dependencies (including pyarrow for setup.py) ==='
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --upgrade pip
-              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages \"setuptools>=64\" wheel cython \"packaging>=24.2\" pyarrow
+              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages \"setuptools>=64\" \"setuptools-scm>=8\" wheel cython \"packaging>=24.2\" pyarrow
 
               echo '=== Installing bareduckdb ==='
               echo 'Current directory:'
@@ -168,12 +168,16 @@ jobs:
                 find / -name setup.py 2>/dev/null | head -5
               fi
 
-              # Temporarily disable leak detection during build and dependency installation
+              # Temporarily disable sanitizer checks during build and dependency installation
               # PyArrow creates singleton objects during import that ASAN reports as leaks
-              # These are intentional static allocations that live for the process lifetime
+              # TSAN hits 128 lock limit during complex C++ compilation (deadlock detector)
+              # These are intentional static allocations/build locks that live for the process lifetime
               if [ '${{ matrix.sanitizer }}' = 'ASAN' ]; then
                 echo 'Disabling leak detection during installation (PyArrow singletons)'
                 export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=0'
+              elif [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
+                echo 'Disabling deadlock detection during build (128 lock limit with C++ compilation)'
+                export TSAN_OPTIONS='halt_on_error=1:detect_deadlocks=0'
               fi
 
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages -e . --no-build-isolation -v
@@ -186,10 +190,13 @@ jobs:
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --pre --upgrade --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple --no-build pandas>=3.0 pyarrow
               # uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages pyarrow
 
-              # Re-enable leak detection before running tests
+              # Re-enable sanitizer checks before running tests
               if [ '${{ matrix.sanitizer }}' = 'ASAN' ]; then
                 echo 'Re-enabling leak detection for test execution'
                 export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=1'
+              elif [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
+                echo 'Re-enabling deadlock detection for test execution'
+                export TSAN_OPTIONS='halt_on_error=1'
               fi
 
               echo '=== Running ${{ matrix.sanitizer }} tests ==='

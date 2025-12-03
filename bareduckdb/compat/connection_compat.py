@@ -49,13 +49,7 @@ class Connection:
             config: {'threads': '4', 'memory_limit': '1GB'}
             read_only: default False
         """
-        self._base: ConnectionBase = ConnectionBase(
-            database,
-            config=config,
-            read_only=read_only,
-            enable_arrow_dataset = enable_arrow_dataset
-
-        )
+        self._base: ConnectionBase = ConnectionBase(database, config=config, read_only=read_only, enable_arrow_dataset=enable_arrow_dataset)
 
         self._default_output_type = output_type
         # DB-API 2.0 compatibility: track last query result
@@ -79,6 +73,21 @@ class Connection:
 
     def pl(self) -> pl.DataFrame:
         return self._last_result_get().pl()
+
+    def pl_lazy(self, batch_size: int | None = None) -> pl.LazyFrame:
+        """
+        Return a Polars LazyFrame that iterates over record batches lazily.
+
+        Args:
+            batch_size: Batch size for streaming
+
+        Returns:
+            pl.LazyFrame that streams batches when collected
+
+        Raises:
+            RuntimeError: If output_type was not "arrow_reader"
+        """
+        return self._last_result_get().pl_lazy(batch_size=batch_size)
 
     def fetchall(self) -> Sequence[Sequence[Any]]:
         return self._last_result_get().fetchall()
@@ -240,10 +249,7 @@ class Connection:
         try:
             from duckdb_extensions import import_extension  # type: ignore[import-not-found]
         except ImportError as e:
-            raise ImportError(
-                "duckdb-extensions package not installed. "
-                f"Install with: pip install duckdb-extensions duckdb-extension-{name}"
-            ) from e
+            raise ImportError(f"duckdb-extensions package not installed. Install with: pip install duckdb-extensions duckdb-extension-{name}") from e
 
         # import_extension needs access to the raw DuckDB connection
         import_extension(name, force_install=force_install, con=self)  # pyright: ignore[reportPrivateUsage]

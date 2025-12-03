@@ -175,7 +175,8 @@ class ConnectionAPI(ConnectionBase):
             return result
 
         # Pandas DataFrame - convert to Arrow
-        if type_name == "pandas.core.frame.DataFrame":
+        # Check for both old (pandas.core.frame.DataFrame) and new (pandas.DataFrame) paths
+        if type_name == "pandas.core.frame.DataFrame" or type_name == "pandas.DataFrame":
             try:
                 import pyarrow as pa
 

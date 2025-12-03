@@ -71,8 +71,8 @@ class Connection:
     def df(self) -> pd.DataFrame:
         return self._last_result_get().df()
 
-    def pl(self) -> pl.DataFrame:
-        return self._last_result_get().pl()
+    def pl(self, lazy: bool = False) -> pl.DataFrame:
+        return self._last_result_get().pl(lazy=lazy)
 
     def pl_lazy(self, batch_size: int | None = None) -> pl.LazyFrame:
         """

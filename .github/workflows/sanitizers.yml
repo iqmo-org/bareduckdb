@@ -137,7 +137,8 @@ jobs:
               else
                 export CFLAGS=\"-fsanitize=address -fno-omit-frame-pointer -g \$CFLAGS\"
                 export CXXFLAGS=\"-fsanitize=address -fno-omit-frame-pointer -g \$CXXFLAGS\"
-                export LDFLAGS=\"-fsanitize=address -shared-libasan \$LDFLAGS\"
+                # Use default ASAN runtime (same as Python) instead of -shared-libasan
+                export LDFLAGS=\"-fsanitize=address \$LDFLAGS\"
               fi
 
               echo 'Python version:'
@@ -196,7 +197,7 @@ jobs:
                 export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=1'
               elif [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
                 echo 'Re-enabling deadlock detection for test execution'
-                export TSAN_OPTIONS='halt_on_error=1'
+                export TSAN_OPTIONS='halt_on_error=1:detect_deadlocks=1'
               fi
 
               echo '=== Running ${{ matrix.sanitizer }} tests ==='

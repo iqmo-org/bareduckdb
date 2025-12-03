@@ -230,8 +230,9 @@ if OPTIMIZATION_LEVEL == "debug":
     compile_args = ["-std=c++17", "-O0", "-g", "-Wall"]
     link_args = base_link_args.copy()
     define_macros = [("CYTHON_USE_MODULE_STATE", "1")]
-    if USE_LIMITED_API:
-        define_macros.append(("Py_LIMITED_API", f"{PY_LIMITED_API_VERSION:#x}"))
+    # Don't use Py_LIMITED_API in debug mode - sanitizers (ASAN/TSAN) need full Python C API access
+    # if USE_LIMITED_API:
+    #     define_macros.append(("Py_LIMITED_API", f"{PY_LIMITED_API_VERSION:#x}"))
     cython_directives = {
         "language_level": 3,
         "embedsignature": True,

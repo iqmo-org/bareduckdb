@@ -10,27 +10,16 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import Any, Literal, Mapping, Optional, Sequence
 
-    import pandas as pd
-    import polars as pl
     import pyarrow as pa
 
 from .. import pyarrow_available
-from ..core.connection_base import ConnectionBase
+from ..core.connection_api import ConnectionAPI
 from .result_compat import Result
 
 logger = logging.getLogger(__name__)
 
 
-class Connection:
-    """
-    DuckDB connection with deferred query execution.
-    """
-
-    # Instance attributes
-    _base: ConnectionBase  # Minimal connection that handles Cython interaction
-    _last_result: Result | None  # For DB-API 2.0: stores last query result
-    _default_output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"]
-
+class Connection(ConnectionAPI):
     def __init__(
         self,
         database: Optional[str] = None,
@@ -39,56 +28,31 @@ class Connection:
         *,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
         enable_arrow_dataset: bool = True,
+        udtf_functions: Optional[dict] = None,
     ) -> None:
         """
-        Create a DuckDB connection.
+        Create a DuckDB-compatible connection.
 
         Args:
             database: Path to database file, or None for in-memory
             output_type: Default output format for queries
             config: {'threads': '4', 'memory_limit': '1GB'}
             read_only: default False
+            enable_arrow_dataset: Enable Arrow dataset backend
+            udtf_functions: Dict of UDTF name -> function for template expansion
         """
-        self._base: ConnectionBase = ConnectionBase(database, config=config, read_only=read_only, enable_arrow_dataset=enable_arrow_dataset)
+        super().__init__(
+            database=database,
+            config=config,
+            read_only=read_only,
+            enable_arrow_dataset=enable_arrow_dataset,
+            udtf_functions=udtf_functions,
+            output_type=output_type,
+        )
 
-        self._default_output_type = output_type
-        # DB-API 2.0 compatibility: track last query result
-        self._last_result = None
-        logger.debug("Created connection: database=%s", database)
+        logger.debug("Created Connection (compat): database=%s", database)
 
-    def _last_result_get(self) -> Result:
-        if not self._last_result:
-            raise RuntimeError("No last result")
-        else:
-            return self._last_result
-
-    def arrow_table(self) -> pa.Table:
-        return self._last_result_get().arrow_table()
-
-    def arrow_reader(self) -> pa.RecordBatchReader:
-        return self._last_result_get().arrow_reader()
-
-    def df(self) -> pd.DataFrame:
-        return self._last_result_get().df()
-
-    def pl(self, lazy: bool = False) -> pl.DataFrame:
-        return self._last_result_get().pl(lazy=lazy)
-
-    def pl_lazy(self, batch_size: int | None = None) -> pl.LazyFrame:
-        """
-        Return a Polars LazyFrame that iterates over record batches lazily.
-
-        Args:
-            batch_size: Batch size for streaming
-
-        Returns:
-            pl.LazyFrame that streams batches when collected
-
-        Raises:
-            RuntimeError: If output_type was not "arrow_reader"
-        """
-        return self._last_result_get().pl_lazy(batch_size=batch_size)
-
+    # DB-API 2.0 fetch methods
     def fetchall(self) -> Sequence[Sequence[Any]]:
         return self._last_result_get().fetchall()
 
@@ -117,25 +81,15 @@ class Connection:
         data: Mapping[str, Any] | None = None,
     ) -> Connection:
         """
-        Args:
-            query: SQL query string
-            parameters: Query parameters
-            data: Mapping of arrow tables or readers to register
+        Execute SQL with DuckDB-specific compatibility handling.
 
-        Returns:
-            Result
         """
-        self._last_result = None
-        if output_type is None:
-            output_type = self._default_output_type
-
         query_stripped = query.strip().upper()
         if query_stripped.startswith("SET "):
-            # Unsupported, remove:
+            # Filter unsupported SET parameters for DuckDB compatibility
             unsupported_params = ["PYTHON_ENABLE_REPLACEMENTS"]
 
             for param in unsupported_params:
-                # TODO: Eliminate this when replacement scans are implemented
                 if param in query_stripped:
                     logger.warning("Ignoring unsupported configuration parameter: %s", query.strip())
                     import pyarrow as pa
@@ -144,12 +98,7 @@ class Connection:
                     self._last_result = result
                     return self
 
-        result = self._base._call(query=query, output_type=output_type, parameters=parameters, data=data)  # pyright: ignore[reportPrivateUsage]
-
-        result = Result(result)
-        self._last_result = result
-
-        return self
+        return super().execute(query=query, parameters=parameters, output_type=output_type, data=data)
 
     def _convert_to_arrow_table(self, materialized: bool, data: Any) -> pa.Table | None:
         if not pyarrow_available():
@@ -200,17 +149,17 @@ class Connection:
         name: str,
         data: object,
     ) -> Any:
-        self._base._register_arrow(name=name, data=data)  # pyright: ignore[reportPrivateUsage]
+        self._register_arrow(name=name, data=data)
 
     def unregister(self, name: str) -> None:
-        self._base.unregister(name)
+        super().unregister(name)
 
     def cursor(self) -> Connection:
         """
         DB-API 2.0: Creates a cursor, a completely connection to the same database.
         """
 
-        cursor_conn = Connection(database=self._base._database_path)  # pyright: ignore[reportPrivateUsage, reportUnknownMemberType]
+        cursor_conn = Connection(database=self._database_path)
         return cursor_conn
 
     def begin(self) -> None:
@@ -233,7 +182,7 @@ class Connection:
                 raise
 
     def close(self) -> None:
-        self._base.close()
+        super().close()
 
     def load_extension(self, name: str, force_install: bool = False) -> None:
         """
@@ -261,26 +210,30 @@ class Connection:
         self.close()
         return False
 
-    @property
-    def _registered_objects(self):
-        return self._base._registered_objects  # pyright: ignore[reportPrivateUsage]
+    # DuckDB-python API aliases (for compatibility with duckdb-python's bloated API)
+    def sql(self, *args, **kwargs):
+        return self.execute(*args, **kwargs)
 
-    @property
-    def _factory_pointers(self):
-        return self._base._factory_pointers  # pyright: ignore[reportPrivateUsage]
+    def arrow(self):
+        return self.arrow_reader()
 
-    @property
-    def _lock(self):
-        return self._base._lock  # pyright: ignore[reportPrivateUsage]
+    def fetch_arrow_table(self):
+        return self.arrow_table()
 
-    sql = execute
-    arrow = arrow_reader
+    def to_arrow(self):
+        return self.arrow_table()
 
-    fetch_arrow_table = arrow_table
-    to_arrow = arrow_table
-    to_arrow_table = arrow_table
+    def to_arrow_table(self):
+        return self.arrow_table()
 
-    fetch_record_batch = arrow_reader
-    to_pandas = df
-    to_polars = pl
-    fetch_df = df
+    def fetch_record_batch(self):
+        return self.arrow_reader()
+
+    def to_pandas(self):
+        return self.df()
+
+    def to_polars(self, **kwargs):
+        return self.pl(**kwargs)
+
+    def fetch_df(self):
+        return self.df()

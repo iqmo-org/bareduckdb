@@ -151,12 +151,31 @@ cursor.execute("SELECT 1")
 
 ## Key Differences
 
-### Not (Yet?) Supported
-- No lazy `DuckDBPyRelation` objects
-- No Python UDFs
+### Pushdown Differences
+- Pushdown to Arrow Tables (and Dataframes and Polars) is supported
+- But, pushdown to arbitrary Arrow DataSets (ie: File-based) is not
+
+### Relational API
+- Use [Ibis](http://ibis-project.org/)
+
+### Automatic Replacement Scans
 - No automatic DataFrame registration (use `.register()` explicitly)
 - Added Inline Registration: `.execute("....query...", data={"name": df})`
+
+Comment: bareduckdb avoids any GIL acquisition by DuckDB. 
+
+### Not (Yet?) Supported
+- No Python UDFs
 - No fsspec integration
+
+### User Defined Table Functions
+<not yet merged> 
+- Table Functions to be provided via Jinja templates, similar to DBT
+- This separates the Table Function execution from the DuckDB query execution
+
+```py
+select * from {{ udtf('faker(param1=1, param2=2)')}}
+```
 
 ### Arrow Enhancements
 

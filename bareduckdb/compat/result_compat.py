@@ -107,20 +107,118 @@ class Result:
         if arrow_dtyped:
             try:
                 from pandas import ArrowDtype
+
                 return self.arrow_table().to_pandas(types_mapper=ArrowDtype)
             except (ImportError, AttributeError) as e:
                 # Fallback if pandas has issues (e.g., circular import on Python 3.14t)
                 import warnings
-                warnings.warn(f"Could not use ArrowDtype due to pandas import error: {e}. Using default pandas types.", UserWarning)
+
+                warnings.warn(f"Could not use ArrowDtype due to pandas import error: {e}. Using default pandas types.", UserWarning, stacklevel=2)
                 return self.arrow_table().to_pandas()
         else:
             return self.arrow_table().to_pandas()
 
-    def pl(self, rechunk: bool = False) -> pl.DataFrame:
+    def pl(self, rechunk: bool = False, lazy: bool = False) -> pl.DataFrame:
+        if lazy:  # pl_lazy makes more sense from a typing perspective
+            return self.pl_lazy()  # type: ignore
+
         import polars as pl
 
         # Pass self to use __arrow_c_stream__() protocol, avoiding PyArrow import checks
         return pl.from_arrow(self, rechunk=rechunk)  # pyright: ignore[reportReturnType]
+
+    def pl_lazy(self, batch_size: int | None = None) -> pl.LazyFrame:
+        """
+        Return a Polars LazyFrame that iterates over record batches lazily.
+
+        Args:
+            batch_size: Batch size for streaming (only used if Result has a table)
+
+        Returns:
+            pl.LazyFrame that streams batches when collected
+
+        Raises:
+            RuntimeError: If output_type was not "arrow_reader" (i.e., if Result contains a table)
+
+        """
+        import polars as pl
+        from polars.io.plugins import register_io_source
+
+        self._read = True
+
+        # Fail fast if not using arrow_reader output type
+        if self._table is not None:
+            raise RuntimeError("pl_lazy() requires output_type='arrow_reader'")
+
+        if self._reader is None:
+            raise RuntimeError("Reader already consumed or not available")
+
+        reader = self.arrow_reader(batch_size=batch_size)
+
+        # Try to read first batch to get schema
+        try:
+            first_batch = reader.read_next_batch()
+            first_df = pl.from_arrow(first_batch)
+            polars_schema = first_df.schema
+            has_data = True
+        except StopIteration:
+            # Empty result - get schema from reader
+            import pyarrow as pa
+
+            arrow_schema = reader.schema
+            empty_table = pa.table({field.name: pa.array([], type=field.type) for field in arrow_schema})
+            polars_schema = pl.from_arrow(empty_table).schema
+            first_df = None
+            has_data = False
+
+        first_batch_yielded = False
+        rows_yielded = 0
+
+        def source_generator(with_columns, predicate, n_rows, batch_size_override):
+            nonlocal first_batch_yielded, rows_yielded
+
+            if has_data and not first_batch_yielded:
+                if first_df is None:
+                    raise RuntimeError("first_df is None but has_data is True")
+                df = first_df
+                first_batch_yielded = True
+
+                # Apply filters in Polars
+                if with_columns is not None:
+                    df = df.select(with_columns)
+                if predicate is not None:
+                    df = df.filter(predicate)
+
+                if n_rows is not None:
+                    remaining = n_rows - rows_yielded
+                    if remaining <= 0:
+                        return
+                    df = df.head(remaining)
+
+                rows_yielded += len(df)
+                if len(df) > 0:
+                    yield df
+
+            # Yield remaining batches
+            for record_batch in iter(reader.read_next_batch, None):
+                df = pl.from_arrow(record_batch)
+
+                if with_columns is not None:
+                    df = df.select(with_columns)
+                if predicate is not None:
+                    df = df.filter(predicate)
+
+                if n_rows is not None:
+                    remaining = n_rows - rows_yielded
+                    if remaining <= 0:
+                        break
+                    df = df.head(remaining)
+
+                rows_yielded += len(df)
+                if len(df) > 0:
+                    yield df
+
+        return register_io_source(source_generator, schema=polars_schema)  # type: ignore
 
     def _fetch_rows(self, size: int | None = None) -> list[tuple[Any, ...]]:
         """

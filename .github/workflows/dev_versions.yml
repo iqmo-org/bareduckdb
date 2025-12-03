@@ -92,11 +92,6 @@ jobs:
           uv pip install polars
           uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream --ignore=tests/comparison -v -n auto
 
-      - name: Run parallel thread safety tests
-        shell: bash
-        run: |
-          uv run --no-sync pytest tests/ --parallel-threads=4 --iterations=10 --tb=short -v -m "not asyncio" --ignore=tests/experimental --ignore=tests/comparison --ignore=tests/downstream --cov=bareduckdb --cov-append
-
       - name: Test PyArrow is Optional
         if: matrix.python-version != '3.14t'
         shell: bash
@@ -168,6 +163,11 @@ jobs:
         shell: bash
         run: |
           uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream --ignore=tests/comparison -v --cov=bareduckdb --cov-append -n auto
+
+      - name: Run parallel thread safety tests
+        shell: bash
+        run: |
+          uv run --no-sync pytest tests/ --parallel-threads=4 --iterations=10 --tb=short -v -m "not asyncio" --ignore=tests/experimental --ignore=tests/comparison --ignore=tests/downstream --cov=bareduckdb --cov-append
 
       - name: Generate coverage report
         if: always()

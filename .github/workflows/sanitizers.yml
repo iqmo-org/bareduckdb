@@ -22,7 +22,7 @@ jobs:
             sanitizer-env: 'TSAN_OPTIONS=halt_on_error=1'
           - sanitizer: 'ASAN'
             docker-image: 'ghcr.io/nascheme/cpython-asan:3.14t'
-            sanitizer-env: 'ASAN_OPTIONS=allocator_may_return_null=1:halt_on_error=1:detect_leaks=1'
+            sanitizer-env: 'ASAN_OPTIONS=allocator_may_return_null=1:halt_on_error=1:detect_leaks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_string_checks=1:detect_invalid_pointer_pairs=2:symbolize=1:fast_unwind_on_malloc=0'
 
     steps:
       - name: Checkout code
@@ -137,7 +137,8 @@ jobs:
               else
                 export CFLAGS=\"-fsanitize=address -fno-omit-frame-pointer -g \$CFLAGS\"
                 export CXXFLAGS=\"-fsanitize=address -fno-omit-frame-pointer -g \$CXXFLAGS\"
-                export LDFLAGS=\"-fsanitize=address -shared-libasan \$LDFLAGS\"
+                # Use default ASAN runtime (same as Python) instead of -shared-libasan
+                export LDFLAGS=\"-fsanitize=address \$LDFLAGS\"
               fi
 
               echo 'Python version:'
@@ -193,10 +194,34 @@ jobs:
               # Re-enable sanitizer checks before running tests
               if [ '${{ matrix.sanitizer }}' = 'ASAN' ]; then
                 echo 'Re-enabling leak detection for test execution'
-                export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=1'
+
+                # Create ASAN suppression file for known library false positives
+                cat > /tmp/asan_suppressions.txt << 'ASANEOF'
+                # PyArrow static type singletons (intentional process-lifetime allocations)
+                leak:arrow::duration
+                leak:arrow::time32
+                leak:arrow::time64
+                leak:arrow::date32
+                leak:arrow::date64
+                leak:arrow::timestamp
+                leak:arrow::month_day_nano_interval
+
+                # NumPy global allocators (intentional process-lifetime allocations)
+                leak:NpyString_new_allocator
+                leak:PyUFunc_FromFuncAndDataAndSignatureAndIdentity
+
+                # Python runtime (intentional process-lifetime allocations)
+                leak:PyThread_allocate_lock
+                leak:create_stdio
+                leak:init_sys_streams
+                ASANEOF
+
+                # Update ASAN_OPTIONS with comprehensive detection + suppressions
+                export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_string_checks=1:detect_invalid_pointer_pairs=2:symbolize=1:fast_unwind_on_malloc=0:suppressions=/tmp/asan_suppressions.txt'
+                echo "ASAN_OPTIONS: \$ASAN_OPTIONS"
               elif [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
                 echo 'Re-enabling deadlock detection for test execution'
-                export TSAN_OPTIONS='halt_on_error=1'
+                export TSAN_OPTIONS='halt_on_error=1:detect_deadlocks=1'
               fi
 
               echo '=== Running ${{ matrix.sanitizer }} tests ==='
@@ -236,10 +261,13 @@ jobs:
                 fi
                 exit \$exit_code
               else
-                # ASAN: Run tests sequentially, stop on first error
+                # ASAN: Run tests truly sequentially (no xdist parallelism)
+                # ASAN adds 2-3x memory overhead - parallel workers cause crashes
                 set +e
                 python -m pytest tests/ \
                   -x \
+                  -n 0 \
+                  --forked \
                   --tb=short \
                   -v \
                   --ignore=tests/experimental \

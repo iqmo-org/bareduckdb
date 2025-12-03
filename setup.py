@@ -386,6 +386,15 @@ if ARROW_AVAILABLE:
     
     dataset_runtime_dirs = []  # find PyArrow in venv
 
+    # Dataset extension needs additional rpath to find PyArrow at runtime
+    dataset_link_args = link_args.copy()
+    if _IS_MACOS:
+        # On macOS, add @loader_path to search for Arrow libs in pyarrow package
+        dataset_link_args.append("-Wl,-rpath,@loader_path/../../../pyarrow")
+    else:
+        # On Linux, add $ORIGIN rpath for Arrow libs
+        dataset_link_args.append("-Wl,-rpath,$ORIGIN/../../../pyarrow")
+
     dataset_kwargs = {
         "name": "bareduckdb.dataset.impl.dataset",
         "sources": ["bareduckdb/dataset/impl/dataset.pyx"],
@@ -400,7 +409,7 @@ if ARROW_AVAILABLE:
         "library_dirs": dataset_library_dirs,
         "runtime_library_dirs": dataset_runtime_dirs,
         "extra_compile_args": compile_args,
-        "extra_link_args": link_args,
+        "extra_link_args": dataset_link_args,
         "language": "c++",
         "define_macros": define_macros,
     }

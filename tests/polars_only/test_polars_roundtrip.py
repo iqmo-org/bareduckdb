@@ -7,7 +7,9 @@ pl = pytest.importorskip("polars")
 
 def get_conn() -> Connection:
     """Helper to get a fresh Connection with Polars support."""
-    conn = Connection(enable_arrow_dataset=False, output_type="arrow_capsule")
+
+    # we don't need to set enable_arrow_dataset=False, because it'll fall back
+    conn = Connection(output_type="arrow_capsule")
 
     return conn
 

@@ -2,8 +2,6 @@ name: Build Wheels
 
 on:
   push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -62,22 +60,23 @@ jobs:
             c++ --version
           fi
 
-      - name: Set test configuration for cp314t
+      - name: Build and test wheels (cp314t)
         if: matrix.python == 'cp314t'
-        run: |
-          echo "CIBW_TEST_REQUIRES=pandas" >> $GITHUB_ENV
-          echo "CIBW_ENVIRONMENT=UV_EXTRA_INDEX_URL=https://pypi.anaconda.org/scientific-python-nightly-wheels/simple UV_PRERELEASE=allow" >> $GITHUB_ENV
-
-      - name: Set test configuration for other Python versions
-        if: matrix.python != 'cp314t'
-        run: |
-          echo "CIBW_TEST_REQUIRES=polars" >> $GITHUB_ENV
-
-      - name: Build and test wheels
         uses: pypa/cibuildwheel@v3.3
         env:
           CIBW_TEST_COMMAND: python -m pytest {project}/tests --ignore={project}/tests/experimental --ignore={project}/tests/downstream --ignore={project}/tests/comparison -v -n auto --cov=bareduckdb --cov-report=term-missing
           CIBW_TEST_EXTRAS: "test"
+          CIBW_TEST_REQUIRES: pandas --pre --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple
+          CIBW_ARCHS: ${{ matrix.platform.arch }}
+          CIBW_BUILD: ${{ matrix.python }}-${{ matrix.platform.cibw_system }}_${{ matrix.platform.arch }}
+
+      - name: Build and test wheels (other Python versions)
+        if: matrix.python != 'cp314t'
+        uses: pypa/cibuildwheel@v3.3
+        env:
+          CIBW_TEST_COMMAND: python -m pytest {project}/tests --ignore={project}/tests/experimental --ignore={project}/tests/downstream --ignore={project}/tests/comparison -v -n auto --cov=bareduckdb --cov-report=term-missing
+          CIBW_TEST_EXTRAS: "test"
+          CIBW_TEST_REQUIRES: polars
           CIBW_ARCHS: ${{ matrix.platform.arch }}
           CIBW_BUILD: ${{ matrix.python }}-${{ matrix.platform.cibw_system }}_${{ matrix.platform.arch }}
 

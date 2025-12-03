@@ -76,6 +76,13 @@ build-frontend = "build[uv]"
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
 
+[tool.cibuildwheel.linux]
+# Don't bundle PyArrow libraries - loaded dynamically
+repair-wheel-command = "auditwheel repair --exclude libarrow.so.2200 --exclude libarrow_python.so.2200 -w {dest_dir} {wheel}"
+
+[tool.cibuildwheel.macos]
+repair-wheel-command = "delocate-wheel --require-archs {delocate_archs} --ignore-missing-dependencies -w {dest_dir} -v {wheel}"
+
 [tool.cython-lint]
 max-line-length = 160
 

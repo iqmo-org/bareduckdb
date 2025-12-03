@@ -1,0 +1,261 @@
+name: Sanitizer Testing (TSAN/ASAN)
+
+on:
+  # push:
+  workflow_dispatch:
+
+jobs:
+  sanitizers:
+    name: 'Sanitizer Tests - ${{ matrix.sanitizer }}'
+    runs-on: ubuntu-latest
+    #self-hosted
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: 'TSAN'
+            docker-image: 'ghcr.io/nascheme/cpython-tsan:3.14t'
+            sanitizer-env: 'TSAN_OPTIONS=halt_on_error=1'
+          - sanitizer: 'ASAN'
+            docker-image: 'ghcr.io/nascheme/cpython-asan:3.14t'
+            sanitizer-env: 'ASAN_OPTIONS=allocator_may_return_null=1:halt_on_error=1:detect_leaks=1'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@main
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Run ${{ matrix.sanitizer }} tests in Docker
+        shell: bash
+        run: |
+          echo "=== Pre-Docker Debugging ==="
+          echo "github.workspace: ${{ github.workspace }}"
+          echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
+          echo "PWD: $(pwd)"
+          echo "Contents of PWD:"
+          ls -la "$(pwd)" | head -30
+          echo "Contents of github.workspace:"
+          ls -la "${{ github.workspace }}" | head -30
+          echo "Checking for critical files in PWD:"
+          ls -l "$(pwd)/setup.py" "$(pwd)/pyproject.toml" 2>&1 || echo "Files missing in PWD!"
+          echo "Checking for critical files in github.workspace:"
+          ls -l "${{ github.workspace }}/setup.py" "${{ github.workspace }}/pyproject.toml" 2>&1 || echo "Files missing in github.workspace!"
+
+          # Use PWD instead of github.workspace for self-hosted runners
+          WORKSPACE_PATH="$(pwd)"
+          echo "Using WORKSPACE_PATH: $WORKSPACE_PATH"
+
+          # Pull latest version of the TSAN image
+          echo "Pulling latest ${{ matrix.docker-image }}"
+          docker pull ${{ matrix.docker-image }}
+
+          # Create container and copy files instead of using volume mount
+          # Volume mounts can be problematic with self-hosted runners
+          CONTAINER_ID=$(docker create \
+            --cap-add=SYS_PTRACE \
+            --security-opt seccomp=unconfined \
+            -w /workspace \
+            ${{ matrix.docker-image }} \
+            sleep infinity)
+
+          echo "Created container: $CONTAINER_ID"
+
+          # Start the container
+          docker start "$CONTAINER_ID"
+
+          # Copy all files from workspace into container
+          echo "Copying files from $WORKSPACE_PATH to container:/workspace"
+          docker cp "$WORKSPACE_PATH/." "$CONTAINER_ID:/workspace/"
+
+          # Verify files were copied
+          echo "Verifying files in container:"
+          docker exec "$CONTAINER_ID" ls -la /workspace/ | head -30
+
+          # Run the actual commands
+          docker exec "$CONTAINER_ID" bash -c "
+              set -e
+
+              echo '=== Environment Setup ==='
+              echo 'Current directory:'
+              pwd
+              echo 'Contents of /workspace:'
+              ls -la /workspace/ | head -30
+              echo 'Verifying critical files:'
+              ls -l /workspace/setup.py /workspace/pyproject.toml 2>&1 || echo 'Some files missing!'
+
+              echo '=== Installing system dependencies ==='
+              apt-get update -qq
+              apt-get install -y -qq unzip curl gcc g++ make clang gdb
+
+              echo '=== Downloading DuckDB library ==='
+              mkdir -p /workspace/duckdb_lib
+              cd /workspace/duckdb_lib
+              curl -L 'https://install.duckdb.org/v1.4.1/libduckdb-linux-amd64.zip' -o libduckdb.zip
+              unzip -o libduckdb.zip
+              ls -lah
+              cd /workspace
+
+              export LD_LIBRARY_PATH=/workspace/duckdb_lib:\$LD_LIBRARY_PATH
+
+              # Enable core dumps for debugging crashes
+              ulimit -c unlimited
+              echo '/tmp/core.%e.%p' > /proc/sys/kernel/core_pattern 2>/dev/null || echo 'Note: Could not set core_pattern (read-only in container), continuing anyway'
+
+              # Combine all TSAN suppression files (CPython, NumPy, etc.)
+              if [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
+                if [ -d /work/tsan_suppressions ]; then
+                  echo 'Combining TSAN suppression files...'
+                  cat /work/tsan_suppressions/*.txt > /tmp/combined_suppressions.txt
+                  export TSAN_OPTIONS=\"halt_on_error=1:suppressions=/tmp/combined_suppressions.txt\"
+                  echo \"Loaded suppressions from:\"
+                  ls -la /work/tsan_suppressions/
+                else
+                  echo 'Warning: No suppression files found, using default TSAN options'
+                  export TSAN_OPTIONS=\"halt_on_error=1\"
+                fi
+              else
+                export ${{ matrix.sanitizer-env }}
+              fi
+
+              # Use debug mode for better sanitizer compatibility
+              # - Disables LTO which can interfere with sanitizers
+              # - Uses -O0 instead of -O3 for more reliable detection
+              # - Enables bounds checking and other safety features
+              export BAREDUCKDB_OPTIMIZATION=debug
+
+              # Add sanitizer flags to compilation
+              if [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
+                export CFLAGS=\"-fsanitize=thread -fno-omit-frame-pointer -g \$CFLAGS\"
+                export CXXFLAGS=\"-fsanitize=thread -fno-omit-frame-pointer -g \$CXXFLAGS\"
+                export LDFLAGS=\"-fsanitize=thread \$LDFLAGS\"
+              else
+                export CFLAGS=\"-fsanitize=address -fno-omit-frame-pointer -g \$CFLAGS\"
+                export CXXFLAGS=\"-fsanitize=address -fno-omit-frame-pointer -g \$CXXFLAGS\"
+                export LDFLAGS=\"-fsanitize=address -shared-libasan \$LDFLAGS\"
+              fi
+
+              echo 'Python version:'
+              python --version
+              PYTHON_PATH=\$(which python)
+              echo \"Using Python at: \$PYTHON_PATH\"
+
+              echo '=== Installing UV ==='
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+              export PATH=\"\$HOME/.local/bin:\$PATH\"
+
+              echo '=== Installing build dependencies (including pyarrow for setup.py) ==='
+              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --upgrade pip
+              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages \"setuptools>=64\" wheel cython \"packaging>=24.2\" pyarrow
+
+              echo '=== Installing bareduckdb ==='
+              echo 'Current directory:'
+              pwd
+              echo 'Files in current directory:'
+              ls -la .
+              echo 'Checking for setup.py in current directory:'
+              if [ -f setup.py ]; then
+                echo 'setup.py EXISTS'
+                ls -l setup.py
+              else
+                echo 'ERROR: setup.py NOT FOUND'
+                echo 'Searching for setup.py:'
+                find / -name setup.py 2>/dev/null | head -5
+              fi
+
+              # Temporarily disable leak detection during build and dependency installation
+              # PyArrow creates singleton objects during import that ASAN reports as leaks
+              # These are intentional static allocations that live for the process lifetime
+              if [ '${{ matrix.sanitizer }}' = 'ASAN' ]; then
+                echo 'Disabling leak detection during installation (PyArrow singletons)'
+                export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=0'
+              fi
+
+              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages -e . --no-build-isolation -v
+
+              echo '=== Installing test dependencies ==='
+              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages pytest pytest-asyncio pytest-cov pytest-forked \
+                pytest-randomly pytest-run-parallel pytest-timeout pytest-xdist
+
+              echo '=== Installing nightly pandas and latest pyarrow ==='
+              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --pre --upgrade --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple --no-build pandas>=3.0 pyarrow
+              # uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages pyarrow
+
+              # Re-enable leak detection before running tests
+              if [ '${{ matrix.sanitizer }}' = 'ASAN' ]; then
+                echo 'Re-enabling leak detection for test execution'
+                export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=1'
+              fi
+
+              echo '=== Running ${{ matrix.sanitizer }} tests ==='
+
+              # Function to print stack trace from core dump
+              print_crash_info() {
+                echo '=== CRASH DETECTED ==='
+                local exit_code=\$1
+                echo \"Exit code: \$exit_code\"
+
+                # Find core dump
+                local core_file=\$(ls -t /tmp/core.* 2>/dev/null | head -1)
+                if [ -n \"\$core_file\" ]; then
+                  echo \"Core dump found: \$core_file\"
+                  echo '=== Stack trace from GDB ==='
+                  gdb -batch -ex 'thread apply all bt' -ex 'quit' python \$core_file 2>&1 || echo 'Failed to get stack trace'
+                else
+                  echo 'No core dump found'
+                fi
+              }
+
+              if [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
+                # TSAN: Run parallel tests to expose race conditions
+                set +e
+                python -m pytest tests/ \
+                  --parallel-threads=4 \
+                  --iterations=5 \
+                  --tb=short \
+                  -v \
+                  -m 'not asyncio' \
+                  --ignore=tests/experimental \
+                  --ignore=tests/downstream \
+                  2>&1 | tee /workspace/${{ matrix.sanitizer }}_output.txt
+                exit_code=\$?
+                if [ \$exit_code -eq 139 ] || [ \$exit_code -eq 134 ]; then
+                  print_crash_info \$exit_code
+                fi
+                exit \$exit_code
+              else
+                # ASAN: Run tests sequentially, stop on first error
+                set +e
+                python -m pytest tests/ \
+                  -x \
+                  --tb=short \
+                  -v \
+                  --ignore=tests/experimental \
+                  --ignore=tests/downstream \
+                  2>&1 | tee /workspace/${{ matrix.sanitizer }}_output.txt
+                exit_code=\$?
+                if [ \$exit_code -eq 139 ] || [ \$exit_code -eq 134 ]; then
+                  print_crash_info \$exit_code
+                fi
+                exit \$exit_code
+              fi
+            "
+
+          # Cleanup: stop and remove container
+          echo "Cleaning up container: $CONTAINER_ID"
+          docker stop "$CONTAINER_ID"
+          docker rm "$CONTAINER_ID"
+
+      - name: Upload ${{ matrix.sanitizer }} results
+        if: always()
+        uses: actions/upload-artifact@main
+        with:
+          name: ${{ matrix.sanitizer }}-results
+          path: |
+            ${{ matrix.sanitizer }}_output.txt
+          retention-days: 7

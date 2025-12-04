@@ -1,28 +1,26 @@
 from __future__ import annotations
 
-import ast
 import inspect
 import logging
-import re
 import uuid
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from typing import Any, Callable, Literal, Mapping, Optional, Sequence
 
+    import pyarrow as pa
+
+    from . import PyArrowCapsule
+
+from ..compat.result_compat import Result
 from .connection_base import ConnectionBase
 
 logger = logging.getLogger(__name__)
 
-# Import Result for type hints and usage
-if TYPE_CHECKING:
-    pass
-
 
 class ConnectionAPI(ConnectionBase):
-    # Instance attributes
     _udtf_registry: dict[str, Callable]
-    _last_result: Any  # Result or None
+    _last_result: Result  # Result or None
     _default_output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"]
 
     def __init__(
@@ -32,13 +30,11 @@ class ConnectionAPI(ConnectionBase):
         read_only: bool = False,
         *,
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
-        enable_arrow_dataset: bool = False,
+        enable_arrow_dataset: bool = True,
         udtf_functions: Optional[dict[str, Callable]] = None,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
     ) -> None:
         """
-        Create a DuckDB connection with UDTF support.
-
         Args:
             database: Path to database file, or None for in-memory
             config: Configuration dict (e.g., {'threads': '4'})
@@ -73,13 +69,6 @@ class ConnectionAPI(ConnectionBase):
         Args:
             name: UDTF name to use in SQL templates
             func: Python function that returns Arrow-compatible data
-
-        Example:
-            def my_func(n: int) -> pa.Table:
-                return pa.table({'id': range(n)})
-
-            conn.register_udtf('gen', my_func)
-            conn.execute("SELECT * FROM {{ udtf('gen', n=100) }}")
         """
         if not callable(func):
             raise TypeError(f"UDTF must be callable, got {type(func)}")
@@ -87,56 +76,33 @@ class ConnectionAPI(ConnectionBase):
         self._udtf_registry[name] = func
         logger.debug("Registered UDTF: %s", name)
 
-    def _parse_udtf_call(self, call_str: str) -> tuple[str, dict[str, Any]]:
+    def _create_udtf_wrapper(self, func_name: str, pending_data: dict) -> Callable:
         """
-        Parse a UDTF call string into function name and kwargs.
+        Create a Jinja2-callable wrapper for a UDTF.
+
+        Returns a function that Jinja2 can call, which generates a table name
+        and stores the Arrow data for later registration.
 
         Args:
-            call_str: String like "udtf('func_name', arg1=val1, arg2=val2)"
+            func_name: UDTF function name
+            pending_data: Dict to store pending UDTF data (passed to avoid closure issues)
 
         Returns:
-            (func_name, kwargs_dict)
-
-        Example:
-            _parse_udtf_call("udtf('faker', rows=100, seed=42)")
-            -> ('faker', {'rows': 100, 'seed': 42})
+            Callable that returns table name string
         """
-        # Match: udtf('name', ...) or udtf("name", ...)
-        pattern = r"udtf\(\s*['\"](\w+)['\"]\s*(?:,\s*(.*))?\s*\)"
-        match = re.match(pattern, call_str.strip())
 
-        if not match:
-            raise ValueError(f"Invalid UDTF call syntax: {call_str}")
+        def udtf_jinja_wrapper(**kwargs) -> str:
+            table_name = self._generate_table_name(func_name, kwargs)
+            result = self._call_udtf(func_name, kwargs)
+            pending_data[table_name] = result
+            logger.debug("UDTF wrapper for %s generated table: %s", func_name, table_name)
+            return table_name
 
-        func_name = match.group(1)
-        args_str = match.group(2)
-
-        kwargs = {}
-        if args_str:
-            # Parse kwargs manually: "a=1, b=2" -> {'a': 1, 'b': 2}
-            try:
-                for pair in args_str.split(","):
-                    pair = pair.strip()
-                    if "=" not in pair:
-                        raise ValueError(f"Invalid kwarg format: {pair}")
-
-                    key, value = pair.split("=", 1)
-                    key = key.strip()
-                    value = value.strip()
-
-                    # Use ast.literal_eval to safely evaluate the value
-                    kwargs[key] = ast.literal_eval(value)
-            except (ValueError, SyntaxError) as e:
-                raise ValueError(f"Invalid UDTF arguments: {args_str}") from e
-
-        logger.debug("Parsed UDTF call: %s with args %s", func_name, kwargs)
-        return func_name, kwargs
+        return udtf_jinja_wrapper
 
     def _generate_table_name(self, func_name: str, kwargs: dict[str, Any]) -> str:
         """
         Generate unique table name for UDTF call.
-
-        Uses UUID for uniqueness (each call gets a fresh table).
 
         Args:
             func_name: UDTF function name
@@ -145,7 +111,6 @@ class ConnectionAPI(ConnectionBase):
         Returns:
             Table name like "_udtf_faker_abc12345"
         """
-        # Generate unique ID for this UDTF call
         unique_id = uuid.uuid4().hex[:8]
 
         table_name = f"_udtf_{func_name}_{unique_id}"
@@ -153,55 +118,7 @@ class ConnectionAPI(ConnectionBase):
 
         return table_name
 
-    def _validate_udtf_result(self, func_name: str, result: Any) -> Any:
-        """
-        Validate and normalize UDTF return value to Arrow-compatible type.
-
-        Args:
-            func_name: UDTF name (for error messages)
-            result: Return value from UDTF
-
-        Returns:
-            Arrow-compatible object (pa.Table, etc.)
-
-        Raises:
-            TypeError: If result is not convertible to Arrow
-        """
-        type_name = type(result).__module__ + "." + type(result).__name__
-
-        # Already Arrow - return as-is
-        if "pyarrow" in type_name:
-            logger.debug("UDTF '%s' returned %s", func_name, type_name)
-            return result
-
-        # Pandas DataFrame - convert to Arrow
-        # Check for both old (pandas.core.frame.DataFrame) and new (pandas.DataFrame) paths
-        if type_name == "pandas.core.frame.DataFrame" or type_name == "pandas.DataFrame":
-            try:
-                import pyarrow as pa
-
-                arrow_result = pa.Table.from_pandas(result)
-                logger.debug("UDTF '%s' returned pandas.DataFrame, converted to Arrow", func_name)
-                return arrow_result
-            except Exception as e:
-                raise TypeError(f"UDTF '{func_name}' returned pandas.DataFrame but conversion failed: {e}") from e
-
-        # Polars DataFrame - convert via to_arrow()
-        if hasattr(result, "to_arrow"):
-            try:
-                arrow_result = result.to_arrow()
-                logger.debug("UDTF '%s' returned %s, converted via to_arrow()", func_name, type_name)
-                return arrow_result
-            except Exception as e:
-                raise TypeError(f"UDTF '{func_name}' conversion via to_arrow() failed: {e}") from e
-
-        # Invalid type
-        raise TypeError(
-            f"UDTF '{func_name}' returned invalid type: {type_name}. "
-            f"Must return pyarrow.Table, pandas.DataFrame, polars.DataFrame, or similar Arrow-compatible type."
-        )
-
-    def _call_udtf(self, func_name: str, kwargs: dict[str, Any]) -> Any:
+    def _call_udtf(self, func_name: str, kwargs: dict[str, Any]) -> pa.Table | pa.RecordBatchReader | PyArrowCapsule:
         """
         Call a registered UDTF with argument and connection injection.
 
@@ -212,89 +129,68 @@ class ConnectionAPI(ConnectionBase):
         Returns:
             Arrow-compatible result
 
-        Raises:
-            ValueError: If UDTF not registered or call fails
-            TypeError: If result is not Arrow-compatible
         """
         if func_name not in self._udtf_registry:
-            available = list(self._udtf_registry.keys())
-            raise ValueError(f"UDTF '{func_name}' not registered. Available UDTFs: {available}")
+            raise ValueError(f"UDTF '{func_name}' not registered")
 
         func = self._udtf_registry[func_name]
 
-        # Inspect signature to see if 'conn' parameter exists
         sig = inspect.signature(func)
         if "conn" in sig.parameters:
             logger.debug("UDTF '%s' requests conn injection", func_name)
             kwargs["conn"] = self
 
-        # Call function
-        try:
-            logger.debug("Calling UDTF '%s' with args: %s", func_name, kwargs)
-            result = func(**kwargs)
-        except TypeError as e:
-            raise ValueError(f"UDTF '{func_name}' call failed (check arguments): {e}") from e
-        except Exception as e:
-            raise ValueError(f"UDTF '{func_name}' execution failed: {e}") from e
+        result = func(**kwargs)
 
-        # Validate and normalize result
-        validated_result = self._validate_udtf_result(func_name, result)
-
-        return validated_result
+        return result
 
     def _process_udtfs(self, sql: str) -> tuple[str, dict[str, Any]]:
         """
-        Process UDTF template calls in SQL string.
+        Process UDTF template calls in SQL string using Jinja2.
 
-        Finds all {{ udtf(...) }} patterns, calls the functions, and replaces
-        with generated table names.
+        Finds all {{ udtf.function_name(...) }} patterns, calls the functions,
+        and replaces with generated table names.
 
         Args:
-            sql: SQL string with UDTF templates
+            sql: SQL string with UDTF templates (e.g., "SELECT * FROM {{ udtf.faker(rows=10) }}")
 
         Returns:
             (modified_sql, data_dict) where data_dict contains table_name -> Arrow data
-
-        Example:
-            Input:  "SELECT * FROM {{ udtf('faker', rows=100) }}"
-            Output: ("SELECT * FROM _udtf_faker_abc12345", {"_udtf_faker_abc12345": arrow_table})
         """
-        # Find all UDTF calls
-        pattern = r"\{\{\s*(udtf\([^)]+\))\s*\}\}"
-        matches = re.finditer(pattern, sql)
+        # Lazy import to avoid import-time dependency
+        from jinja2 import Environment, StrictUndefined
 
-        udtf_data = {}
-        modified_sql = sql
+        # Create a temporary storage for this rendering pass
+        pending_udtf_data = {}
 
-        for match in matches:
-            full_match = match.group(0)  # {{ udtf(...) }}
-            call_str = match.group(1)  # udtf(...)
+        # Create Jinja2 environment
+        env = Environment(undefined=StrictUndefined, autoescape=True)
 
-            logger.debug("Processing UDTF template: %s", full_match)
+        # Create a namespace object that allows attribute access
+        # This enables {{ udtf.function_name(...) }} syntax
+        class UDTFNamespace:
+            def __init__(self, parent, pending_data):
+                self._parent = parent
+                self._pending_data = pending_data
 
-            # Parse call
-            func_name, kwargs = self._parse_udtf_call(call_str)
+            def __getattr__(self, name):
+                return self._parent._create_udtf_wrapper(name, self._pending_data)
 
-            # Generate table name
-            table_name = self._generate_table_name(func_name, kwargs)
+        env.globals["udtf"] = UDTFNamespace(self, pending_udtf_data)
 
-            # Call UDTF
-            result = self._call_udtf(func_name, kwargs)
+        # Render the template
+        try:
+            template = env.from_string(sql)
+            modified_sql = template.render()
+        except Exception as e:
+            raise ValueError(f"Error processing UDTF templates: {e}") from e
 
-            # Store result
-            udtf_data[table_name] = result
+        if pending_udtf_data:
+            logger.info("Processed %d UDTF calls in SQL", len(pending_udtf_data))
 
-            # Replace template with table name
-            modified_sql = modified_sql.replace(full_match, table_name, 1)
+        return modified_sql, pending_udtf_data
 
-            logger.debug("Replaced %s with %s", full_match, table_name)
-
-        if udtf_data:
-            logger.info("Processed %d UDTF calls in SQL", len(udtf_data))
-
-        return modified_sql, udtf_data
-
-    def _call(
+    def _execute_with_udtf(
         self,
         query: str,
         *,
@@ -318,16 +214,13 @@ class ConnectionAPI(ConnectionBase):
         Returns:
             Result in requested format
         """
-        # Preprocess UDTFs
         query, udtf_data = self._process_udtfs(query)
 
-        # Merge UDTF data with user-provided data
         if data:
             merged_data = {**data, **udtf_data}
         else:
             merged_data = udtf_data if udtf_data else None
 
-        # Call parent with processed query and merged data
         return super()._call(
             query=query,
             output_type=output_type,
@@ -344,25 +237,11 @@ class ConnectionAPI(ConnectionBase):
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] | None = None,
         data: Mapping[str, Any] | None = None,
     ):
-        """
-        Execute a SQL query with UDTF template support.
-
-        Args:
-            query: SQL query string (may contain {{ udtf(...) }} templates)
-            parameters: Query parameters (positional or named)
-            output_type: Output format (default: connection's default)
-            data: Mapping of table names to Arrow data for registration
-
-        Returns:
-            Self (for method chaining and result access)
-        """
-        from ..compat.result_compat import Result
-
         self._last_result = None
         if output_type is None:
             output_type = self._default_output_type
 
-        result = self._call(query=query, output_type=output_type, parameters=parameters, data=data)
+        result = self._execute_with_udtf(query=query, output_type=output_type, parameters=parameters, data=data)
         result = Result(result)
         self._last_result = result
 
@@ -375,21 +254,16 @@ class ConnectionAPI(ConnectionBase):
         return self._last_result
 
     def arrow_table(self):
-        """Return last query result as Arrow Table."""
         return self._last_result_get().arrow_table()
 
     def arrow_reader(self):
-        """Return last query result as Arrow RecordBatchReader."""
         return self._last_result_get().arrow_reader()
 
     def df(self):
-        """Return last query result as pandas DataFrame."""
         return self._last_result_get().df()
 
     def pl(self, lazy: bool = False):
-        """Return last query result as Polars DataFrame."""
         return self._last_result_get().pl(lazy=lazy)
 
     def pl_lazy(self, batch_size: int | None = None):
-        """Return last query result as Polars LazyFrame (streaming)."""
         return self._last_result_get().pl_lazy(batch_size=batch_size)

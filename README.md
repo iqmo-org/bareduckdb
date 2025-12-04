@@ -169,12 +169,33 @@ Comment: bareduckdb avoids any GIL acquisition by DuckDB.
 - No fsspec integration
 
 ### User Defined Table Functions
-<not yet merged> 
-- Table Functions to be provided via Jinja templates, similar to DBT
-- This separates the Table Function execution from the DuckDB query execution
 
-```py
-select * from {{ udtf('faker(param1=1, param2=2)')}}
+Table Functions are provided via Jinja2 templates, similar to DBT. This separates the Table Function execution from the DuckDB query execution, enabling:
+- Python-based data generation (faker, synthetic data, API calls)
+- Connection injection for queries within queries
+- DBT compatibility (uses standard Jinja2)
+
+**Syntax:** `{{ udtf.function_name(param1=value1, param2=value2) }}`
+
+```python
+import bareduckdb
+import pyarrow as pa
+
+# Define a UDTF
+def generate_data(rows: int, multiplier: int = 1) -> pa.Table:
+    return pa.table({
+        "id": range(rows),
+        "value": [i * multiplier for i in range(rows)]
+    })
+
+# Register and use
+conn = bareduckdb.connect()
+conn.register_udtf("generate_data", generate_data)
+
+result = conn.execute("""
+    SELECT * FROM {{ udtf.generate_data(rows=100, multiplier=10) }}
+    WHERE value > 500
+""")
 ```
 
 ### Arrow Enhancements

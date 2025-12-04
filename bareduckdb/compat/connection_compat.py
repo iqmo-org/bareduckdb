@@ -8,13 +8,12 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from typing import Any, Literal, Mapping, Optional, Sequence
+    from typing import Any, Literal, Optional, Sequence
 
     import pyarrow as pa
 
 from .. import pyarrow_available
 from ..core.connection_api import ConnectionAPI
-from .result_compat import Result
 
 logger = logging.getLogger(__name__)
 
@@ -71,34 +70,6 @@ class Connection(ConnectionAPI):
     def rowcount(self):
         """DB-API 2.0"""
         return self._last_result_get().rowcount
-
-    def execute(
-        self,
-        query: str,
-        parameters: Sequence[Any] | Mapping[str, Any] | None = None,
-        *,
-        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] | None = None,
-        data: Mapping[str, Any] | None = None,
-    ) -> Connection:
-        """
-        Execute SQL with DuckDB-specific compatibility handling.
-
-        """
-        query_stripped = query.strip().upper()
-        if query_stripped.startswith("SET "):
-            # Filter unsupported SET parameters for DuckDB compatibility
-            unsupported_params = ["PYTHON_ENABLE_REPLACEMENTS"]
-
-            for param in unsupported_params:
-                if param in query_stripped:
-                    logger.warning("Ignoring unsupported configuration parameter: %s", query.strip())
-                    import pyarrow as pa
-
-                    result = Result(pa.table({}))
-                    self._last_result = result
-                    return self
-
-        return super().execute(query=query, parameters=parameters, output_type=output_type, data=data)
 
     def _convert_to_arrow_table(self, materialized: bool, data: Any) -> pa.Table | None:
         if not pyarrow_available():

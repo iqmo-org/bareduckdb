@@ -2,6 +2,7 @@
 Test dataset backend with filter and projection pushdowns.
 """
 import pytest
+import uuid
 
 pa = pytest.importorskip("pyarrow")
 
@@ -12,7 +13,8 @@ def test_dataset_pushdown_in_explain(connect_config):
     """
     Verify that filter and projection pushdowns appear in EXPLAIN output
     """
-    conn = Connection(**connect_config)
+    test_db = f":memory:test_pushdown_explain_{uuid.uuid4().hex[:8]}"
+    conn = Connection(database=test_db, **connect_config)
 
     try:
         table = pa.table({
@@ -66,7 +68,8 @@ def test_dataset_pushdown_in_explain(connect_config):
 
 
 def test_dataset_filter_pushdown_correctness(connect_config):
-    conn = Connection(**connect_config)
+    test_db = f":memory:test_filter_correctness_{uuid.uuid4().hex[:8]}"
+    conn = Connection(database=test_db, **connect_config)
 
     try:
         table = pa.table({
@@ -92,7 +95,8 @@ def test_dataset_filter_pushdown_correctness(connect_config):
 
 
 def test_dataset_projection_pushdown_correctness(connect_config):
-    conn = Connection(**connect_config)
+    test_db = f":memory:test_projection_correctness_{uuid.uuid4().hex[:8]}"
+    conn = Connection(database=test_db, **connect_config)
 
     try:
         table = pa.table({
@@ -120,7 +124,8 @@ def test_dataset_projection_pushdown_correctness(connect_config):
 
 
 def test_dataset_combined_pushdown(connect_config):
-    conn = Connection(**connect_config)
+    test_db = f":memory:test_combined_pushdown_{uuid.uuid4().hex[:8]}"
+    conn = Connection(database=test_db, **connect_config)
 
     try:
         table = pa.table({

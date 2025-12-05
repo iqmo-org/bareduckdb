@@ -23,6 +23,9 @@
 #include "duckdb/planner/filter/struct_filter.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/operator/comparison_operators.hpp"
+#include "duckdb/storage/statistics/base_statistics.hpp"
+#include "duckdb/storage/statistics/numeric_stats.hpp"
+#include "duckdb/storage/statistics/string_stats.hpp"
 
 // Arrow C++ API for Table operations
 #include "arrow/api.h"
@@ -35,6 +38,7 @@
 
 #include "cpp_helpers.hpp" //  get_cpp_connection, should_enable_cardinality, etc.
 #include "arrow_cardinality.hpp" //  register_arrow_scan_dataset implementation
+#include "statistics_cpp.hpp"   //  Statistics (C structs + C++ helpers)
 
 namespace bareduckdb
 {
@@ -503,10 +507,18 @@ namespace bareduckdb
         ArrowSchemaWrapper cached_schema;
         bool schema_cached = false;
         int64_t row_count;
+        BareTableStatistics* statistics;  // C statistics struct (can be nullptr)
 
-        explicit TableCppFactory(std::shared_ptr<arrow::Table> tbl, int64_t rows)
-            : table(std::move(tbl)), row_count(rows)
+        explicit TableCppFactory(std::shared_ptr<arrow::Table> tbl, int64_t rows, BareTableStatistics* stats = nullptr)
+            : table(std::move(tbl)), row_count(rows), statistics(stats)
         {
+        }
+
+        ~TableCppFactory() {
+            // Free statistics struct if present
+            if (statistics != nullptr) {
+                free_table_statistics(statistics);
+            }
         }
 
         static void GetSchema(uintptr_t factory_ptr, ArrowSchema &schema)
@@ -537,6 +549,11 @@ namespace bareduckdb
             return factory->row_count;
         }
 
+        static unique_ptr<duckdb::BaseStatistics> GetColumnStatistics(
+            uintptr_t factory_ptr,
+            const std::string &column_name,
+            const duckdb::LogicalType &column_type);
+
         // CreateScannerReader: Dataset → Scanner → Reader with pushdown support
         static std::shared_ptr<arrow::RecordBatchReader> CreateScannerReader(
             std::shared_ptr<arrow::dataset::Dataset> dataset,
@@ -563,12 +580,17 @@ namespace bareduckdb
 
             if (params.filters && !params.filters->filters.empty())
             {
+                fprintf(stderr, "[DEBUG] Filter pushdown requested (%zu filters)...\n", params.filters->filters.size());
+                fflush(stderr);
+
                 using arrow::compute::call;
                 using arrow::compute::Expression;
                 using arrow::compute::literal;
 
                 Expression combined_filter = literal(true);
-                bool any_filter_failed = false;
+                int filters_pushed = 0;
+                int filters_skipped_string_view = 0;
+                int filters_failed = 0;
 
                 for (const auto &[col_idx, filter_ptr] : params.filters->filters)
                 {
@@ -583,7 +605,13 @@ namespace bareduckdb
                         original_col_idx = col_idx;
                     }
 
-                    std::string col_name = dataset->schema()->field((int)original_col_idx)->name();
+                    auto field = dataset->schema()->field((int)original_col_idx);
+                    std::string col_name = field->name();
+
+                    if (field->type()->id() == arrow::Type::STRING_VIEW)
+                    {
+                        filters_skipped_string_view++;
+                        continue;
 
                     try
                     {
@@ -591,23 +619,31 @@ namespace bareduckdb
                         Expression col_filter = TranslateFilterToArrowExpression(filter_ptr.get(), col_name);
 
                         combined_filter = call("and_kleene", {combined_filter, col_filter});
+                        filters_pushed++;
                     }
                     catch (const std::exception &e)
                     {
-                        fprintf(stderr, "[BAREDUCKDB] WARNING: Failed to translate filter for column '%s': %s\n",
+                        fprintf(stderr, "WARNING: Failed to translate filter for column '%s': %s\n",
                                 col_name.c_str(), e.what());
-                        fprintf(stderr, "[BAREDUCKDB]          Filter type: %d, Skipping Arrow filter pushdown - DuckDB will handle all filtering\n",
-                                (int)filter_ptr->filter_type);
                         fflush(stderr);
-                        any_filter_failed = true;
-                        break;  // Stop processing filters - let DuckDB handle all of them
+                        filters_failed++;
+                        // Don't break - continue with other filters
                     }
                 }
-                
-                arrow::Status status = builder->Filter(combined_filter);
-                if (!status.ok())
+
+                fprintf(stderr, "[Filter Pushdown] Summary: %d pushed, %d skipped (string_view), %d failed\n",
+                        filters_pushed, filters_skipped_string_view, filters_failed);
+                fflush(stderr);
+
+                // Apply the combined filter if we successfully pushed down at least one filter
+                if (filters_pushed > 0)
                 {
-                    // Continue without filter
+                    arrow::Status status = builder->Filter(combined_filter);
+                    if (!status.ok())
+                    {
+                        fprintf(stderr, "WARNING: Filter application failed: %s\n", status.ToString().c_str());
+                        fflush(stderr);
+                    }
                 }
             }
 
@@ -659,12 +695,33 @@ namespace bareduckdb
         }
     };
 
+    unique_ptr<duckdb::BaseStatistics> TableCppFactory::GetColumnStatistics(
+        uintptr_t factory_ptr,
+        const std::string &column_name,
+        const duckdb::LogicalType &column_type) {
+
+        auto factory = reinterpret_cast<TableCppFactory*>(factory_ptr);
+        if (!factory) {
+            return nullptr;
+        }
+
+        if (!factory->statistics) {
+            return nullptr;
+        }
+
+
+        auto stats = GetColumnStatisticsFromStruct(factory->statistics, column_name, column_type);
+
+        return stats;
+    }
+
     extern "C" void *register_table_cpp(
         duckdb_connection c_conn,
         void *table_pyobj,
         const char *view_name,
         int64_t row_count,
-        bool replace)
+        bool replace,
+        BareTableStatistics* statistics)
     {
         auto conn = get_cpp_connection(c_conn);
         if (!conn)
@@ -682,21 +739,7 @@ namespace bareduckdb
         }
         std::shared_ptr<arrow::Table> table = table_result.ValueOrDie();
 
-        if (replace)
-        {
-            try
-            {
-                std::string drop_sql = "DROP VIEW IF EXISTS " + duckdb::KeywordHelper::WriteQuoted(view_name_str, '"');
-                context->Query(drop_sql, false);
-            }
-            catch (...)
-            {
-                // Ignore errors
-            }
-        }
-
-        auto factory = make_uniq<TableCppFactory>(table, row_count);
-
+        auto factory = make_uniq<TableCppFactory>(table, row_count, statistics);
         std::string function_name = "arrow_scan_dataset";
 
         auto table_function = make_uniq<TableFunctionRef>();
@@ -706,6 +749,7 @@ namespace bareduckdb
         children.push_back(make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&TableCppFactory::Produce))));
         children.push_back(make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&TableCppFactory::GetSchema))));
         children.push_back(make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&TableCppFactory::GetCardinality))));
+        children.push_back(make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&TableCppFactory::GetColumnStatistics))));
 
         table_function->function = make_uniq<FunctionExpression>(
             function_name,

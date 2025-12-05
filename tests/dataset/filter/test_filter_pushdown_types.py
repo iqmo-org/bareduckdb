@@ -7,7 +7,7 @@ from bareduckdb import Connection
 
 class TestDateFilterPushdown:
 
-    def test_date_equality_filter(self):
+    def test_date_equality_filter(self, unique_table_name, conn):
         table = pa.table({
             'a': pa.array([date(2000, 1, 1), date(2000, 10, 1), date(2010, 1, 1), None], type=pa.date32()),
             'b': pa.array([date(2000, 1, 1), date(2000, 10, 1), date(2000, 10, 1), None], type=pa.date32()),
@@ -15,15 +15,15 @@ class TestDateFilterPushdown:
         })
 
         conn = Connection()
-        conn.register("test_date", table)
+        conn.register(unique_table_name, table)
 
-        result = conn.sql("SELECT count(*) FROM test_date WHERE a = '2000-01-01'").fetchone()
+        result = conn.sql(f"SELECT count(*) FROM {unique_table_name} WHERE a = '2000-01-01'").fetchone()
         assert result[0] == 1, f"Expected 1 row with a='2000-01-01', got {result[0]}"
 
-        result = conn.sql("SELECT count(*) FROM test_date WHERE b = '2000-10-01'").fetchone()
+        result = conn.sql(f"SELECT count(*) FROM {unique_table_name} WHERE b = '2000-10-01'").fetchone()
         assert result[0] == 2, f"Expected 2 rows with b='2000-10-01', got {result[0]}"
 
-        result = conn.sql("SELECT count(*) FROM test_date WHERE a = '1999-12-31'").fetchone()
+        result = conn.sql(f"SELECT count(*) FROM {unique_table_name} WHERE a = '1999-12-31'").fetchone()
         assert result[0] == 0, f"Expected 0 rows with a='1999-12-31', got {result[0]}"
 
     def test_date_comparison_filters(self):

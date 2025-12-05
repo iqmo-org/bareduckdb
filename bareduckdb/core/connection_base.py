@@ -10,9 +10,10 @@ import time
 from typing import TYPE_CHECKING
 
 from .impl.connection import ConnectionImpl  # type: ignore[import-untyped]
+from .registration import TableRegistration
 
 if TYPE_CHECKING:
-    from typing import Any, CapsuleType, Literal, Mapping, Optional, Sequence  # type: ignore[attr-defined]
+    from typing import Any, Literal, Mapping, Optional, Sequence  # type: ignore[attr-defined]
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class ConnectionBase:
 
     # Instance attributes
     _impl: Any
+    _registrations: dict[str, TableRegistration]
     _registered_objects: dict[str, Any]
     _database_path: str | None
     _lock: threading.Lock
@@ -66,8 +68,8 @@ class ConnectionBase:
                 read_only=read_only,
             )  # type: ignore[assignment]  # Cython module
 
+        self._registrations: dict[str, TableRegistration] = {}
         self._registered_objects: dict[str, Any] = {}
-        self._factory_pointers: dict[str, int] = {}  # C++ factory pointers (need cleanup)
         self._database_path: str | None = database  # Store for cursor() method
         self._lock: threading.Lock = threading.Lock()  # Thread safety lock for _impl operations
         self.arrow_table_collector = arrow_table_collector
@@ -217,18 +219,27 @@ class ConnectionBase:
         with self._lock:
             self._impl.unregister(name)
 
+            # Clean up dataset registrations
+            if name in self._registrations:
+                registration = self._registrations.pop(name)
+                registration.close()
+
+            # Clean up capsule registratinos
             if name in self._registered_objects:
                 del self._registered_objects[name]
-
-            factory_ptr = self._factory_pointers.pop(name, None)
-            if factory_ptr:
-                from bareduckdb.dataset import backend
-
-                backend.delete_factory(self, factory_ptr)
 
     def close(self) -> None:
         logger.debug("Closing connection")
         with self._lock:
+            for name, registration in list(self._registrations.items()):
+                try:
+                    registration.close()
+                except Exception as e:
+                    logger.warning(f"Error closing registration for {name}: {e}")
+            self._registrations.clear()
+
+            self._registered_objects.clear()
+
             self._impl.close()
 
     def __enter__(self) -> ConnectionBase:

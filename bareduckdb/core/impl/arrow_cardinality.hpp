@@ -23,7 +23,7 @@ namespace duckdb {
 //
 
 namespace {
-	// Thread-safe global map to store cardinality values
+	// Thread-safe global map to store cardinality values for capsules
 	std::unordered_map<uintptr_t, int64_t> cardinality_map;
 	std::mutex cardinality_map_mutex;
 } // anonymous namespace
@@ -49,6 +49,15 @@ inline void remove_cardinality(const void* data_ptr) {
 	std::lock_guard<std::mutex> lock(cardinality_map_mutex);
 	cardinality_map.erase(reinterpret_cast<uintptr_t>(data_ptr));
 }
+
+struct ArrowScanDatasetData : public ArrowScanFunctionData {
+	std::unordered_map<column_t, shared_ptr<BaseStatistics>> cached_stats;
+
+	ArrowScanDatasetData(stream_factory_produce_t producer,
+	                     uintptr_t stream_ptr,
+	                     shared_ptr<DependencyItem> dep)
+		: ArrowScanFunctionData(producer, stream_ptr, std::move(dep)) {}
+};
 
 using ArrowScanCardinalityData = ArrowScanFunctionData;
 
@@ -88,6 +97,8 @@ unique_ptr<FunctionData> ArrowScanCardinalityBind(ClientContext &context, TableF
 	if (return_types.empty()) {
 		throw InvalidInputException("Provided table/dataframe must have at least one column");
 	}
+
+
 	return std::move(res);
 }
 
@@ -102,6 +113,85 @@ unique_ptr<NodeStatistics> ArrowScanCardinalityCardinality(ClientContext &contex
 	}
 
 	return stats;
+}
+
+unique_ptr<BaseStatistics> ArrowScanDatasetStatistics(
+	ClientContext &context,
+	const FunctionData *bind_data,
+	column_t column_index) {
+
+	auto &data = bind_data->Cast<ArrowScanDatasetData>();
+
+	auto it = data.cached_stats.find(column_index);
+	if (it != data.cached_stats.end()) {
+		return it->second->ToUnique();
+	}
+
+	return nullptr;
+}
+
+unique_ptr<FunctionData> ArrowScanDatasetBind(ClientContext &context, TableFunctionBindInput &input,
+                                               vector<LogicalType> &return_types, vector<string> &names) {
+	if (input.inputs[0].IsNull() || input.inputs[1].IsNull() || input.inputs[2].IsNull() || input.inputs[3].IsNull()) {
+		throw BinderException("arrow_scan_dataset: pointers cannot be null");
+	}
+	auto &ref = input.ref;
+
+	shared_ptr<DependencyItem> dependency;
+	if (ref.external_dependency) {
+		dependency = ref.external_dependency->GetDependency("replacement_cache");
+		D_ASSERT(dependency);
+	}
+
+	auto stream_factory_ptr = input.inputs[0].GetPointer();
+	auto stream_factory_produce = (stream_factory_produce_t)input.inputs[1].GetPointer();
+	auto stream_factory_get_schema = (stream_factory_get_schema_t)input.inputs[2].GetPointer();
+	auto get_cardinality_fn = (int64_t (*)(uintptr_t))input.inputs[3].GetPointer();
+
+	int64_t cardinality = get_cardinality_fn(stream_factory_ptr);
+
+	auto res = make_uniq<ArrowScanDatasetData>(stream_factory_produce, stream_factory_ptr, std::move(dependency));
+
+	res->projection_pushdown_enabled = true;
+
+	store_cardinality(res.get(), cardinality);
+
+	auto &data = *res;
+	stream_factory_get_schema(reinterpret_cast<ArrowArrayStream *>(stream_factory_ptr), data.schema_root.arrow_schema);
+	ArrowTableFunction::PopulateArrowTableSchema(DBConfig::GetConfig(context), data.arrow_table,
+	                                              data.schema_root.arrow_schema);
+	names = data.arrow_table.GetNames();
+	return_types = data.arrow_table.GetTypes();
+	data.all_types = return_types;
+
+	if (return_types.empty()) {
+		throw InvalidInputException("Provided table/dataframe must have at least one column");
+	}
+
+	// Eagerly extract and cache statistics during bind (GIL is held, safe to call Python)
+	if (input.inputs.size() >= 5 && !input.inputs[4].IsNull()) {
+		auto get_statistics_fn =
+			(unique_ptr<BaseStatistics> (*)(uintptr_t, const std::string&, const LogicalType&))
+			input.inputs[4].GetPointer();
+
+		for (idx_t col_idx = 0; col_idx < names.size(); col_idx++) {
+			try {
+				if (return_types[col_idx].id() == LogicalTypeId::VARCHAR) {
+					continue;
+				}
+
+				auto stats = get_statistics_fn(stream_factory_ptr, names[col_idx], return_types[col_idx]);
+				if (stats) {
+					res->cached_stats[col_idx] = shared_ptr<BaseStatistics>(stats.release());
+				}
+			} catch (...) {
+				fprintf(stderr, "ArrowScanDatasetBind: Failed to extract statistics for column '%s'\n",
+				        names[col_idx].c_str());
+			}
+		}
+	}
+
+	return std::move(res);
 }
 
 static void ArrowScanCardinalityScan(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
@@ -173,6 +263,20 @@ static bool CanPushdown(const ArrowType &type) {
 
 static bool ArrowScanCardinalityPushdownType(const FunctionData &bind_data, idx_t col_idx) {
 	auto &arrow_bind_data = bind_data.Cast<ArrowScanFunctionData>();
+
+	auto &schema = arrow_bind_data.schema_root.arrow_schema;
+	if (schema.children && col_idx < (idx_t)schema.n_children) {
+		auto *field = schema.children[col_idx];
+		if (field && field->format) {
+			std::string format(field->format);
+			if (format == "vu") {
+				fprintf(stderr, "[Pushdown Check] Column %zu is string_view, CANNOT push down filters\n", col_idx);
+				fflush(stderr);
+				return false;
+			}
+		}
+	}
+
 	const auto &column_info = arrow_bind_data.arrow_table.GetColumns();
 	auto column_type = column_info.at(col_idx);
 	return CanPushdown(*column_type);
@@ -203,12 +307,14 @@ void register_arrow_scan_cardinality(duckdb::Connection* cpp_conn) {
 void register_arrow_scan_dataset(duckdb::Connection* cpp_conn) {
 	duckdb::TableFunction arrow_dataset("arrow_scan_dataset",
 	                                     {duckdb::LogicalType::POINTER, duckdb::LogicalType::POINTER,
-	                                      duckdb::LogicalType::POINTER, duckdb::LogicalType::POINTER},
-	                                     duckdb::ArrowScanCardinalityScan, duckdb::ArrowScanCardinalityBind,
+	                                      duckdb::LogicalType::POINTER, duckdb::LogicalType::POINTER,
+	                                      duckdb::LogicalType::POINTER},
+	                                     duckdb::ArrowScanCardinalityScan, duckdb::ArrowScanDatasetBind,
 	                                     duckdb::ArrowScanCardinalityInitGlobal,
 	                                     duckdb::ArrowScanCardinalityInitLocal);
 
 	arrow_dataset.cardinality = duckdb::ArrowScanCardinalityCardinality;
+	arrow_dataset.statistics = duckdb::ArrowScanDatasetStatistics;
 	arrow_dataset.get_partition_data = duckdb::ArrowScanCardinalityGetPartitionData;
 	arrow_dataset.projection_pushdown = true;
 	arrow_dataset.filter_pushdown = true;

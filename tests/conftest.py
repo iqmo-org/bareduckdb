@@ -4,6 +4,7 @@ Pytest configuration and shared fixtures.
 
 import pytest
 import logging
+import threading
 from bareduckdb import Connection
 from bareduckdb.core import ConnectionBase
 
@@ -30,13 +31,46 @@ except Exception:
 
 logger=logging.getLogger(__name__)
 
+_test_counter = 0
+_test_counter_lock = threading.Lock()
+
+def _get_unique_test_id():
+    """Generate a unique ID for each test invocation."""
+    global _test_counter
+    with _test_counter_lock:
+        _test_counter += 1
+        return _test_counter
 
 @pytest.fixture
-def conn():
+def unique_table_name(request):
+    test_id = _get_unique_test_id()
+    test_name = request.node.name
+    safe_test_name = test_name.replace('[', '_').replace(']', '_').replace('-', '_')
+    return f"test_{safe_test_name}_{test_id}"
 
-    connection = Connection()
+@pytest.fixture
+def conn(request):
+    test_id = _get_unique_test_id()
+    test_name = request.node.name
+    safe_test_name = test_name.replace('[', '_').replace(']', '_').replace('-', '_')
+
+    worker_id = getattr(request.config, 'workerinput', {}).get('workerid', 'main')
+
+    thread_id = threading.get_ident()
+
+    database = f":memory:{worker_id}_{thread_id}_{safe_test_name}_{test_id}"
+
+    connection = Connection(database=database)
+
+    def cleanup():
+        try:
+            connection.close()
+        except Exception as e:
+            logger.warning(f"Error closing connection for {test_name}: {e}")
+
+    request.addfinalizer(cleanup)
+
     yield connection
-    connection.close()
 
 
 config_params = [

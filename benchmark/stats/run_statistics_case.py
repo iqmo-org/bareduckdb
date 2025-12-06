@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""
-Run a single statistics benchmark case.
 
-This runner creates test data and compares query performance between:
-- Polars/Pandas DataFrames (with statistics)
-- PyArrow Tables (without statistics)
-"""
 import logging
 import resource
 import sys

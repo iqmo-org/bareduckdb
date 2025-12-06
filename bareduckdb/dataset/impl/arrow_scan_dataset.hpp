@@ -505,6 +505,14 @@ namespace bareduckdb
         return enabled;
     }
 
+    static bool distinct_count_enabled() {
+        static bool enabled = []() {
+            const char* env = std::getenv("BAREDUCKDB_ENABLE_DISTINCT_COUNT");
+            return env != nullptr && std::string(env) == "1";  // Default: disabled (expensive)
+        }();
+        return enabled;
+    }
+
     struct TableCppFactory
     {
         std::shared_ptr<arrow::Table> table; // C++ Arrow Table (no Python)
@@ -635,31 +643,7 @@ namespace bareduckdb
                 break;
             case LogicalTypeId::FLOAT:
             case LogicalTypeId::DOUBLE: {
-                // Check for NaN presence by comparing count vs count_non_null
-                arrow::compute::CountOptions all_opts(arrow::compute::CountOptions::ALL);
-                auto total_result = arrow::compute::Count(column, all_opts);
-                if (!total_result.ok()) {
-                    return nullptr;
-                }
-                int64_t total_count = total_result.ValueOrDie().scalar_as<arrow::Int64Scalar>().value;
-
-                // Count non-null values
-                arrow::compute::CountOptions valid_opts(arrow::compute::CountOptions::ONLY_VALID);
-                auto valid_result = arrow::compute::Count(column, valid_opts);
-                if (!valid_result.ok()) {
-                    return nullptr;
-                }
-                int64_t valid_count = valid_result.ValueOrDie().scalar_as<arrow::Int64Scalar>().value;
-
-                // Count nulls
-                arrow::compute::CountOptions null_opts(arrow::compute::CountOptions::ONLY_NULL);
-                auto null_result = arrow::compute::Count(column, null_opts);
-                if (!null_result.ok()) {
-                    return nullptr;
-                }
-                int64_t null_count = null_result.ValueOrDie().scalar_as<arrow::Int64Scalar>().value;
-
-                // If valid_count + null_count == total_count, no NaN
+                // Check for NaN values - Arrow's MinMax ignores NaN, but DuckDB treats NaN
                 auto is_nan_result = arrow::compute::IsNan(column);
                 if (is_nan_result.ok()) {
                     auto is_nan_array = is_nan_result.ValueOrDie();
@@ -667,12 +651,13 @@ namespace bareduckdb
                     if (any_result.ok()) {
                         auto any_scalar = any_result.ValueOrDie().scalar_as<arrow::BooleanScalar>();
                         if (any_scalar.is_valid && any_scalar.value) {
+                            // Column contains NaN - skip statistics
                             return nullptr;
                         }
                     }
                 }
 
-                // No NaN found, safe to use statistics
+                // No NaN found, safe to use min/max statistics
                 if (type_id == LogicalTypeId::FLOAT) {
                     float min_f = std::static_pointer_cast<arrow::FloatScalar>(min_scalar)->value;
                     float max_f = std::static_pointer_cast<arrow::FloatScalar>(max_scalar)->value;
@@ -707,14 +692,50 @@ namespace bareduckdb
             }
 
             auto stats = duckdb::BaseStatistics::CreateEmpty(column_type);
-            stats.Set(duckdb::StatsInfo::CAN_HAVE_NULL_VALUES);
+
+            // null statistics
+            int64_t null_count = column->null_count();
+            int64_t num_rows = column->length();
+
+            if (null_count == 0) {
+                stats.Set(duckdb::StatsInfo::CANNOT_HAVE_NULL_VALUES);
+            } else if (null_count == num_rows) {
+                stats.Set(duckdb::StatsInfo::CANNOT_HAVE_VALID_VALUES);
+            } else {
+                stats.Set(duckdb::StatsInfo::CAN_HAVE_NULL_AND_VALID_VALUES);
+            }
 
             if (type_id == LogicalTypeId::VARCHAR) {
                 duckdb::StringStats::Update(stats, min_val.ToString());
                 duckdb::StringStats::Update(stats, max_val.ToString());
+
+                // max string length
+                uint32_t max_string_len = 0;
+                for (int chunk_idx = 0; chunk_idx < column->num_chunks(); chunk_idx++) {
+                    auto chunk = column->chunk(chunk_idx);
+                    auto string_array = std::static_pointer_cast<arrow::StringArray>(chunk);
+                    for (int64_t i = 0; i < string_array->length(); i++) {
+                        if (!string_array->IsNull(i)) {
+                            max_string_len = std::max(max_string_len,
+                                static_cast<uint32_t>(string_array->value_length(i)));
+                        }
+                    }
+                }
+                duckdb::StringStats::SetMaxStringLength(stats, max_string_len);
             } else {
                 duckdb::NumericStats::SetMin(stats, min_val);
                 duckdb::NumericStats::SetMax(stats, max_val);
+            }
+
+            if (distinct_count_enabled()) {
+                auto count_result = arrow::compute::CallFunction("count_distinct", {column});
+                if (count_result.ok()) {
+                    auto count_scalar = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+                        count_result.ValueOrDie().scalar());
+                    if (count_scalar && count_scalar->is_valid) {
+                        stats.SetDistinctCount(static_cast<idx_t>(count_scalar->value));
+                    }
+                }
             }
 
             return stats.ToUnique();
@@ -904,6 +925,121 @@ namespace bareduckdb
         const LogicalType &column_type)
     {
         return TableCppFactory::ComputeColumnStatistics(factory_ptr, column_index, column_type);
+    }
+
+    // for testing
+    struct ColumnStatisticsResult {
+        bool has_stats;
+        bool can_have_null;
+        bool can_have_valid;
+        int64_t min_int;
+        int64_t max_int;
+        double min_double;
+        double max_double;
+        char min_str[256];
+        char max_str[256];
+        int64_t distinct_count;
+        uint32_t max_string_len;
+    };
+
+    // for testing: map types
+    static LogicalType MapLogicalTypeId(int type_id) {
+        switch (type_id) {
+            case 1: return LogicalType::TINYINT;
+            case 2: return LogicalType::SMALLINT;
+            case 3: return LogicalType::INTEGER;
+            case 4: return LogicalType::BIGINT;
+            case 5: return LogicalType::FLOAT;
+            case 6: return LogicalType::DOUBLE;
+            case 7: return LogicalType::VARCHAR;
+            case 8: return LogicalType::BOOLEAN;
+            case 9: return LogicalType::DATE;
+            case 10: return LogicalType::TIMESTAMP;
+            default: return LogicalType::UNKNOWN;
+        }
+    }
+
+    extern "C" ColumnStatisticsResult test_compute_column_statistics_cpp(
+        void* table_pyobj,
+        int column_index,
+        int logical_type_id
+    ) {
+        ColumnStatisticsResult result = {};
+        std::memset(&result, 0, sizeof(result));
+
+        auto table_result = arrow::py::unwrap_table(reinterpret_cast<PyObject*>(table_pyobj));
+        if (!table_result.ok()) {
+            return result;
+        }
+
+        auto table = table_result.ValueOrDie();
+        auto factory = TableCppFactory(table);
+
+        LogicalType column_type = MapLogicalTypeId(logical_type_id);
+        if (column_type == LogicalType::UNKNOWN) {
+            return result;
+        }
+
+        auto stats = TableCppFactory::ComputeColumnStatistics(
+            reinterpret_cast<uintptr_t>(&factory),
+            static_cast<idx_t>(column_index),
+            column_type
+        );
+
+        if (!stats) {
+            return result;
+        }
+
+        result.has_stats = true;
+
+        result.can_have_null = stats->CanHaveNull();
+        result.can_have_valid = stats->CanHaveNoNull();
+
+        auto type_id_enum = column_type.id();
+        if (type_id_enum == LogicalTypeId::VARCHAR) {
+            auto min_str = duckdb::StringStats::Min(*stats);
+            auto max_str = duckdb::StringStats::Max(*stats);
+            std::strncpy(result.min_str, min_str.c_str(), sizeof(result.min_str) - 1);
+            std::strncpy(result.max_str, max_str.c_str(), sizeof(result.max_str) - 1);
+            result.max_string_len = duckdb::StringStats::MaxStringLength(*stats);
+        } else if (type_id_enum == LogicalTypeId::FLOAT || type_id_enum == LogicalTypeId::DOUBLE) {
+            auto min_val = duckdb::NumericStats::Min(*stats);
+            auto max_val = duckdb::NumericStats::Max(*stats);
+            if (type_id_enum == LogicalTypeId::FLOAT) {
+                result.min_double = min_val.GetValue<float>();
+                result.max_double = max_val.GetValue<float>();
+            } else {
+                result.min_double = min_val.GetValue<double>();
+                result.max_double = max_val.GetValue<double>();
+            }
+        } else {
+            auto min_val = duckdb::NumericStats::Min(*stats);
+            auto max_val = duckdb::NumericStats::Max(*stats);
+            switch (type_id_enum) {
+                case LogicalTypeId::TINYINT:
+                    result.min_int = min_val.GetValue<int8_t>();
+                    result.max_int = max_val.GetValue<int8_t>();
+                    break;
+                case LogicalTypeId::SMALLINT:
+                    result.min_int = min_val.GetValue<int16_t>();
+                    result.max_int = max_val.GetValue<int16_t>();
+                    break;
+                case LogicalTypeId::INTEGER:
+                    result.min_int = min_val.GetValue<int32_t>();
+                    result.max_int = max_val.GetValue<int32_t>();
+                    break;
+                case LogicalTypeId::BIGINT:
+                    result.min_int = min_val.GetValue<int64_t>();
+                    result.max_int = max_val.GetValue<int64_t>();
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        result.distinct_count = stats->GetDistinctCount();
+
+        return result;
     }
 
     extern "C" void register_dataset_functions_cpp(duckdb_connection c_conn)

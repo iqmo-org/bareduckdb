@@ -55,7 +55,7 @@ def test_dataset_pushdown_in_explain(connect_config):
             assert has_projection_pushdown
             assert not has_filter_operator
         else:
-            has_capsule_scan = 'ARROW_SCAN_CARDINALITY' in explain_text
+            has_capsule_scan = 'ARROW_SCAN_DUMB' in explain_text
             has_filter_operator = '│           FILTER          │' in explain_text
             has_projection_operator = '│         PROJECTION        │' in explain_text
 

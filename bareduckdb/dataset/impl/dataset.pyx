@@ -3,6 +3,7 @@
 
 
 from cpython.ref cimport PyObject
+from libc.stdint cimport int64_t, uint32_t
 
 from bareduckdb.core.impl.connection cimport ConnectionImpl, duckdb_connection
 
@@ -15,6 +16,26 @@ cdef extern from "../../dataset/impl/arrow_scan_dataset.hpp" namespace "bareduck
     void delete_table_factory_cpp(void* factory_ptr) except +
 
     void register_dataset_functions_cpp(duckdb_connection c_conn) except +
+
+    # Test helper
+    ctypedef struct ColumnStatisticsResult:
+        bint has_stats
+        bint can_have_null
+        bint can_have_valid
+        int64_t min_int
+        int64_t max_int
+        double min_double
+        double max_double
+        char min_str[256]
+        char max_str[256]
+        int64_t distinct_count
+        uint32_t max_string_len
+
+    ColumnStatisticsResult test_compute_column_statistics_cpp(
+        void* table_pyobj,
+        int column_index,
+        int logical_type_id
+    ) except +
 
 
 def register_table_pyx(ConnectionImpl conn, str name, object table, bint replace=True):
@@ -43,3 +64,44 @@ def register_dataset_functions_pyx(ConnectionImpl conn):
     if conn._closed:
         raise RuntimeError("Connection is closed")
     register_dataset_functions_cpp(conn._conn)
+
+
+# for test: type map
+TYPE_ID_MAP = {
+    "TINYINT": 1,
+    "SMALLINT": 2,
+    "INTEGER": 3,
+    "BIGINT": 4,
+    "FLOAT": 5,
+    "DOUBLE": 6,
+    "VARCHAR": 7,
+    "BOOLEAN": 8,
+    "DATE": 9,
+    "TIMESTAMP": 10,
+}
+
+
+def test_compute_column_statistics(object table, int column_index, str type_id):
+    cdef void* table_ptr = <void*><PyObject*>table
+    cdef int type_int = TYPE_ID_MAP.get(type_id, 0)
+
+    if type_int == 0:
+        raise ValueError(f"Unknown type_id: {type_id}")
+
+    cdef ColumnStatisticsResult result = test_compute_column_statistics_cpp(
+        table_ptr, column_index, type_int
+    )
+
+    return {
+        "has_stats": result.has_stats,
+        "can_have_null": result.can_have_null,
+        "can_have_valid": result.can_have_valid,
+        "min_int": result.min_int,
+        "max_int": result.max_int,
+        "min_double": result.min_double,
+        "max_double": result.max_double,
+        "min_str": result.min_str.decode("utf-8") if result.min_str[0] != 0 else "",
+        "max_str": result.max_str.decode("utf-8") if result.max_str[0] != 0 else "",
+        "distinct_count": result.distinct_count,
+        "max_string_length": result.max_string_len,
+    }

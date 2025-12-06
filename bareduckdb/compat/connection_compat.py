@@ -8,11 +8,9 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from typing import Any, Literal, Optional, Sequence
+    from typing import Any, Literal, Mapping, Optional, Sequence
 
-    import pyarrow as pa
 
-from .. import pyarrow_available
 from ..core.connection_api import ConnectionAPI
 
 logger = logging.getLogger(__name__)
@@ -71,49 +69,15 @@ class Connection(ConnectionAPI):
         """DB-API 2.0"""
         return self._last_result_get().rowcount
 
-    def _convert_to_arrow_table(self, materialized: bool, data: Any) -> pa.Table | None:
-        if not pyarrow_available():
-            return data
-        else:
-            if type(data).__name__ == "DataFrame" and type(data).__module__.startswith("pandas"):
-                return pa.Table.from_pandas(data)
-            elif type(data).__name__ == "DataFrame" and type(data).__module__.startswith("polars"):
-                # Uses __arrow_c_stream__, no pyarrow dependency in polars
-                table = pa.table(data)
-                table = self._cast_string_view_to_string(table)
-                return table
-            elif type(data).__name__ == "RecordBatchReader" and materialized:
-                return pa.Table.from_batches(data, schema=data.schema)
-            elif type(data).__name__ == "Dataset" and type(data).__module__.startswith("pyarrow"):
-                # Two options here: use a reader *or* data.to_table()
-                return data.to_scanner().to_reader()
-
-        return data
-
-    def _cast_string_view_to_string(self, table: pa.Table) -> pa.Table:
-        """
-        Cast string_view columns to string (utf8) for Arrow C++ compatibility, for pushdown
-        """
-        if not pyarrow_available():
-            return table
-
-        # Check if any columns are string_view
-        needs_cast = False
-        new_fields = []
-        for field in table.schema:  # type: ignore
-            if field.type == pa.string_view():  # type: ignore
-                needs_cast = True
-                new_fields.append(pa.field(field.name, pa.string()))  # type: ignore
-            else:
-                new_fields.append(field)  # type: ignore
-
-        if not needs_cast:
-            return table
-
-        # Cast to new schema
-        new_schema = pa.schema(new_fields)  # type: ignore
-        logger.debug("[_cast_string_view_to_string] Casting string_view columns to string for Arrow C++ compatibility")
-        return table.cast(new_schema)
+    def execute(
+        self,
+        query: str,
+        parameters: Sequence[Any] | Mapping[str, Any] | None = None,
+        *,
+        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] | None = None,
+        data: Mapping[str, Any] | None = None,
+    ) -> Connection:
+        return super().execute(query=query, parameters=parameters, output_type=output_type, data=data)
 
     def register(
         self,

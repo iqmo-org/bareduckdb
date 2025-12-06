@@ -31,8 +31,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include <Python.h>
 
-// Forward decls
-extern "C" void register_arrow_scan_cardinality(duckdb::Connection* cpp_conn);
+// Forward decl for arrow_scan_dataset (defined in arrow_cardinality.hpp, only available with pyarrow)
 extern "C" void register_arrow_scan_dataset(duckdb::Connection* cpp_conn);
 
 namespace bareduckdb {
@@ -451,9 +450,6 @@ extern "C" void* create_arrow_array_stream_from_arrow_result(
         stream->get_next = ArrowArrayStreamWrapper::GetNext;
         stream->release = ArrowArrayStreamWrapper::Release;
         stream->get_last_error = ArrowArrayStreamWrapper::GetLastError;
-
-        fprintf(stderr, "[DEBUG] ArrowArrayStreamWrapper created: wrapper=%p, creating_query_number=%llu\n",
-                static_cast<void*>(wrapper), (unsigned long long)wrapper->creating_query_number);
 
         return stream;
     } catch (...) {
@@ -929,14 +925,7 @@ extern "C" void register_capsule_stream(
             children.push_back(duckdb::make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&CapsuleArrowStreamFactory::Produce))));
             children.push_back(duckdb::make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&CapsuleArrowStreamFactory::GetSchema))));
 
-            // Auto-select scan function based on cardinality
-            if (cardinality > 0) {
-                // Add GetCardinality pointer as 4th argument for arrow_scan_cardinality
-                children.push_back(duckdb::make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&CapsuleArrowStreamFactory::GetCardinality))));
-                scan_function = "arrow_scan_cardinality";
-            } else {
-                scan_function = "arrow_scan_dumb";
-            }
+            scan_function = "arrow_scan_dumb";
 
             factory_to_release = capsule_factory.release();
         }
@@ -945,7 +934,6 @@ extern "C" void register_capsule_stream(
 
         auto external_dependency = duckdb::make_shared_ptr<ExternalDependency>();
 
-        // Add factory to external dependency for automatic cleanup when view is dropped
         if (factory_to_release) {
             auto factory_dep = duckdb::make_shared_ptr<FactoryDependencyItem>(factory_to_release);
             external_dependency->AddDependency("arrow_factory", factory_dep);
@@ -1047,31 +1035,6 @@ extern "C" duckdb::QueryResult* execute_prepared_statement(
     }
 }
 
-// Initialize custom table functions
-extern "C" void initialize_custom_table_functions(duckdb_connection c_conn) {
-    try {
-        auto conn = get_cpp_connection(c_conn);
-        if (!conn) {
-            throw std::runtime_error("Invalid connection");
-        }
-
-        // Always register arrow_scan_cardinality for better Top-N optimization
-        try {
-            register_arrow_scan_cardinality(conn);
-        } catch (const std::exception &e) {
-            std::string error_msg(e.what());
-            if (error_msg.find("already exists") == std::string::npos &&
-                error_msg.find("duplicate") == std::string::npos) {
-                throw;
-            }
-        }
-    } catch (const std::exception &e) {
-        PyErr_SetString(PyExc_RuntimeError, e.what());
-    } catch (...) {
-        PyErr_SetString(PyExc_RuntimeError, "Unknown error in initialize_custom_table_functions");
-    }
-}
-
 inline duckdb::LogicalType* create_sqlnull_logical_type() {
     return new duckdb::LogicalType(duckdb::LogicalTypeId::SQLNULL);
 }
@@ -1081,5 +1044,3 @@ inline void destroy_logical_type(duckdb::LogicalType* type) {
 }
 
 } // namespace bareduckdb
-
-#include "arrow_cardinality.hpp"

@@ -220,7 +220,7 @@ All types convert through Arrow:
 
 ```bash
 # Clone with submodules (sparse checkout is automatic)
-git clone --recurse-submodules https://github.com/paultiq/bareduckdb.git
+git clone --recurse-submodules https://github.com/iqmo-org/bareduckdb.git
 cd bareduckdb
 
 # Install development dependencies

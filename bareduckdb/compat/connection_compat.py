@@ -12,7 +12,6 @@ if TYPE_CHECKING:
 
 
 from ..core.connection_api import ConnectionAPI
-from .result_compat import Result
 
 logger = logging.getLogger(__name__)
 

@@ -15,6 +15,10 @@ from .registration import TableRegistration
 if TYPE_CHECKING:
     from typing import Any, Literal, Mapping, Optional, Sequence  # type: ignore[attr-defined]
 
+    import pyarrow as pa
+
+    from . import PyArrowCapsule
+
 logger = logging.getLogger(__name__)
 
 
@@ -149,7 +153,7 @@ class ConnectionBase:
         parameters: Sequence[Any] | Mapping[str, Any] | None = None,
         data: Mapping[str, Any] | None = None,
         batch_size: int = 1_000_000,
-    ) -> Any:
+    ) -> pa.Table | pa.RecordBatchReader | PyArrowCapsule:
         """
         Core execution method - executes query and returns result in requested format.
 

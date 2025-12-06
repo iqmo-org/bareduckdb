@@ -17,12 +17,13 @@ import threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from types import CapsuleType  # type: ignore[attr-defined]
     from typing import Any
 
     import pandas as pd
     import polars as pl
     import pyarrow as pa
+
+    from ..core import PyArrowCapsule
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +35,12 @@ class Result:
 
     # Instance attributes
     _table: pa.Table | None  # cached materialized table: None until needed
-    _reader: CapsuleType | pa.RecordBatchReader | None
+    _reader: PyArrowCapsule | pa.RecordBatchReader | None
     _offset: int  # fetch offset
     _read: bool
     _result_lock: threading.Lock
 
-    def __init__(self, result_obj: pa.Table | CapsuleType | pa.RecordBatchReader):
+    def __init__(self, result_obj: pa.Table | PyArrowCapsule | pa.RecordBatchReader):
         """
         Create result object (does NOT execute query by default).
 

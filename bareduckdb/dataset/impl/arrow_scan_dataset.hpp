@@ -612,6 +612,7 @@ namespace bareduckdb
                     {
                         filters_skipped_string_view++;
                         continue;
+                    }
 
                     try
                     {

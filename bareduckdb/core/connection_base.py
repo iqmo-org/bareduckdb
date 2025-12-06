@@ -70,8 +70,8 @@ class ConnectionBase:
 
         self._registrations: dict[str, TableRegistration] = {}
         self._registered_objects: dict[str, Any] = {}
-        self._database_path: str | None = database  # Store for cursor() method
-        self._lock: threading.Lock = threading.Lock()  # Thread safety lock for _impl operations
+        self._database_path: str | None = database
+        self._registration_lock: threading.RLock = threading.RLock()
         self.arrow_table_collector = arrow_table_collector
         self._enable_arrow_dataset = enable_arrow_dataset
 
@@ -82,11 +82,11 @@ class ConnectionBase:
             read_only,
         )
 
-    def _register_arrow(self, name: str, data: Any) -> None:
+    def _register_arrow(self, name: str, data: Any, _caller_holds_lock: bool = False) -> None:
         if self._enable_arrow_dataset:
             from ..dataset import register_table
 
-            is_registered = register_table(self, name, data)
+            is_registered = register_table(self, name, data, _caller_holds_lock=_caller_holds_lock)
             if is_registered:
                 logger.debug("Registered table '%s' via dataset backend", name)
                 return
@@ -176,13 +176,14 @@ class ConnectionBase:
         )
 
         _data_to_unregister: list[str] = []
-        if data:
-            for name, data_obj in data.items():
-                self._register_arrow(name, data_obj)
-                _data_to_unregister.append(name)
 
         try:
-            with self._lock:  # connections aren't thread-safe
+            with self._lock:
+                if data:
+                    for name, data_obj in data.items():
+                        self._register_arrow(name, data_obj, _caller_holds_lock=True)
+                        _data_to_unregister.append(name)
+
                 t_exec_start = time.perf_counter()
                 base_result = self._impl.call_impl(query=query, mode=mode, batch_size=batch_size, parameters=parameters)
                 t_exec_end = time.perf_counter()
@@ -216,31 +217,33 @@ class ConnectionBase:
             name: Table name to unregister
         """
         logger.debug("Unregistering table: %s", name)
-        with self._lock:
-            self._impl.unregister(name)
+        with self._registration_lock:
+            with self._lock:
+                self._impl.unregister(name)
 
-            # Clean up dataset registrations
+            # Clean up dataset registrations (outside query lock)
             if name in self._registrations:
                 registration = self._registrations.pop(name)
                 registration.close()
 
-            # Clean up capsule registratinos
+            # Clean up capsule registrations
             if name in self._registered_objects:
                 del self._registered_objects[name]
 
     def close(self) -> None:
         logger.debug("Closing connection")
-        with self._lock:
-            for name, registration in list(self._registrations.items()):
-                try:
-                    registration.close()
-                except Exception as e:
-                    logger.warning(f"Error closing registration for {name}: {e}")
-            self._registrations.clear()
+        with self._registration_lock:
+            with self._lock:
+                for name, registration in list(self._registrations.items()):
+                    try:
+                        registration.close()
+                    except Exception as e:
+                        logger.warning(f"Error closing registration for {name}: {e}")
+                self._registrations.clear()
 
-            self._registered_objects.clear()
+                self._registered_objects.clear()
 
-            self._impl.close()
+                self._impl.close()
 
     def __enter__(self) -> ConnectionBase:
         return self

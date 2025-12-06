@@ -8,6 +8,7 @@ associated with a registered table, ensuring proper cleanup and preventing resou
 from __future__ import annotations
 
 import logging
+import threading
 import weakref
 from typing import TYPE_CHECKING, Any
 
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class TableRegistration:
-    __slots__ = ("name", "_factory_ptr", "_data", "_connection_ref", "_closed")
+    __slots__ = ("name", "_factory_ptr", "_data", "_connection_ref", "_closed", "_close_lock")
 
     def __init__(self, name: str, factory_ptr: int, data: Any, connection: ConnectionBase):
         self.name = name
@@ -26,6 +27,7 @@ class TableRegistration:
         self._data = data
         self._connection_ref = weakref.ref(connection)
         self._closed = False
+        self._close_lock = threading.Lock()  # Ensure idempotent close()
 
     @property
     def factory_ptr(self) -> int:
@@ -40,23 +42,24 @@ class TableRegistration:
         return self._closed
 
     def close(self) -> None:
-        if self._closed:
-            return
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
 
-        if self._factory_ptr:
-            connection = self._connection_ref()
-            if connection:
-                try:
-                    from bareduckdb.dataset import backend
+            if self._factory_ptr:
+                connection = self._connection_ref()
+                if connection:
+                    try:
+                        from bareduckdb.dataset import backend
 
-                    backend.delete_factory(connection, self._factory_ptr)
-                except Exception as e:
-                    logger.warning("Error deleting factory for %s: %s", self.name, e)
+                        backend.delete_factory(connection, self._factory_ptr)
+                    except Exception as e:
+                        logger.warning("Error deleting factory for %s: %s", self.name, e)
 
-            self._factory_ptr = 0
+                self._factory_ptr = 0
 
-        self._data = None
-        self._closed = True
+            self._data = None
 
     def __del__(self):
         if not self._closed:

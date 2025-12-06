@@ -18,6 +18,7 @@ def register_table(
     data: object,
     *,
     replace: bool = True,
+    _caller_holds_lock: bool = False,
 ) -> Any:
     """
     Register a PyArrow table, Polars DataFrame, or Pandas DataFrame.
@@ -67,14 +68,29 @@ def register_table(
 
     conn_impl = _get_connection_impl(connection_base)
 
-    old_registration = connection_base._registrations.get(name)
-    factory_ptr = register_table_pyx(conn_impl, name, converted_data, replace=replace, statistics=statistics)
+    # Acquire locks based on caller context
+    with connection_base._registration_lock:
+        if _caller_holds_lock:
+            # Caller (e.g., _call) already holds _lock, just do the registration
+            old_registration = connection_base._registrations.get(name)
+            factory_ptr = register_table_pyx(conn_impl, name, converted_data, replace=replace, statistics=statistics)
 
-    registration = TableRegistration(name, factory_ptr, converted_data, connection_base)
+            registration = TableRegistration(name, factory_ptr, converted_data, connection_base)
+            connection_base._registrations[name] = registration
 
-    connection_base._registrations[name] = registration
-    if old_registration:
-        old_registration.close()
+            if old_registration:
+                old_registration.close()
+        else:
+            # Standalone call - need to hold _lock during ENTIRE operation for atomicity
+            with connection_base._lock:
+                old_registration = connection_base._registrations.get(name)
+                factory_ptr = register_table_pyx(conn_impl, name, converted_data, replace=replace, statistics=statistics)
+
+                registration = TableRegistration(name, factory_ptr, converted_data, connection_base)
+                connection_base._registrations[name] = registration
+
+                if old_registration:
+                    old_registration.close()
 
     return True
 

@@ -3,10 +3,17 @@ import pytest
 import pyarrow as pa
 from bareduckdb import Connection
 
-
 class TestRegistrationReplacement:
 
-    def test_simple_replacement(self, unique_table_name, conn):
+    @pytest.fixture(autouse=True)
+    def setup(self, make_connection, thread_index, iteration_index):
+        self.make_connection = make_connection
+        self.thread_index = thread_index
+        self.iteration_index = iteration_index
+
+    def test_simple_replacement(self, unique_table_name):
+
+        conn = self.make_connection(self.thread_index, self.iteration_index)
 
         table1 = pa.table({
             'id': [1, 2, 3],
@@ -31,7 +38,8 @@ class TestRegistrationReplacement:
         assert result[0] == (10, 'x'), f"Expected (10, 'x'), got {result[0]}"
         assert result[1] == (20, 'y'), f"Expected (20, 'y'), got {result[1]}"
 
-    def test_replacement_with_different_schema(self, unique_table_name, conn):
+    def test_replacement_with_different_schema(self, unique_table_name):
+        conn = self.make_connection(self.thread_index, self.iteration_index)
 
         table1 = pa.table({
             'id': [1, 2],
@@ -55,7 +63,8 @@ class TestRegistrationReplacement:
         assert result[1] == (200, 30)
         assert result[2] == (300, 35)
 
-    def test_multiple_replacements(self, unique_table_name, conn):
+    def test_multiple_replacements(self, unique_table_name):
+        conn = self.make_connection(self.thread_index, self.iteration_index)
 
         table1 = pa.table({'value': [1, 2, 3]})
         conn.register(unique_table_name, table1)
@@ -75,7 +84,8 @@ class TestRegistrationReplacement:
         result = conn.sql(f"SELECT MIN(value), MAX(value) FROM {unique_table_name}").fetchone()
         assert result == (100, 400), f"Expected (100, 400) from third table, got {result}"
 
-    def test_replacement_preserves_other_tables(self, unique_table_name, conn):
+    def test_replacement_preserves_other_tables(self, unique_table_name):
+        conn = self.make_connection(self.thread_index, self.iteration_index)
 
         # Use the unique table name for table_a, generate another unique name for table_b
         table_name_a = unique_table_name
@@ -103,7 +113,8 @@ class TestRegistrationReplacement:
         assert result_b[0] == (10, 'B1'), f"Expected table_b data unchanged, got {result_b[0]}"
         assert result_b[1] == (20, 'B2')
 
-    def test_replacement_with_uuid_data(self, unique_table_name, conn):
+    def test_replacement_with_uuid_data(self, unique_table_name):
+        conn = self.make_connection(self.thread_index, self.iteration_index)
 
         table1 = pa.table({
             'uuid': ['00000000-0000-0000-0000-000000000000', 'ffffffff-ffff-ffff-ffff-ffffffffffff']
@@ -129,7 +140,8 @@ class TestRegistrationReplacement:
         assert 'ffffffff-ffff-ffff-ffff-ffffffffffff' not in str(result), \
             f"Got old UUID data (ending in ...fff) instead of new data: {result}"
 
-    def test_replacement_with_filter(self, unique_table_name, conn):
+    def test_replacement_with_filter(self, unique_table_name):
+        conn = self.make_connection(self.thread_index, self.iteration_index)
 
         table1 = pa.table({
             'id': [1, 2, 3, 4],

@@ -18,7 +18,6 @@ def register_table(
     data: object,
     *,
     replace: bool = True,
-    _caller_holds_lock: bool = False,
 ) -> Any:
     """
     Register a PyArrow table, Polars DataFrame, or Pandas DataFrame.
@@ -68,30 +67,18 @@ def register_table(
 
     conn_impl = _get_connection_impl(connection_base)
 
-    # Acquire locks based on caller context
-    with connection_base._registration_lock:
-        if _caller_holds_lock:
-            # Caller (e.g., _call) already holds _lock, just do the registration
-            old_registration = connection_base._registrations.get(name)
-            factory_ptr = register_table_pyx(conn_impl, name, converted_data, replace=replace, statistics=statistics)
+    with connection_base._DUCKDB_INIT_LOCK:
+        old_registration = connection_base._registrations.get(name)
 
-            registration = TableRegistration(name, factory_ptr, converted_data, connection_base)
-            connection_base._registrations[name] = registration
+        # Create new factory - DuckDB's CreateView with replace=True handles view replacement
+        factory_ptr = register_table_pyx(conn_impl, name, converted_data, replace=replace, statistics=statistics)
 
-            if old_registration:
-                old_registration.close()
-        else:
-            # Standalone call - need to hold _lock during ENTIRE operation for atomicity
-            with connection_base._lock:
-                old_registration = connection_base._registrations.get(name)
-                factory_ptr = register_table_pyx(conn_impl, name, converted_data, replace=replace, statistics=statistics)
+        registration = TableRegistration(name, factory_ptr, converted_data, connection_base)
+        connection_base._registrations[name] = registration
 
-                registration = TableRegistration(name, factory_ptr, converted_data, connection_base)
-                connection_base._registrations[name] = registration
-
-                if old_registration:
-                    old_registration.close()
-
+        if old_registration:
+            old_registration.close()
+    
     return True
 
 

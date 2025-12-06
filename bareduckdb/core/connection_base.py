@@ -31,7 +31,7 @@ class ConnectionBase:
     """
 
     # Class variables
-    _DUCKDB_INIT_LOCK = threading.Lock()  # Global lock to serialize unsafe operations
+    _DUCKDB_INIT_LOCK: threading.Lock = threading.Lock()  # Global lock to serialize unsafe operations
 
     _MODE_ARROW = "arrow"
     _MODE_ARROW_CAPSULE = "arrow_capsule"
@@ -39,10 +39,10 @@ class ConnectionBase:
 
     # Instance attributes
     _impl: Any
+    _lock: threading.Lock
     _registrations: dict[str, TableRegistration]
     _registered_objects: dict[str, Any]
     _database_path: str | None
-    _lock: threading.Lock
     _arrow_table_collector: Literal["arrow", "stream"]
     _enable_arrow_dataset: bool
 
@@ -74,10 +74,10 @@ class ConnectionBase:
                 read_only=read_only,
             )  # type: ignore[assignment]  # Cython module
 
+        self._lock = threading.Lock()
         self._registrations: dict[str, TableRegistration] = {}
         self._registered_objects: dict[str, Any] = {}
         self._database_path: str | None = database
-        self._registration_lock: threading.RLock = threading.RLock()
         self.arrow_table_collector = arrow_table_collector
         self._enable_arrow_dataset = enable_arrow_dataset
 
@@ -90,11 +90,11 @@ class ConnectionBase:
             read_only,
         )
 
-    def _register_arrow(self, name: str, data: Any, _caller_holds_lock: bool = False) -> None:
+    def _register_arrow(self, name: str, data: Any) -> None:
         if self._enable_arrow_dataset:
             from ..dataset import register_table
 
-            is_registered = register_table(self, name, data, _caller_holds_lock=_caller_holds_lock)
+            is_registered = register_table(self, name, data)
             if is_registered:
                 logger.debug("Registered table '%s' via dataset backend", name)
                 return
@@ -167,29 +167,28 @@ class ConnectionBase:
         Returns:
             Result in requested format (pa.Table, pa.RecordBatchReader, or capsule)
         """
+        with self._lock:
+            if output_type == "arrow_table":
+                mode = ConnectionBase._MODE_ARROW if self.arrow_table_collector == "arrow" else ConnectionBase._MODE_STREAM
+            elif output_type == "arrow_reader":
+                mode = ConnectionBase._MODE_STREAM
+            elif output_type in ("arrow_capsule", "pl"):
+                mode = ConnectionBase._MODE_ARROW_CAPSULE
+            else:
+                raise ValueError(f"Invalid output_type: {output_type}")
 
-        if output_type == "arrow_table":
-            mode = ConnectionBase._MODE_ARROW if self.arrow_table_collector == "arrow" else ConnectionBase._MODE_STREAM
-        elif output_type == "arrow_reader":
-            mode = ConnectionBase._MODE_STREAM
-        elif output_type in ("arrow_capsule", "pl"):
-            mode = ConnectionBase._MODE_ARROW_CAPSULE
-        else:
-            raise ValueError(f"Invalid output_type: {output_type}")
+            logger.debug(
+                "Executing query with output_type=%s, mode=%s",
+                output_type,
+                mode,
+            )
 
-        logger.debug(
-            "Executing query with output_type=%s, mode=%s",
-            output_type,
-            mode,
-        )
+            _data_to_unregister: list[str] = []
 
-        _data_to_unregister: list[str] = []
-
-        try:
-            with self._lock:
+            try:
                 if data:
                     for name, data_obj in data.items():
-                        self._register_arrow(name, data_obj, _caller_holds_lock=True)
+                        self._register_arrow(name, data_obj)
                         _data_to_unregister.append(name)
 
                 t_exec_start = time.perf_counter()
@@ -213,9 +212,9 @@ class ConnectionBase:
                     return base_result.__arrow_c_stream__(None)
                 else:
                     raise ValueError(f"Invalid output_type: {output_type}")
-        finally:
-            for name in _data_to_unregister:
-                self.unregister(name)
+            finally:
+                for name in _data_to_unregister:
+                    self.unregister(name)
 
     def unregister(self, name: str) -> None:
         """
@@ -225,9 +224,8 @@ class ConnectionBase:
             name: Table name to unregister
         """
         logger.debug("Unregistering table: %s", name)
-        with self._registration_lock:
-            with self._lock:
-                self._impl.unregister(name)
+        with self._DUCKDB_INIT_LOCK:
+            self._impl.unregister(name)
 
             # Clean up dataset registrations (outside query lock)
             if name in self._registrations:
@@ -240,18 +238,17 @@ class ConnectionBase:
 
     def close(self) -> None:
         logger.debug("Closing connection")
-        with self._registration_lock:
-            with self._lock:
-                for name, registration in list(self._registrations.items()):
-                    try:
-                        registration.close()
-                    except Exception as e:
-                        logger.warning(f"Error closing registration for {name}: {e}")
-                self._registrations.clear()
+        with self._DUCKDB_INIT_LOCK:
+            for name, registration in list(self._registrations.items()):
+                try:
+                    registration.close()
+                except Exception as e:
+                    logger.warning(f"Error closing registration for {name}: {e}")
+            self._registrations.clear()
 
-                self._registered_objects.clear()
+            self._registered_objects.clear()
 
-                self._impl.close()
+            self._impl.close()
 
     def __enter__(self) -> ConnectionBase:
         return self

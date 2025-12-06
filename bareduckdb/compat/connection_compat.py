@@ -77,24 +77,6 @@ class Connection(ConnectionAPI):
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] | None = None,
         data: Mapping[str, Any] | None = None,
     ) -> Connection:
-        """
-        Execute SQL with DuckDB-specific compatibility handling.
-
-        """
-        query_stripped = query.strip().upper()
-        if query_stripped.startswith("SET "):
-            # Filter unsupported SET parameters for DuckDB compatibility
-            unsupported_params = ["PYTHON_ENABLE_REPLACEMENTS"]
-
-            for param in unsupported_params:
-                if param in query_stripped:
-                    logger.warning("Ignoring unsupported configuration parameter: %s", query.strip())
-                    import pyarrow as pa
-
-                    result = Result(pa.table({}))
-                    self._last_result = result
-                    return self
-
         return super().execute(query=query, parameters=parameters, output_type=output_type, data=data)
 
     def register(

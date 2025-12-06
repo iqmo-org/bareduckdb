@@ -168,7 +168,6 @@ unique_ptr<FunctionData> ArrowScanDatasetBind(ClientContext &context, TableFunct
 		throw InvalidInputException("Provided table/dataframe must have at least one column");
 	}
 
-	// Eagerly extract and cache statistics during bind (GIL is held, safe to call Python)
 	if (input.inputs.size() >= 5 && !input.inputs[4].IsNull()) {
 		auto get_statistics_fn =
 			(unique_ptr<BaseStatistics> (*)(uintptr_t, const std::string&, const LogicalType&))

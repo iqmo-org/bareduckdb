@@ -50,6 +50,7 @@ class ConnectionBase:
         *,
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
         enable_arrow_dataset: bool = False,
+        init_sql: str | None = None,
     ) -> None:
         """
         Create a minimal DuckDB connection.
@@ -59,6 +60,7 @@ class ConnectionBase:
             config: Dictionary of configuration options (e.g., {'threads': '4', 'memory_limit': '1GB'})
             read_only: Whether to open database in read-only mode
             arrow_table_collector: Arrow collection mode ("arrow" or "stream")
+            init_sql: SQL to run when creating the connection
         """
 
         with ConnectionBase._DUCKDB_INIT_LOCK:  # duckdb connection init is not thread-safe
@@ -75,6 +77,8 @@ class ConnectionBase:
         self.arrow_table_collector = arrow_table_collector
         self._enable_arrow_dataset = enable_arrow_dataset
 
+        if init_sql:
+            self._call(init_sql)
         logger.debug(
             "Created connection: database=%s, config=%s, read_only=%s",
             database,

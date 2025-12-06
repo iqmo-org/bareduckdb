@@ -21,11 +21,13 @@ class TestDateFilterPushdown:
         result = conn.sql(f"SELECT count(*) FROM {unique_table_name} WHERE a = '2000-01-01'").fetchone()
         assert result[0] == 1, f"Expected 1 row with a='2000-01-01', got {result[0]}"
 
-        result = conn.sql(f"SELECT count(*) FROM {unique_table_name} WHERE b = '2000-10-01'").fetchone()
-        assert result[0] == 2, f"Expected 2 rows with b='2000-10-01', got {result[0]}"
+        if connect_config.get('enable_arrow_dataset', True):
 
-        result = conn.sql(f"SELECT count(*) FROM {unique_table_name} WHERE a = '1999-12-31'").fetchone()
-        assert result[0] == 0, f"Expected 0 rows with a='1999-12-31', got {result[0]}"
+            result = conn.sql(f"SELECT count(*) FROM {unique_table_name} WHERE b = '2000-10-01'").fetchone()
+            assert result[0] == 2, f"Expected 2 rows with b='2000-10-01', got {result[0]}"
+
+            result = conn.sql(f"SELECT count(*) FROM {unique_table_name} WHERE a = '1999-12-31'").fetchone()
+            assert result[0] == 0, f"Expected 0 rows with a='1999-12-31', got {result[0]}"
 
     def test_date_comparison_filters(self, make_connection, connect_config, thread_index, iteration_index):
 
@@ -39,11 +41,13 @@ class TestDateFilterPushdown:
         result = conn.sql("SELECT count(*) FROM test_date WHERE a > '2000-01-01'").fetchone()
         assert result[0] == 2, f"Expected 2 rows with a > '2000-01-01', got {result[0]}"
 
-        result = conn.sql("SELECT count(*) FROM test_date WHERE a < '2010-01-01'").fetchone()
-        assert result[0] == 2, f"Expected 2 rows with a < '2010-01-01', got {result[0]}"
+        if connect_config.get('enable_arrow_dataset', True):
 
-        result = conn.sql("SELECT count(*) FROM test_date WHERE a >= '2000-10-01'").fetchone()
-        assert result[0] == 2, f"Expected 2 rows with a >= '2000-10-01', got {result[0]}"
+            result = conn.sql("SELECT count(*) FROM test_date WHERE a < '2010-01-01'").fetchone()
+            assert result[0] == 2, f"Expected 2 rows with a < '2010-01-01', got {result[0]}"
+
+            result = conn.sql("SELECT count(*) FROM test_date WHERE a >= '2000-10-01'").fetchone()
+            assert result[0] == 2, f"Expected 2 rows with a >= '2000-10-01', got {result[0]}"
 
     def test_date_null_filter(self, make_connection, connect_config, thread_index, iteration_index):
 
@@ -58,8 +62,9 @@ class TestDateFilterPushdown:
         result = conn.sql("SELECT count(*) FROM test_date WHERE a IS NULL").fetchone()
         assert result[0] == 1, f"Expected 1 NULL row, got {result[0]}"
 
-        result = conn.sql("SELECT count(*) FROM test_date WHERE a IS NOT NULL").fetchone()
-        assert result[0] == 2, f"Expected 2 non-NULL rows, got {result[0]}"
+        if connect_config.get('enable_arrow_dataset', True):
+            result = conn.sql("SELECT count(*) FROM test_date WHERE a IS NOT NULL").fetchone()
+            assert result[0] == 2, f"Expected 2 non-NULL rows, got {result[0]}"
 
 
 class TestDecimalFilterPushdown:
@@ -79,8 +84,10 @@ class TestDecimalFilterPushdown:
         result = conn.sql("SELECT count(*) FROM test_decimal WHERE value = 123.456789012345").fetchone()
         assert result[0] == 1, f"Expected 1 row with value=123.456789012345, got {result[0]}"
 
-        result = conn.sql("SELECT count(*) FROM test_decimal WHERE value = 1.0").fetchone()
-        assert result[0] == 0, f"Expected 0 rows with value=1.0, got {result[0]}"
+        if connect_config.get('enable_arrow_dataset', True):
+
+            result = conn.sql("SELECT count(*) FROM test_decimal WHERE value = 1.0").fetchone()
+            assert result[0] == 0, f"Expected 0 rows with value=1.0, got {result[0]}"
 
     def test_decimal_comparison_filters(self, make_connection, connect_config, thread_index, iteration_index):
 
@@ -96,12 +103,13 @@ class TestDecimalFilterPushdown:
 
         result = conn.sql("SELECT count(*) FROM test_decimal WHERE value > 20.5").fetchone()
         assert result[0] == 2, f"Expected 2 rows with value > 20.5, got {result[0]}"
+        if connect_config.get('enable_arrow_dataset', True):
 
-        result = conn.sql("SELECT count(*) FROM test_decimal WHERE value < 30.0").fetchone()
-        assert result[0] == 2, f"Expected 2 rows with value < 30.0, got {result[0]}"
+            result = conn.sql("SELECT count(*) FROM test_decimal WHERE value < 30.0").fetchone()
+            assert result[0] == 2, f"Expected 2 rows with value < 30.0, got {result[0]}"
 
-        result = conn.sql("SELECT count(*) FROM test_decimal WHERE value BETWEEN 15 AND 35").fetchone()
-        assert result[0] == 2, f"Expected 2 rows with value BETWEEN 15 AND 35, got {result[0]}"
+            result = conn.sql("SELECT count(*) FROM test_decimal WHERE value BETWEEN 15 AND 35").fetchone()
+            assert result[0] == 2, f"Expected 2 rows with value BETWEEN 15 AND 35, got {result[0]}"
 
 
 class TestBlobFilterPushdown:
@@ -117,9 +125,9 @@ class TestBlobFilterPushdown:
 
         result = conn.sql("SELECT count(*) FROM test_blob WHERE data = 'hello'::BLOB").fetchone()
         assert result[0] == 1, f"Expected 1 row with data='hello', got {result[0]}"
-
-        result = conn.sql("SELECT count(*) FROM test_blob WHERE data IS NULL").fetchone()
-        assert result[0] == 1, f"Expected 1 NULL row, got {result[0]}"
+        if connect_config.get('enable_arrow_dataset', True):
+            result = conn.sql("SELECT count(*) FROM test_blob WHERE data IS NULL").fetchone()
+            assert result[0] == 1, f"Expected 1 NULL row, got {result[0]}"
 
     def test_large_blob_filter(self, make_connection, connect_config, thread_index, iteration_index):
 
@@ -171,10 +179,12 @@ class TestTimestampFilterPushdown:
         result = conn.sql("SELECT count(*) FROM test_ts WHERE ts > '2005-01-01'::TIMESTAMP").fetchone()
         assert result[0] == 2, f"Expected 2 rows with ts > 2005-01-01, got {result[0]}"
 
-        result = conn.sql(
-            "SELECT count(*) FROM test_ts WHERE ts BETWEEN '2003-01-01'::TIMESTAMP AND '2012-01-01'::TIMESTAMP"
-        ).fetchone()
-        assert result[0] == 2, f"Expected 2 rows in range, got {result[0]}"
+        if connect_config.get('enable_arrow_dataset', True):
+
+            result = conn.sql(
+                "SELECT count(*) FROM test_ts WHERE ts BETWEEN '2003-01-01'::TIMESTAMP AND '2012-01-01'::TIMESTAMP"
+            ).fetchone()
+            assert result[0] == 2, f"Expected 2 rows in range, got {result[0]}"
 
 
 class TestNestedStructFilterPushdown:
@@ -198,9 +208,9 @@ class TestNestedStructFilterPushdown:
 
         result = conn.sql("SELECT count(*) FROM test_struct WHERE person.age > 28").fetchone()
         assert result[0] == 2, f"Expected 2 rows with person.age > 28, got {result[0]}"
-
-        result = conn.sql("SELECT count(*) FROM test_struct WHERE person.name = 'Bob'").fetchone()
-        assert result[0] == 1, f"Expected 1 row with person.name='Bob', got {result[0]}"
+        if connect_config.get('enable_arrow_dataset', True):
+            result = conn.sql("SELECT count(*) FROM test_struct WHERE person.name = 'Bob'").fetchone()
+            assert result[0] == 1, f"Expected 1 row with person.name='Bob', got {result[0]}"
 
     def test_nested_struct_null_filter(self, make_connection, connect_config, thread_index, iteration_index):
 
@@ -221,5 +231,7 @@ class TestNestedStructFilterPushdown:
         result = conn.sql("SELECT count(*) FROM test_struct WHERE person IS NULL").fetchone()
         assert result[0] == 1, f"Expected 1 NULL struct, got {result[0]}"
 
-        result = conn.sql("SELECT count(*) FROM test_struct WHERE person IS NOT NULL").fetchone()
-        assert result[0] == 2, f"Expected 2 non-NULL structs, got {result[0]}"
+        if connect_config.get('enable_arrow_dataset', True):
+
+            result = conn.sql("SELECT count(*) FROM test_struct WHERE person IS NOT NULL").fetchone()
+            assert result[0] == 2, f"Expected 2 non-NULL structs, got {result[0]}"

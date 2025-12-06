@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format="[%(name)s] %(levelname)s: %(mess
 logger = logging.getLogger(__name__)
 
 DATA_SOURCES = ["pandas", "pyarrow", "polars"]
-STATS_CONFIGS = [True, False]  # Run with and without statistics
+STATS_CONFIGS = [True, False]
 FILTER_FILE = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] not in ["--help", "-h"] else None
 
 
@@ -35,39 +35,11 @@ def run_statistics_case(*, test_path, data_source, test_name, stats_enabled):
     return result.stdout, result.stderr
 
 
-def verify_results_match(*, test_path, test_name):
-    import pyarrow as pa
-    import os
-
-    logger.info(f"Verifying result correctness for: {test_name}")
-
-    sys.path.insert(0, str(Path(__file__).parent))
-    from run_statistics_case import run_statistics_test
-
-    results = {}
-    for data_source in DATA_SOURCES:
-        for stats_enabled in STATS_CONFIGS:
-            config_name = f"{data_source}_{'stats' if stats_enabled else 'no_stats'}"
-
-            try:
-                # Run the test and capture result
-                result_table = run_statistics_test(
-                    test_case=test_path,
-                    test_name=test_name,
-                    data_source=data_source,
-                    stats_enabled=stats_enabled
-                )
-                results[config_name] = result_table
-            except Exception as e:
-                logger.error(f"Verification failed for {config_name}: {e}")
-                continue
-
-    # Verify all results match
+def verify_results_match(*, results):
     if len(results) < 2:
         logger.warning("Not enough results to verify")
         return False
 
-    # Compare all results to the first one
     first_key = list(results.keys())[0]
     first_result = results[first_key]
 
@@ -76,42 +48,38 @@ def verify_results_match(*, test_path, test_name):
         if config_name == first_key:
             continue
 
-        # Check schema match
         if result_table.schema != first_result.schema:
-            logger.error(f"❌ Schema mismatch: {first_key} vs {config_name}")
+            logger.error(f"Schema mismatch: {first_key} vs {config_name}")
             logger.error(f"  {first_key}: {first_result.schema}")
             logger.error(f"  {config_name}: {result_table.schema}")
             all_match = False
             continue
 
-        # Check row count
         if len(result_table) != len(first_result):
-            logger.error(f"❌ Row count mismatch: {first_key} ({len(first_result)} rows) vs {config_name} ({len(result_table)} rows)")
+            logger.error(f"Row count mismatch: {first_key} ({len(first_result)} rows) vs {config_name} ({len(result_table)} rows)")
             all_match = False
             continue
 
-        # Check content match (sort both tables to ensure consistent comparison)
         try:
-            # Convert to pandas for easier comparison
             df1 = first_result.to_pandas().sort_values(by=list(first_result.column_names)).reset_index(drop=True)
             df2 = result_table.to_pandas().sort_values(by=list(result_table.column_names)).reset_index(drop=True)
 
             if not df1.equals(df2):
-                logger.error(f"❌ Content mismatch: {first_key} vs {config_name}")
+                logger.error(f"Content mismatch: {first_key} vs {config_name}")
                 all_match = False
                 continue
         except Exception as e:
-            logger.error(f"❌ Failed to compare {first_key} vs {config_name}: {e}")
+            logger.error(f"Failed to compare {first_key} vs {config_name}: {e}")
             all_match = False
             continue
 
-        logger.debug(f"  ✓ {config_name} matches {first_key}")
+        logger.debug(f"  {config_name} matches {first_key}")
 
     if all_match:
-        logger.info(f"✅ All {len(results)} configurations return identical results")
+        logger.info(f"All {len(results)} configurations return identical results")
         return True
     else:
-        logger.error(f"❌ Result verification failed for {test_name}")
+        logger.error(f"Result verification failed")
         return False
 
 
@@ -122,6 +90,12 @@ if __name__ == "__main__":
             for test_file in sorted(cases_path.glob("*.sql")):
                 print(f"  {test_file.name}")
         sys.exit(0)
+
+    data_dir = Path(__file__).parent / "data"
+    fact_path = data_dir / "fact.parquet"
+    if not fact_path.exists():
+        logger.error(f"Benchmark data not found in {data_dir}/")
+        sys.exit(1)
 
     githash = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -141,7 +115,7 @@ if __name__ == "__main__":
 
         cases_path = Path("cases/statistics")
         test_count = 0
-        num_runs = 1  # Run each test 5 times for reliability
+        num_runs = 1
 
         for test_file in sorted(cases_path.glob("*.sql")):
             test_name = test_file.name
@@ -151,8 +125,6 @@ if __name__ == "__main__":
                 continue
 
             logger.info(f"Running: {test_name}")
-
-            verify_results_match(test_path=test_file, test_name=test_name)
 
             for data_source in DATA_SOURCES:
                 for stats_enabled in STATS_CONFIGS:
@@ -172,6 +144,28 @@ if __name__ == "__main__":
                             results_file.flush()
                             test_count += 1
 
+            logger.info(f"Verifying result correctness for: {test_name}")
+            sys.path.insert(0, str(Path(__file__).parent))
+            from run_statistics_case import run_statistics_test
+
+            verification_results = {}
+            for data_source in DATA_SOURCES:
+                for stats_enabled in STATS_CONFIGS:
+                    config_name = f"{data_source}_{'stats' if stats_enabled else 'no_stats'}"
+                    try:
+                        result_table = run_statistics_test(
+                            test_case=test_file,
+                            test_name=test_name,
+                            data_source=data_source,
+                            stats_enabled=stats_enabled
+                        )
+                        verification_results[config_name] = result_table
+                    except Exception as e:
+                        logger.error(f"Verification failed for {config_name}: {e}")
+                        continue
+
+            verify_results_match(results=verification_results)
+
     logger.info(f"Completed {test_count} benchmark runs")
     if FILTER_FILE:
         logger.info(f"Filter: {FILTER_FILE}")
@@ -186,7 +180,7 @@ if __name__ == "__main__":
     import statistics
     results = {}
     with results_path.open("r") as f:
-        lines = f.readlines()[1:] 
+        lines = f.readlines()[1:]
         for line in lines:
             parts = line.strip().split(',')
             if len(parts) >= 11:

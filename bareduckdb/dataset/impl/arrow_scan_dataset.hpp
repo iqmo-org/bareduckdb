@@ -1,7 +1,3 @@
-// PyArrow Table Registration with C++ API
-//
-// This file implements support for registering PyArrow Tables with DuckDB
-// using direct C++ Table pointers w/ no Python calls or GIL acquisition during query execution.
 
 #pragma once
 
@@ -10,7 +6,9 @@
 #include "duckdb.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/function/table/arrow.hpp"
+#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
@@ -37,8 +35,6 @@
 #include "arrow/python/pyarrow.h"  //  unwrap_table()
 
 #include "cpp_helpers.hpp" //  get_cpp_connection, should_enable_cardinality, etc.
-#include "arrow_cardinality.hpp" //  register_arrow_scan_dataset implementation
-#include "statistics_cpp.hpp"   //  Statistics (C structs + C++ helpers)
 
 namespace bareduckdb
 {
@@ -501,24 +497,23 @@ namespace bareduckdb
         };
     }
 
+    static bool statistics_enabled() {
+        static bool enabled = []() {
+            const char* env = std::getenv("BAREDUCKDB_ENABLE_STATISTICS");
+            return env == nullptr || std::string(env) != "0";  // Default: enabled
+        }();
+        return enabled;
+    }
+
     struct TableCppFactory
     {
         std::shared_ptr<arrow::Table> table; // C++ Arrow Table (no Python)
         ArrowSchemaWrapper cached_schema;
         bool schema_cached = false;
-        int64_t row_count;
-        BareTableStatistics* statistics;  // C statistics struct (can be nullptr)
 
-        explicit TableCppFactory(std::shared_ptr<arrow::Table> tbl, int64_t rows, BareTableStatistics* stats = nullptr)
-            : table(std::move(tbl)), row_count(rows), statistics(stats)
+        explicit TableCppFactory(std::shared_ptr<arrow::Table> tbl)
+            : table(std::move(tbl))
         {
-        }
-
-        ~TableCppFactory() {
-            // Free statistics struct if present
-            if (statistics != nullptr) {
-                free_table_statistics(statistics);
-            }
         }
 
         static void GetSchema(uintptr_t factory_ptr, ArrowSchema &schema)
@@ -546,13 +541,184 @@ namespace bareduckdb
         static int64_t GetCardinality(uintptr_t factory_ptr)
         {
             auto *factory = reinterpret_cast<TableCppFactory *>(factory_ptr);
-            return factory->row_count;
+            return factory->table->num_rows();  // Direct from Arrow table
         }
 
-        static unique_ptr<duckdb::BaseStatistics> GetColumnStatistics(
+        // Compute statistics for a column using Arrow compute kernels
+        static unique_ptr<duckdb::BaseStatistics> ComputeColumnStatistics(
             uintptr_t factory_ptr,
-            const std::string &column_name,
-            const duckdb::LogicalType &column_type);
+            idx_t column_index,
+            const LogicalType &column_type)
+        {
+            if (!statistics_enabled()) {
+                return nullptr;
+            }
+
+            auto *factory = reinterpret_cast<TableCppFactory *>(factory_ptr);
+            if (!factory || !factory->table) {
+                return nullptr;
+            }
+
+            auto column = factory->table->column(static_cast<int>(column_index));
+            if (!column) {
+                return nullptr;
+            }
+
+            auto arrow_type = column->type();
+            auto type_id = column_type.id();
+
+            // Skip unsupported types
+            // TODO: Or, consider having explicitly supported types
+            if (arrow_type->id() == arrow::Type::STRING_VIEW ||
+                arrow_type->id() == arrow::Type::BINARY_VIEW ||
+                arrow_type->id() == arrow::Type::STRUCT ||
+                arrow_type->id() == arrow::Type::LIST ||
+                arrow_type->id() == arrow::Type::LARGE_LIST ||
+                arrow_type->id() == arrow::Type::MAP ||
+                arrow_type->id() == arrow::Type::BINARY ||
+                arrow_type->id() == arrow::Type::LARGE_BINARY) {
+                return nullptr;
+            }
+
+            auto minmax_result = arrow::compute::MinMax(column);
+            if (!minmax_result.ok()) {
+                throw std::runtime_error("MinMax failed: " + minmax_result.status().ToString());
+            }
+
+            auto minmax_scalar = minmax_result.ValueOrDie().scalar();
+            auto struct_scalar = std::dynamic_pointer_cast<arrow::StructScalar>(minmax_scalar);
+            if (!struct_scalar || !struct_scalar->is_valid) {
+                return nullptr; 
+            }
+
+            auto min_scalar = struct_scalar->value[0];
+            auto max_scalar = struct_scalar->value[1];
+
+            if (!min_scalar || !min_scalar->is_valid || !max_scalar || !max_scalar->is_valid) {
+                return nullptr;
+            }
+
+            Value min_val, max_val;
+
+            switch (type_id) {
+            case LogicalTypeId::TINYINT:
+                min_val = Value::TINYINT(std::static_pointer_cast<arrow::Int8Scalar>(min_scalar)->value);
+                max_val = Value::TINYINT(std::static_pointer_cast<arrow::Int8Scalar>(max_scalar)->value);
+                break;
+            case LogicalTypeId::SMALLINT:
+                min_val = Value::SMALLINT(std::static_pointer_cast<arrow::Int16Scalar>(min_scalar)->value);
+                max_val = Value::SMALLINT(std::static_pointer_cast<arrow::Int16Scalar>(max_scalar)->value);
+                break;
+            case LogicalTypeId::INTEGER:
+                min_val = Value::INTEGER(std::static_pointer_cast<arrow::Int32Scalar>(min_scalar)->value);
+                max_val = Value::INTEGER(std::static_pointer_cast<arrow::Int32Scalar>(max_scalar)->value);
+                break;
+            case LogicalTypeId::BIGINT:
+                min_val = Value::BIGINT(std::static_pointer_cast<arrow::Int64Scalar>(min_scalar)->value);
+                max_val = Value::BIGINT(std::static_pointer_cast<arrow::Int64Scalar>(max_scalar)->value);
+                break;
+            case LogicalTypeId::UTINYINT:
+                min_val = Value::UTINYINT(std::static_pointer_cast<arrow::UInt8Scalar>(min_scalar)->value);
+                max_val = Value::UTINYINT(std::static_pointer_cast<arrow::UInt8Scalar>(max_scalar)->value);
+                break;
+            case LogicalTypeId::USMALLINT:
+                min_val = Value::USMALLINT(std::static_pointer_cast<arrow::UInt16Scalar>(min_scalar)->value);
+                max_val = Value::USMALLINT(std::static_pointer_cast<arrow::UInt16Scalar>(max_scalar)->value);
+                break;
+            case LogicalTypeId::UINTEGER:
+                min_val = Value::UINTEGER(std::static_pointer_cast<arrow::UInt32Scalar>(min_scalar)->value);
+                max_val = Value::UINTEGER(std::static_pointer_cast<arrow::UInt32Scalar>(max_scalar)->value);
+                break;
+            case LogicalTypeId::UBIGINT:
+                min_val = Value::UBIGINT(std::static_pointer_cast<arrow::UInt64Scalar>(min_scalar)->value);
+                max_val = Value::UBIGINT(std::static_pointer_cast<arrow::UInt64Scalar>(max_scalar)->value);
+                break;
+            case LogicalTypeId::FLOAT:
+            case LogicalTypeId::DOUBLE: {
+                // Check for NaN presence by comparing count vs count_non_null
+                arrow::compute::CountOptions all_opts(arrow::compute::CountOptions::ALL);
+                auto total_result = arrow::compute::Count(column, all_opts);
+                if (!total_result.ok()) {
+                    return nullptr;
+                }
+                int64_t total_count = total_result.ValueOrDie().scalar_as<arrow::Int64Scalar>().value;
+
+                // Count non-null values
+                arrow::compute::CountOptions valid_opts(arrow::compute::CountOptions::ONLY_VALID);
+                auto valid_result = arrow::compute::Count(column, valid_opts);
+                if (!valid_result.ok()) {
+                    return nullptr;
+                }
+                int64_t valid_count = valid_result.ValueOrDie().scalar_as<arrow::Int64Scalar>().value;
+
+                // Count nulls
+                arrow::compute::CountOptions null_opts(arrow::compute::CountOptions::ONLY_NULL);
+                auto null_result = arrow::compute::Count(column, null_opts);
+                if (!null_result.ok()) {
+                    return nullptr;
+                }
+                int64_t null_count = null_result.ValueOrDie().scalar_as<arrow::Int64Scalar>().value;
+
+                // If valid_count + null_count == total_count, no NaN
+                auto is_nan_result = arrow::compute::IsNan(column);
+                if (is_nan_result.ok()) {
+                    auto is_nan_array = is_nan_result.ValueOrDie();
+                    auto any_result = arrow::compute::Any(is_nan_array);
+                    if (any_result.ok()) {
+                        auto any_scalar = any_result.ValueOrDie().scalar_as<arrow::BooleanScalar>();
+                        if (any_scalar.is_valid && any_scalar.value) {
+                            return nullptr;
+                        }
+                    }
+                }
+
+                // No NaN found, safe to use statistics
+                if (type_id == LogicalTypeId::FLOAT) {
+                    float min_f = std::static_pointer_cast<arrow::FloatScalar>(min_scalar)->value;
+                    float max_f = std::static_pointer_cast<arrow::FloatScalar>(max_scalar)->value;
+                    min_val = Value::FLOAT(min_f);
+                    max_val = Value::FLOAT(max_f);
+                } else {
+                    double min_d = std::static_pointer_cast<arrow::DoubleScalar>(min_scalar)->value;
+                    double max_d = std::static_pointer_cast<arrow::DoubleScalar>(max_scalar)->value;
+                    min_val = Value::DOUBLE(min_d);
+                    max_val = Value::DOUBLE(max_d);
+                }
+                break;
+            }
+            case LogicalTypeId::DATE:
+                min_val = Value::DATE(duckdb::date_t(std::static_pointer_cast<arrow::Date32Scalar>(min_scalar)->value));
+                max_val = Value::DATE(duckdb::date_t(std::static_pointer_cast<arrow::Date32Scalar>(max_scalar)->value));
+                break;
+            case LogicalTypeId::TIMESTAMP:
+            case LogicalTypeId::TIMESTAMP_TZ:
+                min_val = Value::TIMESTAMP(duckdb::timestamp_t(std::static_pointer_cast<arrow::TimestampScalar>(min_scalar)->value));
+                max_val = Value::TIMESTAMP(duckdb::timestamp_t(std::static_pointer_cast<arrow::TimestampScalar>(max_scalar)->value));
+                break;
+            case LogicalTypeId::VARCHAR: {
+                auto min_str = std::static_pointer_cast<arrow::StringScalar>(min_scalar);
+                auto max_str = std::static_pointer_cast<arrow::StringScalar>(max_scalar);
+                min_val = Value(min_str->ToString());
+                max_val = Value(max_str->ToString());
+                break;
+            }
+            default:
+                return nullptr;
+            }
+
+            auto stats = duckdb::BaseStatistics::CreateEmpty(column_type);
+            stats.Set(duckdb::StatsInfo::CAN_HAVE_NULL_VALUES);
+
+            if (type_id == LogicalTypeId::VARCHAR) {
+                duckdb::StringStats::Update(stats, min_val.ToString());
+                duckdb::StringStats::Update(stats, max_val.ToString());
+            } else {
+                duckdb::NumericStats::SetMin(stats, min_val);
+                duckdb::NumericStats::SetMax(stats, max_val);
+            }
+
+            return stats.ToUnique();
+        }
 
         // CreateScannerReader: Dataset → Scanner → Reader with pushdown support
         static std::shared_ptr<arrow::RecordBatchReader> CreateScannerReader(
@@ -580,9 +746,6 @@ namespace bareduckdb
 
             if (params.filters && !params.filters->filters.empty())
             {
-                fprintf(stderr, "[DEBUG] Filter pushdown requested (%zu filters)...\n", params.filters->filters.size());
-                fflush(stderr);
-
                 using arrow::compute::call;
                 using arrow::compute::Expression;
                 using arrow::compute::literal;
@@ -624,27 +787,15 @@ namespace bareduckdb
                     }
                     catch (const std::exception &e)
                     {
-                        fprintf(stderr, "WARNING: Failed to translate filter for column '%s': %s\n",
-                                col_name.c_str(), e.what());
-                        fflush(stderr);
                         filters_failed++;
                         // Don't break - continue with other filters
                     }
                 }
 
-                fprintf(stderr, "[Filter Pushdown] Summary: %d pushed, %d skipped (string_view), %d failed\n",
-                        filters_pushed, filters_skipped_string_view, filters_failed);
-                fflush(stderr);
-
                 // Apply the combined filter if we successfully pushed down at least one filter
                 if (filters_pushed > 0)
                 {
                     arrow::Status status = builder->Filter(combined_filter);
-                    if (!status.ok())
-                    {
-                        fprintf(stderr, "WARNING: Filter application failed: %s\n", status.ToString().c_str());
-                        fflush(stderr);
-                    }
                 }
             }
 
@@ -696,33 +847,11 @@ namespace bareduckdb
         }
     };
 
-    unique_ptr<duckdb::BaseStatistics> TableCppFactory::GetColumnStatistics(
-        uintptr_t factory_ptr,
-        const std::string &column_name,
-        const duckdb::LogicalType &column_type) {
-
-        auto factory = reinterpret_cast<TableCppFactory*>(factory_ptr);
-        if (!factory) {
-            return nullptr;
-        }
-
-        if (!factory->statistics) {
-            return nullptr;
-        }
-
-
-        auto stats = GetColumnStatisticsFromStruct(factory->statistics, column_name, column_type);
-
-        return stats;
-    }
-
     extern "C" void *register_table_cpp(
         duckdb_connection c_conn,
         void *table_pyobj,
         const char *view_name,
-        int64_t row_count,
-        bool replace,
-        BareTableStatistics* statistics)
+        bool replace)
     {
         auto conn = get_cpp_connection(c_conn);
         if (!conn)
@@ -740,7 +869,7 @@ namespace bareduckdb
         }
         std::shared_ptr<arrow::Table> table = table_result.ValueOrDie();
 
-        auto factory = make_uniq<TableCppFactory>(table, row_count, statistics);
+        auto factory = make_uniq<TableCppFactory>(table);
         std::string function_name = "arrow_scan_dataset";
 
         auto table_function = make_uniq<TableFunctionRef>();
@@ -750,7 +879,6 @@ namespace bareduckdb
         children.push_back(make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&TableCppFactory::Produce))));
         children.push_back(make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&TableCppFactory::GetSchema))));
         children.push_back(make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&TableCppFactory::GetCardinality))));
-        children.push_back(make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&TableCppFactory::GetColumnStatistics))));
 
         table_function->function = make_uniq<FunctionExpression>(
             function_name,
@@ -770,6 +898,14 @@ namespace bareduckdb
         }
     }
 
+    unique_ptr<duckdb::BaseStatistics> ComputeColumnStatisticsForFactory(
+        uintptr_t factory_ptr,
+        idx_t column_index,
+        const LogicalType &column_type)
+    {
+        return TableCppFactory::ComputeColumnStatistics(factory_ptr, column_index, column_type);
+    }
+
     extern "C" void register_dataset_functions_cpp(duckdb_connection c_conn)
     {
         auto conn = get_cpp_connection(c_conn);
@@ -778,20 +914,9 @@ namespace bareduckdb
             throw std::runtime_error("Invalid connection");
         }
 
-        // Register both functions
+        // Register arrow_scan_dataset for PyArrow Table registration with full statistics support
         try {
-            register_arrow_scan_cardinality(conn);  // For capsule mode
-        } catch (const std::exception &e) {
-            std::string error_msg(e.what());
-            // Ignore "already exists" errors
-            if (error_msg.find("already exists") == std::string::npos &&
-                error_msg.find("ENTRY_ALREADY_EXISTS") == std::string::npos) {
-                throw;
-            }
-        }
-
-        try {
-            register_arrow_scan_dataset(conn);  // For dataset mode
+            register_arrow_scan_dataset(conn);
         } catch (const std::exception &e) {
             std::string error_msg(e.what());
             // Ignore "already exists" errors
@@ -803,3 +928,169 @@ namespace bareduckdb
     }
 
 } // namespace bareduckdb
+
+namespace duckdb {
+
+static void ArrowScanDatasetScan(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	ArrowTableFunction::ArrowScanFunction(context, data_p, output);
+}
+
+static unique_ptr<GlobalTableFunctionState> ArrowScanDatasetInitGlobal(ClientContext &context,
+                                                                        TableFunctionInitInput &input) {
+	return ArrowTableFunction::ArrowScanInitGlobal(context, input);
+}
+
+static unique_ptr<LocalTableFunctionState> ArrowScanDatasetInitLocal(ExecutionContext &context,
+                                                                      TableFunctionInitInput &input,
+                                                                      GlobalTableFunctionState *global_state) {
+	return ArrowTableFunction::ArrowScanInitLocal(context, input, global_state);
+}
+
+static OperatorPartitionData ArrowScanDatasetGetPartitionData(ClientContext &context,
+                                                               TableFunctionGetPartitionInput &input) {
+	if (input.partition_info.RequiresPartitionColumns()) {
+		throw InternalException("ArrowScanDatasetGetPartitionData: partition columns not supported");
+	}
+	auto &state = input.local_state->Cast<ArrowScanLocalState>();
+	return OperatorPartitionData(state.batch_index);
+}
+
+static bool CanPushdownType(const ArrowType &type) {
+	auto duck_type = type.GetDuckType();
+	switch (duck_type.id()) {
+	case LogicalTypeId::BOOLEAN:
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIME:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_TZ:
+		return true;
+	case LogicalTypeId::FLOAT:
+	case LogicalTypeId::DOUBLE:
+		return true;
+	case LogicalTypeId::DECIMAL: {
+		uint8_t width;
+		uint8_t scale;
+		duck_type.GetDecimalProperties(width, scale);
+		return width <= 38;
+	}
+	case LogicalTypeId::VARCHAR:
+	case LogicalTypeId::BLOB:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool ArrowScanDatasetPushdownType(const FunctionData &bind_data, idx_t col_idx) {
+	auto &arrow_bind_data = bind_data.Cast<ArrowScanFunctionData>();
+
+	auto &schema = arrow_bind_data.schema_root.arrow_schema;
+	if (schema.children && col_idx < (idx_t)schema.n_children) {
+		auto *field = schema.children[col_idx];
+		if (field && field->format) {
+			std::string format(field->format);
+			if (format == "vu") {
+				return false;  // string_view not supported for pushdown
+			}
+		}
+	}
+
+	const auto &column_info = arrow_bind_data.arrow_table.GetColumns();
+	auto column_type = column_info.at(col_idx);
+	return CanPushdownType(*column_type);
+}
+
+using ArrowScanDatasetData = ArrowScanFunctionData;
+
+unique_ptr<BaseStatistics> ArrowScanDatasetStatistics(
+	ClientContext &context,
+	const FunctionData *bind_data,
+	column_t column_index) {
+
+	auto &data = bind_data->Cast<ArrowScanDatasetData>();
+	auto factory_ptr = data.stream_factory_ptr;
+	auto &column_type = data.all_types[column_index];
+
+	return bareduckdb::ComputeColumnStatisticsForFactory(factory_ptr, column_index, column_type);
+}
+
+unique_ptr<NodeStatistics> ArrowScanDatasetCardinality(ClientContext &context, const FunctionData *bind_data) {
+	auto &data = bind_data->Cast<ArrowScanDatasetData>();
+	auto factory_ptr = data.stream_factory_ptr;
+
+	auto stats = make_uniq<NodeStatistics>();
+	int64_t cardinality = bareduckdb::TableCppFactory::GetCardinality(factory_ptr);
+
+	if (cardinality > 0) {
+		stats->estimated_cardinality = cardinality;
+		stats->has_estimated_cardinality = true;
+	}
+
+	return stats;
+}
+
+unique_ptr<FunctionData> ArrowScanDatasetBind(ClientContext &context, TableFunctionBindInput &input,
+                                               vector<LogicalType> &return_types, vector<string> &names) {
+	if (input.inputs[0].IsNull() || input.inputs[1].IsNull() || input.inputs[2].IsNull() || input.inputs[3].IsNull()) {
+		throw BinderException("arrow_scan_dataset: pointers cannot be null");
+	}
+	auto &ref = input.ref;
+
+	shared_ptr<DependencyItem> dependency;
+	if (ref.external_dependency) {
+		dependency = ref.external_dependency->GetDependency("replacement_cache");
+		D_ASSERT(dependency);
+	}
+
+	auto stream_factory_ptr = input.inputs[0].GetPointer();
+	auto stream_factory_produce = (stream_factory_produce_t)input.inputs[1].GetPointer();
+	auto stream_factory_get_schema = (stream_factory_get_schema_t)input.inputs[2].GetPointer();
+
+	auto res = make_uniq<ArrowScanDatasetData>(stream_factory_produce, stream_factory_ptr, std::move(dependency));
+
+	res->projection_pushdown_enabled = true;
+
+	auto &data = *res;
+	stream_factory_get_schema(reinterpret_cast<ArrowArrayStream *>(stream_factory_ptr), data.schema_root.arrow_schema);
+	ArrowTableFunction::PopulateArrowTableSchema(DBConfig::GetConfig(context), data.arrow_table,
+	                                              data.schema_root.arrow_schema);
+	names = data.arrow_table.GetNames();
+	return_types = data.arrow_table.GetTypes();
+	data.all_types = return_types;
+
+	if (return_types.empty()) {
+		throw InvalidInputException("Provided table/dataframe must have at least one column");
+	}
+
+	return std::move(res);
+}
+
+extern "C" void register_arrow_scan_dataset(duckdb::Connection* cpp_conn) {
+	duckdb::TableFunction arrow_dataset("arrow_scan_dataset",
+	                                     {duckdb::LogicalType::POINTER, duckdb::LogicalType::POINTER,
+	                                      duckdb::LogicalType::POINTER, duckdb::LogicalType::POINTER},
+	                                     duckdb::ArrowScanDatasetScan, duckdb::ArrowScanDatasetBind,
+	                                     duckdb::ArrowScanDatasetInitGlobal,
+	                                     duckdb::ArrowScanDatasetInitLocal);
+
+	arrow_dataset.cardinality = duckdb::ArrowScanDatasetCardinality;
+	arrow_dataset.statistics = duckdb::ArrowScanDatasetStatistics;
+	arrow_dataset.get_partition_data = duckdb::ArrowScanDatasetGetPartitionData;
+	arrow_dataset.projection_pushdown = true;
+	arrow_dataset.filter_pushdown = true;
+	arrow_dataset.filter_prune = true;
+	arrow_dataset.supports_pushdown_type = duckdb::ArrowScanDatasetPushdownType;
+
+	auto info = duckdb::make_uniq<duckdb::CreateTableFunctionInfo>(arrow_dataset);
+	auto &context = *cpp_conn->context;
+	context.RegisterFunction(*info);
+}
+
+} // namespace duckdb

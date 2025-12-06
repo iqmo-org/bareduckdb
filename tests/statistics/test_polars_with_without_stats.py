@@ -32,13 +32,3 @@ def test_polars_vs_pyarrow_registration():
     conn2.close()
 
     assert result1 == result2 == (499,)
-
-    from bareduckdb.dataset.backend import _extract_polars_statistics
-    stats = _extract_polars_statistics(df)
-    assert stats is not None
-    assert 'id' in stats
-    assert stats['id']['min'] == 0
-    assert stats['id']['max'] == 9999
-    assert stats['id']['null_count'] == 0
-
-

@@ -12,7 +12,7 @@ def test_basic_udtf_registration():
 
     conn.register_udtf("simple_range", simple_range)
 
-    result = conn.execute("SELECT * FROM {{ udtf('simple_range', n=5) }}")
+    result = conn.execute("SELECT * FROM {{ udtf.simple_range(n=5) }}")
     df = result.df()
 
     assert len(df) == 5
@@ -40,7 +40,7 @@ def test_udtf_with_aggregation():
             category,
             COUNT(*) as count,
             SUM(value) as total
-        FROM {{ udtf('data_gen', rows=100, multiplier=10) }}
+        FROM {{ udtf.data_gen(rows=100, multiplier=10) }}
         GROUP BY category
         ORDER BY category
     """
@@ -64,7 +64,7 @@ def test_udtf_with_conn_injection():
 
     conn.register_udtf("query_wrapper", query_wrapper)
 
-    result = conn.execute("SELECT * FROM {{ udtf('query_wrapper', limit=5) }}")
+    result = conn.execute("SELECT * FROM {{ udtf.query_wrapper(limit=5) }}")
     df = result.df()
 
     assert len(df) == 5
@@ -84,8 +84,8 @@ def test_udtf_multiple_calls():
     result = conn.execute(
         """
         SELECT a.id as id_a, b.id as id_b
-        FROM {{ udtf('range_gen', n=3, offset=0) }} a
-        CROSS JOIN {{ udtf('range_gen', n=3, offset=10) }} b
+        FROM {{ udtf.range_gen(n=3, offset=0) }} a
+        CROSS JOIN {{ udtf.range_gen(n=3, offset=10) }} b
         LIMIT 5
     """
     )
@@ -101,7 +101,7 @@ def test_udtf_with_dict_registration():
 
     conn = bareduckdb.connect(udtf_functions={"gen": my_generator})
 
-    result = conn.execute("SELECT * FROM {{ udtf('gen', rows=4) }}")
+    result = conn.execute("SELECT * FROM {{ udtf.gen(rows=4) }}")
     df = result.df()
 
     assert len(df) == 4
@@ -117,7 +117,7 @@ def test_udtf_runtime_registration():
 
     conn.register_udtf("late_func", late_binding)
 
-    result = conn.execute("SELECT SUM(value) as total FROM {{ udtf('late_func', n=10) }}")
+    result = conn.execute("SELECT SUM(value) as total FROM {{ udtf.late_func(n=10) }}")
     df = result.df()
 
     expected_sum = sum(i * 3 for i in range(10))
@@ -129,7 +129,7 @@ def test_udtf_error_not_registered():
     conn = bareduckdb.connect()
 
     with pytest.raises(ValueError):
-        conn.execute("SELECT * FROM {{ udtf('nonexistent', n=5) }}")
+        conn.execute("SELECT * FROM {{ udtf.nonexistent(n=5) }}")
 
 
 
@@ -142,8 +142,8 @@ def test_udtf_error_invalid_return_type():
 
     conn.register_udtf("bad_return", bad_return)
 
-    with pytest.raises((TypeError, ValueError)):
-        conn.execute("SELECT * FROM {{ udtf('bad_return', n=5) }}")
+    with pytest.raises(RuntimeError):
+        conn.execute("SELECT * FROM {{ udtf.bad_return(n=5) }}")
 
 
 def test_udtf_with_pandas():
@@ -157,7 +157,7 @@ def test_udtf_with_pandas():
 
     conn.register_udtf("pandas_gen", pandas_gen)
 
-    result = conn.execute("SELECT * FROM {{ udtf('pandas_gen', rows=5) }}")
+    result = conn.execute("SELECT * FROM {{ udtf.pandas_gen(rows=5) }}")
     df = result.df()
 
     assert len(df) == 5
@@ -173,7 +173,7 @@ def test_udtf_unique_naming():
 
     conn.register_udtf("test_func", test_func)
 
-    sql = "SELECT COUNT(*) as cnt FROM {{ udtf('test_func', n=10) }}"
+    sql = "SELECT COUNT(*) as cnt FROM {{ udtf.test_func(n=10) }}"
 
     # Process same SQL twice - should get different table names (UUID-based)
     sql1, data1 = conn._process_udtfs(sql)
@@ -205,7 +205,7 @@ def test_udtf_with_data_param():
         """
         SELECT source, COUNT(*) as cnt
         FROM (
-            SELECT * FROM {{ udtf('gen_a', n=5) }}
+            SELECT * FROM {{ udtf.gen_a(n=5) }}
             UNION ALL
             SELECT * FROM external_data
         )

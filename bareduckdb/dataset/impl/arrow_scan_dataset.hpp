@@ -774,9 +774,7 @@ namespace bareduckdb
                 using arrow::compute::literal;
 
                 Expression combined_filter = literal(true);
-                int filters_pushed = 0;
-                int filters_skipped_string_view = 0;
-                int filters_failed = 0;
+                bool has_filters = false;
 
                 for (const auto &[col_idx, filter_ptr] : params.filters->filters)
                 {
@@ -794,32 +792,28 @@ namespace bareduckdb
                     auto field = dataset->schema()->field((int)original_col_idx);
                     std::string col_name = field->name();
 
+                    // Skip string_view columns - Arrow's array_filter doesn't support them.
                     if (field->type()->id() == arrow::Type::STRING_VIEW)
                     {
-                        filters_skipped_string_view++;
                         continue;
                     }
 
                     try
                     {
-                        // Translate filter to Arrow expression
                         Expression col_filter = TranslateFilterToArrowExpression(filter_ptr.get(), col_name);
-
                         combined_filter = call("and_kleene", {combined_filter, col_filter});
-                        filters_pushed++;
+                        has_filters = true;
                     }
-                    catch (const std::exception &e)
+                    catch (const std::exception &)
                     {
-                        filters_failed++;
-                        // Continue with other filters even if one fails
+                        // Skip filters that fail to translate
                     }
                 }
 
-                // Apply the combined filter if we successfully pushed down at least one filter
-                if (filters_pushed > 0)
+                if (has_filters)
                 {
                     arrow::Status status = builder->Filter(combined_filter);
-                    (void)status;  // Suppress unused variable warning
+                    (void)status;
                 }
             }
 
@@ -1129,14 +1123,17 @@ static bool CanPushdownType(const ArrowType &type) {
 
 static bool ArrowScanDatasetPushdownType(const FunctionData &bind_data, idx_t col_idx) {
 	auto &arrow_bind_data = bind_data.Cast<ArrowScanFunctionData>();
-
 	auto &schema = arrow_bind_data.schema_root.arrow_schema;
-	if (schema.children && col_idx < (idx_t)schema.n_children) {
-		auto *field = schema.children[col_idx];
-		if (field && field->format) {
-			std::string format(field->format);
-			if (format == "vu") {
-				return false;  // string_view not supported for pushdown
+
+	// Arrow's array_filter doesn't support string_view types
+	if (schema.children) {
+		for (int64_t i = 0; i < schema.n_children; i++) {
+			auto *field = schema.children[i];
+			if (field && field->format) {
+				std::string format(field->format);
+				if (format == "vu") {
+					return false;
+				}
 			}
 		}
 	}

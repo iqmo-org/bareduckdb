@@ -84,7 +84,7 @@ class ConnectionBase:
         self._enable_arrow_dataset = enable_arrow_dataset
 
         if init_sql:
-            self._call(init_sql)
+            self._call(init_sql, output_type="arrow_capsule")
         logger.debug(
             "Created connection: database=%s, config=%s, read_only=%s",
             database,

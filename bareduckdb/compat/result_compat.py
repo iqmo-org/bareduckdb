@@ -107,9 +107,16 @@ class Result:
     def df(self, arrow_dtyped: bool = True) -> "pd.DataFrame":
         if arrow_dtyped:
             try:
+                import pyarrow as pa
                 from pandas import ArrowDtype
 
-                return self.arrow_table().to_pandas(types_mapper=ArrowDtype)
+                def _arrow_types_mapper(arrow_type: pa.DataType) -> ArrowDtype:
+                    # Map string_view to string (pandas doesn't support string_view yet - pandas#60068)
+                    if arrow_type == pa.string_view():
+                        return ArrowDtype(pa.string())
+                    return ArrowDtype(arrow_type)
+
+                return self.arrow_table().to_pandas(types_mapper=_arrow_types_mapper)
             except (ImportError, AttributeError) as e:
                 # Fallback if pandas has issues (e.g., circular import on Python 3.14t)
                 import warnings

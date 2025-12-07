@@ -157,28 +157,31 @@ namespace bareduckdb
             return MakeScalar(str);
         }
         case LogicalTypeId::TIMESTAMP:
+        case LogicalTypeId::TIMESTAMP_MS:
+        case LogicalTypeId::TIMESTAMP_NS:
+        case LogicalTypeId::TIMESTAMP_SEC:
         {
-            // DuckDB TIMESTAMP is microseconds since epoch
-            auto timestamp_us = val.GetValue<int64_t>();
-            return std::make_shared<arrow::TimestampScalar>(timestamp_us, arrow::timestamp(arrow::TimeUnit::MICRO));
+            // DuckDB TIMESTAMP is stored as timestamp_t (int64_t microseconds since epoch)
+            auto ts = val.GetValue<duckdb::timestamp_t>();
+            return std::make_shared<arrow::TimestampScalar>(ts.value, arrow::timestamp(arrow::TimeUnit::MICRO));
         }
         case LogicalTypeId::TIMESTAMP_TZ:
         {
-            // DuckDB TIMESTAMP WITH TIME ZONE is microseconds since epoch (UTC)
-            auto timestamp_us = val.GetValue<int64_t>();
-            return std::make_shared<arrow::TimestampScalar>(timestamp_us, arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"));
+            // DuckDB TIMESTAMP WITH TIME ZONE is stored as timestamp_t (int64_t microseconds since epoch, UTC)
+            auto ts = val.GetValue<duckdb::timestamp_t>();
+            return std::make_shared<arrow::TimestampScalar>(ts.value, arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"));
         }
         case LogicalTypeId::DATE:
         {
-            // DuckDB DATE is days since epoch
-            auto days = val.GetValue<int32_t>();
-            return std::make_shared<arrow::Date32Scalar>(days);
+            // DuckDB DATE is stored as date_t (int32_t days since epoch)
+            auto date = val.GetValue<duckdb::date_t>();
+            return std::make_shared<arrow::Date32Scalar>(date.days);
         }
         case LogicalTypeId::TIME:
         {
-            // DuckDB TIME is microseconds since midnight
-            auto time_us = val.GetValue<int64_t>();
-            return std::make_shared<arrow::Time64Scalar>(time_us, arrow::time64(arrow::TimeUnit::MICRO));
+            // DuckDB TIME is stored as dtime_t (int64_t microseconds since midnight)
+            auto time = val.GetValue<duckdb::dtime_t>();
+            return std::make_shared<arrow::Time64Scalar>(time.micros, arrow::time64(arrow::TimeUnit::MICRO));
         }
         case LogicalTypeId::DECIMAL:
         {
@@ -517,31 +520,20 @@ namespace bareduckdb
     {
         std::shared_ptr<arrow::Table> table; // C++ Arrow Table (no Python)
         ArrowSchemaWrapper cached_schema;
-        bool schema_cached = false;
 
         explicit TableCppFactory(std::shared_ptr<arrow::Table> tbl)
             : table(std::move(tbl))
         {
+            auto result = arrow::ExportSchema(*table->schema(), &cached_schema.arrow_schema);
+            if (!result.ok())
+            {
+                throw std::runtime_error("Failed to export table schema: " + result.ToString());
+            }
         }
 
         static void GetSchema(uintptr_t factory_ptr, ArrowSchema &schema)
         {
             auto *factory = reinterpret_cast<TableCppFactory *>(factory_ptr);
-
-            if (factory->schema_cached)
-            {
-                schema = factory->cached_schema.arrow_schema;
-                schema.release = nullptr;
-                return;
-            }
-
-            auto result = arrow::ExportSchema(*factory->table->schema(), &factory->cached_schema.arrow_schema);
-            if (!result.ok())
-            {
-                throw std::runtime_error("Failed to export table schema: " + result.ToString());
-            }
-
-            factory->schema_cached = true;
             schema = factory->cached_schema.arrow_schema;
             schema.release = nullptr;
         }
@@ -576,7 +568,6 @@ namespace bareduckdb
             auto type_id = column_type.id();
 
             // Skip unsupported types
-            // TODO: Or, consider having explicitly supported types
             if (arrow_type->id() == arrow::Type::STRING_VIEW ||
                 arrow_type->id() == arrow::Type::BINARY_VIEW ||
                 arrow_type->id() == arrow::Type::STRUCT ||
@@ -711,13 +702,24 @@ namespace bareduckdb
 
                 // max string length
                 uint32_t max_string_len = 0;
+                bool is_large_string = (arrow_type->id() == arrow::Type::LARGE_STRING);
                 for (int chunk_idx = 0; chunk_idx < column->num_chunks(); chunk_idx++) {
                     auto chunk = column->chunk(chunk_idx);
-                    auto string_array = std::static_pointer_cast<arrow::StringArray>(chunk);
-                    for (int64_t i = 0; i < string_array->length(); i++) {
-                        if (!string_array->IsNull(i)) {
-                            max_string_len = std::max(max_string_len,
-                                static_cast<uint32_t>(string_array->value_length(i)));
+                    if (is_large_string) {
+                        auto string_array = std::static_pointer_cast<arrow::LargeStringArray>(chunk);
+                        for (int64_t i = 0; i < string_array->length(); i++) {
+                            if (!string_array->IsNull(i)) {
+                                max_string_len = std::max(max_string_len,
+                                    static_cast<uint32_t>(string_array->value_length(i)));
+                            }
+                        }
+                    } else {
+                        auto string_array = std::static_pointer_cast<arrow::StringArray>(chunk);
+                        for (int64_t i = 0; i < string_array->length(); i++) {
+                            if (!string_array->IsNull(i)) {
+                                max_string_len = std::max(max_string_len,
+                                    static_cast<uint32_t>(string_array->value_length(i)));
+                            }
                         }
                     }
                 }
@@ -809,7 +811,7 @@ namespace bareduckdb
                     catch (const std::exception &e)
                     {
                         filters_failed++;
-                        // Don't break - continue with other filters
+                        // Continue with other filters even if one fails
                     }
                 }
 
@@ -817,6 +819,7 @@ namespace bareduckdb
                 if (filters_pushed > 0)
                 {
                     arrow::Status status = builder->Filter(combined_filter);
+                    (void)status;  // Suppress unused variable warning
                 }
             }
 
@@ -959,7 +962,7 @@ namespace bareduckdb
         }
     }
 
-    extern "C" ColumnStatisticsResult test_compute_column_statistics_cpp(
+    extern "C" ColumnStatisticsResult compute_column_statistics_cpp(
         void* table_pyobj,
         int column_index,
         int logical_type_id

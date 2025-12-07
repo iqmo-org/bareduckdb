@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <cstdint>
 #include <mutex>
+#include <atomic>
 #include <unordered_map>
 
 #include "duckdb.h"
@@ -369,6 +370,7 @@ struct ArrowArrayStreamWrapper {
     idx_t current_idx = 0;
     ArrowSchema schema;
     bool schema_exported = false;
+    duckdb::unique_ptr<ArrowQueryResult> owned_result;
 
     static int GetSchema(ArrowArrayStream *stream, ArrowSchema *out) {
         if (!stream || !out) {
@@ -435,14 +437,15 @@ extern "C" void* create_arrow_array_stream_from_arrow_result(
         auto* stream = new ArrowArrayStream();
 
         auto* wrapper = new ArrowArrayStreamWrapper();
+        wrapper->owned_result.reset(arrow_result);
 
-        wrapper->arrays = arrow_result->ConsumeArrays();
+        wrapper->arrays = wrapper->owned_result->ConsumeArrays();
 
         ArrowConverter::ToArrowSchema(
             &wrapper->schema,
-            arrow_result->types,
-            arrow_result->names,
-            arrow_result->client_properties
+            wrapper->owned_result->types,
+            wrapper->owned_result->names,
+            wrapper->owned_result->client_properties
         );
 
         stream->private_data = wrapper;
@@ -667,15 +670,10 @@ struct SingleUseStreamWrapper {
     uint64_t creating_query_number;  // Deadlock detection
 
     static bool use_mutex() {
-        static bool checked = false;
-        static bool enabled = true;
-        if (!checked) {
+        static bool enabled = []() {
             const char* env = std::getenv("BAREDUCKDB_STREAM_MUTEX");
-            if (env && std::string(env) == "0") {
-                enabled = false;
-            }
-            checked = true;
-        }
+            return !(env && std::string(env) == "0");
+        }();
         return enabled;
     }
 
@@ -761,28 +759,23 @@ namespace RawStreamCallbacks {
 struct CapsuleArrowStreamFactory {
     duckdb::ArrowArrayStreamWrapper stream;
     ArrowSchemaWrapper cached_schema;
-    bool schema_cached = false;
     int64_t cardinality;
-    bool produced = false;
+    std::atomic<bool> produced{false};
     uint64_t creating_query_number;  // Deadlock Detection
 
     explicit CapsuleArrowStreamFactory(ArrowArrayStream* source_stream, int64_t cardinality_p = -1, uint64_t query_num = 0)
         : cardinality(cardinality_p), creating_query_number(query_num) {
         stream.arrow_array_stream = *source_stream;
         source_stream->release = nullptr;
+
+        int result = stream.arrow_array_stream.get_schema(&stream.arrow_array_stream, &cached_schema.arrow_schema);
+        if (result != 0) {
+            throw std::runtime_error("Failed to get schema from capsule stream");
+        }
     }
 
     static void GetSchema(uintptr_t factory_ptr, ArrowSchema &schema) {
         auto* factory = reinterpret_cast<CapsuleArrowStreamFactory*>(factory_ptr);
-
-        if (!factory->schema_cached) {
-            int result = factory->stream.arrow_array_stream.get_schema(&factory->stream.arrow_array_stream, &factory->cached_schema.arrow_schema);
-            if (result != 0) {
-                throw std::runtime_error("Failed to get schema from capsule stream");
-            }
-            factory->schema_cached = true;
-        }
-
         schema = factory->cached_schema.arrow_schema;
         schema.release = nullptr;
     }
@@ -790,7 +783,8 @@ struct CapsuleArrowStreamFactory {
     static duckdb::unique_ptr<duckdb::ArrowArrayStreamWrapper> Produce(uintptr_t factory_ptr, ArrowStreamParameters &params) {
         auto* factory = reinterpret_cast<CapsuleArrowStreamFactory*>(factory_ptr);
 
-        if (factory->produced) {
+        bool expected = false;
+        if (!factory->produced.compare_exchange_strong(expected, true)) {
             auto error_wrapper_ptr = new ErrorStreamWrapper(
                 "Arrow stream has already been consumed",
                 factory->cached_schema.arrow_schema
@@ -805,8 +799,6 @@ struct CapsuleArrowStreamFactory {
 
             return wrapper;
         }
-
-        factory->produced = true;
 
         auto wrapper = duckdb::make_uniq<duckdb::ArrowArrayStreamWrapper>();
         wrapper->arrow_array_stream = factory->stream.arrow_array_stream;

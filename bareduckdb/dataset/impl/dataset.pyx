@@ -31,7 +31,7 @@ cdef extern from "../../dataset/impl/arrow_scan_dataset.hpp" namespace "bareduck
         int64_t distinct_count
         uint32_t max_string_len
 
-    ColumnStatisticsResult test_compute_column_statistics_cpp(
+    ColumnStatisticsResult compute_column_statistics_cpp(
         void* table_pyobj,
         int column_index,
         int logical_type_id
@@ -81,14 +81,14 @@ TYPE_ID_MAP = {
 }
 
 
-def test_compute_column_statistics(object table, int column_index, str type_id):
+def compute_column_statistics(object table, int column_index, str type_id):
     cdef void* table_ptr = <void*><PyObject*>table
     cdef int type_int = TYPE_ID_MAP.get(type_id, 0)
 
     if type_int == 0:
         raise ValueError(f"Unknown type_id: {type_id}")
 
-    cdef ColumnStatisticsResult result = test_compute_column_statistics_cpp(
+    cdef ColumnStatisticsResult result = compute_column_statistics_cpp(
         table_ptr, column_index, type_int
     )
 

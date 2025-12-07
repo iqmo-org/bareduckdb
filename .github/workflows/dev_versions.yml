@@ -95,7 +95,7 @@ jobs:
       - name: Run parallel thread safety tests
         shell: bash
         run: |
-          uv run --no-sync pytest tests/ --parallel-threads=4 --iterations=10 --tb=short -v -m "not asyncio" --ignore=tests/experimental --ignore=tests/comparison --ignore=tests/downstream --cov=bareduckdb --cov-append
+          uv run --no-sync pytest tests/ -n 0 --parallel-threads=4 --iterations=10 --tb=short -v -m "not asyncio" --ignore=tests/experimental --ignore=tests/comparison --ignore=tests/downstream --cov=bareduckdb --cov-append
 
       - name: Test PyArrow is Optional
         if: matrix.python-version != '3.14t'

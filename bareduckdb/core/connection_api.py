@@ -157,6 +157,10 @@ class ConnectionAPI(ConnectionBase):
         Returns:
             (modified_sql, data_dict) where data_dict contains table_name -> Arrow data
         """
+        # Fast path: skip Jinja2 processing if no template markers present
+        if "{{" not in sql:
+            return sql, {}
+
         # Lazy import to avoid import-time dependency
         from jinja2 import Environment, StrictUndefined
 

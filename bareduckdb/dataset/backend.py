@@ -86,7 +86,7 @@ def _convert_to_arrow_table(data: Any, materialize_reader: bool = False) -> pa.T
         table = pa.Table.from_pandas(data)
     elif type(data).__name__ == "DataFrame" and type(data).__module__.startswith("polars"):
         table = pa.table(data)
-        table = _cast_string_view_to_string(table)
+        # table = _cast_string_view_to_string(table)
     elif materialize_reader and type(data).__name__ == "RecordBatchReader":
         table = pa.Table.from_batches(data, schema=data.schema)
     elif materialize_reader and isinstance(data, ds.Dataset):
@@ -96,7 +96,7 @@ def _convert_to_arrow_table(data: Any, materialize_reader: bool = False) -> pa.T
         logger.debug("Couldn't convert %s to Arrow Table", type(data))
         return None
 
-    table = _cast_string_view_to_string(table)
+    # table = _cast_string_view_to_string(table)
     return table
 
 

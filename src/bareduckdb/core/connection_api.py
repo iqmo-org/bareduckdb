@@ -109,9 +109,8 @@ class ConnectionAPI(ConnectionBase):
 
         def udtf_jinja_wrapper(**kwargs) -> str:
             table_name = self._generate_table_name(func_name, kwargs)
-            result = self._call_udtf(func_name, kwargs)
-            pending_data[table_name] = result
-            logger.debug("UDTF wrapper for %s generated table: %s", func_name, table_name)
+            pending_data[table_name] = lambda: self._call_udtf(func_name, kwargs)
+            logger.debug("UDTF wrapper for %s generated table: %s (deferred)", func_name, table_name)
             return table_name
 
         return udtf_jinja_wrapper
@@ -177,21 +176,24 @@ class ConnectionAPI(ConnectionBase):
         if "{{" not in sql:
             return sql, {}
 
+        pending_udtf_closures = {}
+
+        udtf_namespace = _UDTFNamespace(self, pending_udtf_closures)
+
+        env = Environment(undefined=StrictUndefined, autoescape=True)
+
+        try:
+            template = env.from_string(sql)
+            modified_sql = template.render(udtf=udtf_namespace)
+        except Exception as e:
+            raise ValueError(f"Error processing UDTF templates: {e}") from e
+
         pending_udtf_data = {}
+        for table_name, closure in pending_udtf_closures.items():
+            pending_udtf_data[table_name] = closure()  # Execute the UDTF now
 
-        with self._DUCKDB_INIT_LOCK:
-            udtf_namespace = _UDTFNamespace(self, pending_udtf_data)
-
-            env = Environment(undefined=StrictUndefined, autoescape=True)
-
-            try:
-                template = env.from_string(sql)
-                modified_sql = template.render(udtf=udtf_namespace)
-            except Exception as e:
-                raise ValueError(f"Error processing UDTF templates: {e}") from e
-
-            if pending_udtf_data:
-                logger.info("Processed %d UDTF calls in SQL", len(pending_udtf_data))
+        if pending_udtf_data:
+            logger.info("Executed %d deferred UDTF calls", len(pending_udtf_data))
 
         return modified_sql, pending_udtf_data
 

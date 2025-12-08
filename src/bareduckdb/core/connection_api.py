@@ -179,18 +179,19 @@ class ConnectionAPI(ConnectionBase):
 
         pending_udtf_data = {}
 
-        udtf_namespace = _UDTFNamespace(self, pending_udtf_data)
+        with self._DUCKDB_INIT_LOCK:
+            udtf_namespace = _UDTFNamespace(self, pending_udtf_data)
 
-        env = Environment(undefined=StrictUndefined, autoescape=True)
+            env = Environment(undefined=StrictUndefined, autoescape=True)
 
-        try:
-            template = env.from_string(sql)
-            modified_sql = template.render(udtf=udtf_namespace)
-        except Exception as e:
-            raise ValueError(f"Error processing UDTF templates: {e}") from e
+            try:
+                template = env.from_string(sql)
+                modified_sql = template.render(udtf=udtf_namespace)
+            except Exception as e:
+                raise ValueError(f"Error processing UDTF templates: {e}") from e
 
-        if pending_udtf_data:
-            logger.info("Processed %d UDTF calls in SQL", len(pending_udtf_data))
+            if pending_udtf_data:
+                logger.info("Processed %d UDTF calls in SQL", len(pending_udtf_data))
 
         return modified_sql, pending_udtf_data
 

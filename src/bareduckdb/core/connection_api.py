@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-import threading
 import uuid
 from typing import TYPE_CHECKING
 
@@ -39,8 +38,6 @@ class ConnectionAPI(ConnectionBase):
     _udtf_registry: dict[str, Callable]
     _last_result: Result  # Result or None
     _default_output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"]
-    _jinja_env: Environment
-    _jinja_lock: threading.Lock  # Testing to see if this helps with some non-FT test deadlocks
 
     def __init__(
         self,
@@ -74,9 +71,6 @@ class ConnectionAPI(ConnectionBase):
         self._udtf_registry: dict[str, Callable] = {}
         self._default_output_type = output_type
         self._last_result = None
-
-        self._jinja_env = Environment(undefined=StrictUndefined, autoescape=True)
-        self._jinja_lock = threading.Lock()
 
         if udtf_functions:
             for name, func in udtf_functions.items():
@@ -187,9 +181,10 @@ class ConnectionAPI(ConnectionBase):
 
         udtf_namespace = _UDTFNamespace(self, pending_udtf_data)
 
+        env = Environment(undefined=StrictUndefined, autoescape=True)
+
         try:
-            with self._jinja_lock:
-                template = self._jinja_env.from_string(sql)
+            template = env.from_string(sql)
             modified_sql = template.render(udtf=udtf_namespace)
         except Exception as e:
             raise ValueError(f"Error processing UDTF templates: {e}") from e

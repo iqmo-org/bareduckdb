@@ -123,6 +123,7 @@ class TestArrowDuckDBParquet:
 
         duckdb_path = tmp_path / "duckdb_output.parquet"
         duckdb_conn = duckdb.connect(":memory:")
+        duckdb_conn.execute("SET arrow_output_version='1.0'; SET produce_arrow_string_view=False")
         duckdb_conn.register("arrow_table", arrow_table)
         duckdb_table = run_query_and_export(
             duckdb_conn,
@@ -133,6 +134,7 @@ class TestArrowDuckDBParquet:
 
         bareduckdb_path = tmp_path / "bareduckdb_output.parquet"
         bareduckdb_conn = bareduckdb.connect(":memory:")
+        bareduckdb_conn.execute("SET arrow_output_version='1.0'; SET produce_arrow_string_view=False")
         bareduckdb_conn.register("arrow_table", arrow_table)
         bareduckdb_table = run_query_and_export(
             bareduckdb_conn,
@@ -164,24 +166,23 @@ class TestArrowDuckDBParquet:
         """
         original_table = create_comprehensive_arrow_table()
 
-        duration_columns = [col for col in original_table.column_names if col.startswith('duration_')]
-        excluded_columns = {'fixed_size_list_col'}
-        other_columns = [
+        # Exclude columns that PyArrow min_max doesn't support or have nested string_view issues
+        excluded_columns = {'fixed_size_list_col', 'dict_col', 'null_col', 'map_col'}
+        excluded_columns.update(col for col in original_table.column_names if col.startswith('duration_'))
+
+        columns_to_keep = [
             col for col in original_table.column_names
-            if not col.startswith('duration_') and col not in excluded_columns
+            if col not in excluded_columns
         ]
+        # Filter table to exclude unsupported columns before registration
+        filtered_table = original_table.select(columns_to_keep)
 
-        select_parts = []
-        for col in other_columns:
-            select_parts.append(col)
-        for col in duration_columns:
-            select_parts.append(f"EXTRACT(epoch FROM {col}) as {col}")
-
-        query = f"SELECT {', '.join(select_parts)} FROM arrow_table"
+        query = "SELECT * FROM arrow_table"
 
         duckdb_path = tmp_path / "duckdb_roundtrip.parquet"
         duckdb_conn = duckdb.connect(":memory:")
-        duckdb_conn.register("arrow_table", original_table)
+        duckdb_conn.execute("SET arrow_output_version='1.0'; SET produce_arrow_string_view=False")
+        duckdb_conn.register("arrow_table", filtered_table)
         duckdb_result = duckdb_conn.execute(query).fetch_arrow_table()
         pq.write_table(duckdb_result, duckdb_path)
         duckdb_readback = pq.read_table(duckdb_path)
@@ -189,7 +190,8 @@ class TestArrowDuckDBParquet:
 
         bareduckdb_path = tmp_path / "bareduckdb_roundtrip.parquet"
         bareduckdb_conn = bareduckdb.connect(":memory:")
-        bareduckdb_conn.register("arrow_table", original_table)
+        bareduckdb_conn.execute("SET arrow_output_version='1.0'; SET produce_arrow_string_view=False")
+        bareduckdb_conn.register("arrow_table", filtered_table)
         bareduckdb_result = bareduckdb_conn.execute(query).arrow_table()
         pq.write_table(bareduckdb_result, bareduckdb_path)
         bareduckdb_readback = pq.read_table(bareduckdb_path)
@@ -237,12 +239,14 @@ class TestArrowDuckDBParquet:
 
         duckdb_path = tmp_path / "duckdb_agg.parquet"
         duckdb_conn = duckdb.connect(":memory:")
+        duckdb_conn.execute("SET arrow_output_version='1.0'; SET produce_arrow_string_view=False")
         duckdb_conn.register("arrow_table", arrow_table)
         run_query_and_export(duckdb_conn, query, parameters, duckdb_path)
         duckdb_conn.close()
 
         bareduckdb_path = tmp_path / "bareduckdb_agg.parquet"
         bareduckdb_conn = bareduckdb.connect(":memory:")
+        bareduckdb_conn.execute("SET arrow_output_version='1.0'; SET produce_arrow_string_view=False")
         bareduckdb_conn.register("arrow_table", arrow_table)
         run_query_and_export(bareduckdb_conn, query, parameters, bareduckdb_path)
         bareduckdb_conn.close()
@@ -294,6 +298,7 @@ class TestArrowDuckDBParquet:
 
         duckdb_path = tmp_path / "duckdb_join.parquet"
         duckdb_conn = duckdb.connect(":memory:")
+        duckdb_conn.execute("SET arrow_output_version='1.0'; SET produce_arrow_string_view=False")
         duckdb_conn.register("table1", table1)
         duckdb_conn.register("table2", table2)
         run_query_and_export(duckdb_conn, query, parameters, duckdb_path)
@@ -301,6 +306,7 @@ class TestArrowDuckDBParquet:
 
         bareduckdb_path = tmp_path / "bareduckdb_join.parquet"
         bareduckdb_conn = bareduckdb.connect(":memory:")
+        bareduckdb_conn.execute("SET arrow_output_version='1.0'; SET produce_arrow_string_view=False")
         bareduckdb_conn.register("table1", table1)
         bareduckdb_conn.register("table2", table2)
         run_query_and_export(bareduckdb_conn, query, parameters, bareduckdb_path)

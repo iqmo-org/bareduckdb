@@ -28,10 +28,12 @@ class TestArrowSchemaCompatibility:
         """
 
         bare_conn = bareduckdb.connect(':memory:')
+        bare_conn.execute("SET arrow_output_version='1.0'; SET produce_arrow_string_view=False")
         bare_result = bare_conn.execute(sql, parameters=params)
         bare_arrow = bare_result.arrow_table()
 
         duck_conn = duckdb.connect(':memory:')
+        duck_conn.execute("SET arrow_output_version='1.0'; SET produce_arrow_string_view=False")
         duck_result = duck_conn.execute(sql, params)
         duck_arrow = duck_result.fetch_arrow_table()
 

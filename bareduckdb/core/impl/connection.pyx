@@ -97,8 +97,6 @@ cdef class ConnectionImpl:
             duckdb_close(&self._db)
             raise RuntimeError("Failed to get C++ connection")
 
-        initialize_custom_table_functions(self._conn)
-
     def call_impl(
         self, *, str query, str mode, uint64_t batch_size, object parameters=None
     ):

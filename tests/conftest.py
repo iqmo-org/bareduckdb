@@ -4,40 +4,30 @@ Pytest configuration and shared fixtures.
 
 import pytest
 import logging
+import threading
 from bareduckdb import Connection
 from bareduckdb.core import ConnectionBase
-
-
-try:
-    import pyarrow as pa
-    PYARROW_AVAILABLE = True
-except Exception as e:
-    pa = None
-    PYARROW_AVAILABLE = False
+import uuid
 
 try:
     import polars as pl
 except Exception as e:
     pl = None
 
-# Check if dataset backend is available
 try:
-    from bareduckdb.dataset import backend as dataset_backend
-    _DATASET_AVAILABLE = True
-except Exception:
-    dataset_backend = None
-    _DATASET_AVAILABLE = False
+    import pyarrow as pa
+except Exception as e:
+    pa = None
 
 logger=logging.getLogger(__name__)
 
+_test_counter = 0
+_test_counter_lock = threading.Lock()
+
 
 @pytest.fixture
-def conn():
-
-    connection = Connection()
-    yield connection
-    connection.close()
-
+def unique_table_name(request):
+    return f"test_{uuid.uuid4().hex[:8]}"
 
 config_params = [
     pytest.param(
@@ -55,10 +45,19 @@ config_params = [
 def connect_config(request):
     return request.param
 
-def make_connection(thread_index, iteration_index, connect_config):
-    database = f":memory:db{thread_index}_{iteration_index}"
-    conn = ConnectionBase(database=database, **connect_config)
-    return conn
+@pytest.fixture
+def make_connection(connect_config):
+    """Fixture that returns a connection factory function.
+
+    Returns a function that takes thread_index and iteration_index as parameters.
+    Tests must pass these in because fixture-requested indices always return 0.
+    """
+    def _create_connection(thread_index, iteration_index):
+        database = f":memory:db{thread_index}_{iteration_index}"
+        conn = Connection(database=database, **connect_config)
+        return conn
+
+    return _create_connection
 
 def validate_result(result, length: int, last_cell_value):
     if pa:

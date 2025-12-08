@@ -34,7 +34,7 @@ jobs:
       - name: Run ${{ matrix.sanitizer }} tests in Docker
         shell: bash
         run: |
-          echo "=== Pre-Docker Debugging ==="
+          echo "Pre-Docker Debugging"
           echo "github.workspace: ${{ github.workspace }}"
           echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
           echo "PWD: $(pwd)"
@@ -81,7 +81,7 @@ jobs:
           docker exec "$CONTAINER_ID" bash -c "
               set -e
 
-              echo '=== Environment Setup ==='
+              echo 'Environment Setup'
               echo 'Current directory:'
               pwd
               echo 'Contents of /workspace:'
@@ -89,19 +89,9 @@ jobs:
               echo 'Verifying critical files:'
               ls -l /workspace/setup.py /workspace/pyproject.toml 2>&1 || echo 'Some files missing!'
 
-              echo '=== Installing system dependencies ==='
+              echo 'Installing system dependencies'
               apt-get update -qq
               apt-get install -y -qq unzip curl gcc g++ make clang gdb
-
-              echo '=== Downloading DuckDB library ==='
-              mkdir -p /workspace/duckdb_lib
-              cd /workspace/duckdb_lib
-              curl -L 'https://install.duckdb.org/v1.4.1/libduckdb-linux-amd64.zip' -o libduckdb.zip
-              unzip -o libduckdb.zip
-              ls -lah
-              cd /workspace
-
-              export LD_LIBRARY_PATH=/workspace/duckdb_lib:\$LD_LIBRARY_PATH
 
               # Enable core dumps for debugging crashes
               ulimit -c unlimited
@@ -146,15 +136,15 @@ jobs:
               PYTHON_PATH=\$(which python)
               echo \"Using Python at: \$PYTHON_PATH\"
 
-              echo '=== Installing UV ==='
+              echo 'Installing UV'
               curl -LsSf https://astral.sh/uv/install.sh | sh
               export PATH=\"\$HOME/.local/bin:\$PATH\"
 
-              echo '=== Installing build dependencies (including pyarrow for setup.py) ==='
+              echo 'Installing build dependencies (including pyarrow for setup.py)'
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --upgrade pip
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages \"setuptools>=64\" \"setuptools-scm>=8\" wheel cython \"packaging>=24.2\" pyarrow
 
-              echo '=== Installing bareduckdb ==='
+              echo 'Installing bareduckdb'
               echo 'Current directory:'
               pwd
               echo 'Files in current directory:'
@@ -171,23 +161,21 @@ jobs:
 
               # Temporarily disable sanitizer checks during build and dependency installation
               # PyArrow creates singleton objects during import that ASAN reports as leaks
-              # TSAN hits 128 lock limit during complex C++ compilation (deadlock detector)
-              # These are intentional static allocations/build locks that live for the process lifetime
               if [ '${{ matrix.sanitizer }}' = 'ASAN' ]; then
                 echo 'Disabling leak detection during installation (PyArrow singletons)'
                 export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=0'
               elif [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
-                echo 'Disabling deadlock detection during build (128 lock limit with C++ compilation)'
-                export TSAN_OPTIONS='halt_on_error=1:detect_deadlocks=0'
+                echo 'Disabling race detection during build'
+                export TSAN_OPTIONS='halt_on_error=0:detect_deadlocks=0'
               fi
 
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages -e . --no-build-isolation -v
 
-              echo '=== Installing test dependencies ==='
+              echo 'Installing test dependencies'
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages pytest pytest-asyncio pytest-cov pytest-forked \
                 pytest-randomly pytest-run-parallel pytest-timeout pytest-xdist
 
-              echo '=== Installing nightly pandas and latest pyarrow ==='
+              echo 'Installing nightly pandas and latest pyarrow'
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --pre --upgrade --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple --no-build pandas>=3.0 pyarrow
               # uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages pyarrow
 
@@ -195,40 +183,61 @@ jobs:
               if [ '${{ matrix.sanitizer }}' = 'ASAN' ]; then
                 echo 'Re-enabling leak detection for test execution'
 
-                # Create ASAN suppression file for known library false positives
-                cat > /tmp/asan_suppressions.txt << 'ASANEOF'
-                # PyArrow static type singletons (intentional process-lifetime allocations)
-                leak:arrow::duration
-                leak:arrow::time32
-                leak:arrow::time64
-                leak:arrow::date32
-                leak:arrow::date64
-                leak:arrow::timestamp
-                leak:arrow::month_day_nano_interval
+                # Create LSAN suppression file for known library false positives
+                # Note: leak: suppressions are for LeakSanitizer (LSAN), not ASAN
+                # Using printf instead of heredoc to avoid YAML indentation issues
+                printf '%s\\n' \\
+                  'leak:arrow::duration' \\
+                  'leak:arrow::time32' \\
+                  'leak:arrow::time64' \\
+                  'leak:arrow::date32' \\
+                  'leak:arrow::date64' \\
+                  'leak:arrow::timestamp' \\
+                  'leak:arrow::month_day_nano_interval' \\
+                  'leak:arrow::compute::ScalarFunction' \\
+                  'leak:arrow::compute::KernelSignature' \\
+                  'leak:arrow::compute::literal' \\
+                  'leak:arrow::compute::Initialize' \\
+                  'leak:arrow::compute::internal::RegisterScalar' \\
+                  'leak:libarrow_compute' \\
+                  'leak:logging_memory_pool' \\
+                  'leak:NpyString_new_allocator' \\
+                  'leak:PyUFunc_FromFuncAndDataAndSignatureAndIdentity' \\
+                  'leak:PyArrayIdentityHash_New' \\
+                  'leak:_datetime_dtype_metadata_clone' \\
+                  'leak:npy_alloc_cache_dim' \\
+                  'leak:PyDataMem_UserNEW' \\
+                  'leak:PyThread_allocate_lock' \\
+                  'leak:create_stdio' \\
+                  'leak:init_sys_streams' > /tmp/lsan_suppressions.txt
 
-                # NumPy global allocators (intentional process-lifetime allocations)
-                leak:NpyString_new_allocator
-                leak:PyUFunc_FromFuncAndDataAndSignatureAndIdentity
-
-                # Python runtime (intentional process-lifetime allocations)
-                leak:PyThread_allocate_lock
-                leak:create_stdio
-                leak:init_sys_streams
-                ASANEOF
-
-                # Update ASAN_OPTIONS with comprehensive detection + suppressions
-                export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_string_checks=1:detect_invalid_pointer_pairs=2:symbolize=1:fast_unwind_on_malloc=0:suppressions=/tmp/asan_suppressions.txt'
+                # ASAN_OPTIONS without suppressions (leak suppressions go in LSAN_OPTIONS)
+                export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_string_checks=1:detect_invalid_pointer_pairs=2:symbolize=1:fast_unwind_on_malloc=0'
+                export LSAN_OPTIONS='suppressions=/tmp/lsan_suppressions.txt'
                 echo "ASAN_OPTIONS: \$ASAN_OPTIONS"
+                echo "LSAN_OPTIONS: \$LSAN_OPTIONS"
               elif [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
                 echo 'Re-enabling deadlock detection for test execution'
-                export TSAN_OPTIONS='halt_on_error=1:detect_deadlocks=1'
+                # Combine CPython suppressions with bareduckdb suppressions
+                if [ -f /workspace/.sanitizer-thread-suppressions.txt ]; then
+                  if [ -f /tmp/combined_suppressions.txt ]; then
+                    cat /workspace/.sanitizer-thread-suppressions.txt >> /tmp/combined_suppressions.txt
+                  else
+                    cp /workspace/.sanitizer-thread-suppressions.txt /tmp/combined_suppressions.txt
+                  fi
+                  export TSAN_OPTIONS='halt_on_error=1:detect_deadlocks=1:suppressions=/tmp/combined_suppressions.txt'
+                  echo "Loaded bareduckdb TSAN suppressions"
+                else
+                  export TSAN_OPTIONS='halt_on_error=1:detect_deadlocks=1'
+                  echo "Warning: No bareduckdb suppressions file found"
+                fi
               fi
 
-              echo '=== Running ${{ matrix.sanitizer }} tests ==='
+              echo 'Running ${{ matrix.sanitizer }} tests'
 
               # Function to print stack trace from core dump
               print_crash_info() {
-                echo '=== CRASH DETECTED ==='
+                echo 'CRASH DETECTED'
                 local exit_code=\$1
                 echo \"Exit code: \$exit_code\"
 
@@ -236,7 +245,7 @@ jobs:
                 local core_file=\$(ls -t /tmp/core.* 2>/dev/null | head -1)
                 if [ -n \"\$core_file\" ]; then
                   echo \"Core dump found: \$core_file\"
-                  echo '=== Stack trace from GDB ==='
+                  echo 'Stack trace from GDB'
                   gdb -batch -ex 'thread apply all bt' -ex 'quit' python \$core_file 2>&1 || echo 'Failed to get stack trace'
                 else
                   echo 'No core dump found'
@@ -246,8 +255,10 @@ jobs:
               if [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
                 # TSAN: Run parallel tests to expose race conditions
                 set +e
+                THREADS=\$(($(nproc) < 4 ? $(nproc) : 4))
                 python -m pytest tests/ \
-                  --parallel-threads=4 \
+                  --parallel-threads=\$THREADS \
+                  -n 0 \
                   --iterations=5 \
                   --tb=short \
                   -v \
@@ -261,13 +272,13 @@ jobs:
                 fi
                 exit \$exit_code
               else
-                # ASAN: Run tests truly sequentially (no xdist parallelism)
-                # ASAN adds 2-3x memory overhead - parallel workers cause crashes
+                # ASAN: Run tests sequentially without --forked
+                # NOTE: --forked uses os.fork() which is incompatible with ASAN
+                # in multi-threaded Python 3.14t (causes CHECK failed in __cxa_throw)
                 set +e
                 python -m pytest tests/ \
                   -x \
                   -n 0 \
-                  --forked \
                   --tb=short \
                   -v \
                   --ignore=tests/experimental \

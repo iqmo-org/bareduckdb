@@ -20,7 +20,7 @@ This guide explains how to run GitHub Actions workflows locally using [nektos/ac
 To run the complete dev_versions workflow:
 
 ```bash
-../act/bin/act -W .github/workflows/dev_versions.yml --matrix python-version:3.12 -P  ubuntu-latest=catthehacker/ubuntu:act-latest --reuse
+../act/bin/act -W .github/workflows/dev_versions.yml --matrix python-version:3.14t --matrix os:ubuntu-latest -P  ubuntu-latest=catthehacker/ubuntu:act-24.04 --reuse
 ```
 
 ### 3. Run Specific Jobs

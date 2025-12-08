@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <cstdint>
 #include <mutex>
+#include <atomic>
 #include <unordered_map>
 
 #include "duckdb.h"
@@ -31,8 +32,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include <Python.h>
 
-// Forward decls
-extern "C" void register_arrow_scan_cardinality(duckdb::Connection* cpp_conn);
+// Forward decl for arrow_scan_dataset (defined in arrow_cardinality.hpp, only available with pyarrow)
 extern "C" void register_arrow_scan_dataset(duckdb::Connection* cpp_conn);
 
 namespace bareduckdb {
@@ -370,6 +370,7 @@ struct ArrowArrayStreamWrapper {
     idx_t current_idx = 0;
     ArrowSchema schema;
     bool schema_exported = false;
+    duckdb::unique_ptr<ArrowQueryResult> owned_result;
 
     static int GetSchema(ArrowArrayStream *stream, ArrowSchema *out) {
         if (!stream || !out) {
@@ -436,14 +437,15 @@ extern "C" void* create_arrow_array_stream_from_arrow_result(
         auto* stream = new ArrowArrayStream();
 
         auto* wrapper = new ArrowArrayStreamWrapper();
+        wrapper->owned_result.reset(arrow_result);
 
-        wrapper->arrays = arrow_result->ConsumeArrays();
+        wrapper->arrays = wrapper->owned_result->ConsumeArrays();
 
         ArrowConverter::ToArrowSchema(
             &wrapper->schema,
-            arrow_result->types,
-            arrow_result->names,
-            arrow_result->client_properties
+            wrapper->owned_result->types,
+            wrapper->owned_result->names,
+            wrapper->owned_result->client_properties
         );
 
         stream->private_data = wrapper;
@@ -451,9 +453,6 @@ extern "C" void* create_arrow_array_stream_from_arrow_result(
         stream->get_next = ArrowArrayStreamWrapper::GetNext;
         stream->release = ArrowArrayStreamWrapper::Release;
         stream->get_last_error = ArrowArrayStreamWrapper::GetLastError;
-
-        fprintf(stderr, "[DEBUG] ArrowArrayStreamWrapper created: wrapper=%p, creating_query_number=%llu\n",
-                static_cast<void*>(wrapper), (unsigned long long)wrapper->creating_query_number);
 
         return stream;
     } catch (...) {
@@ -671,15 +670,10 @@ struct SingleUseStreamWrapper {
     uint64_t creating_query_number;  // Deadlock detection
 
     static bool use_mutex() {
-        static bool checked = false;
-        static bool enabled = true;
-        if (!checked) {
+        static bool enabled = []() {
             const char* env = std::getenv("BAREDUCKDB_STREAM_MUTEX");
-            if (env && std::string(env) == "0") {
-                enabled = false;
-            }
-            checked = true;
-        }
+            return !(env && std::string(env) == "0");
+        }();
         return enabled;
     }
 
@@ -765,28 +759,23 @@ namespace RawStreamCallbacks {
 struct CapsuleArrowStreamFactory {
     duckdb::ArrowArrayStreamWrapper stream;
     ArrowSchemaWrapper cached_schema;
-    bool schema_cached = false;
     int64_t cardinality;
-    bool produced = false;
+    std::atomic<bool> produced{false};
     uint64_t creating_query_number;  // Deadlock Detection
 
     explicit CapsuleArrowStreamFactory(ArrowArrayStream* source_stream, int64_t cardinality_p = -1, uint64_t query_num = 0)
         : cardinality(cardinality_p), creating_query_number(query_num) {
         stream.arrow_array_stream = *source_stream;
         source_stream->release = nullptr;
+
+        int result = stream.arrow_array_stream.get_schema(&stream.arrow_array_stream, &cached_schema.arrow_schema);
+        if (result != 0) {
+            throw std::runtime_error("Failed to get schema from capsule stream");
+        }
     }
 
     static void GetSchema(uintptr_t factory_ptr, ArrowSchema &schema) {
         auto* factory = reinterpret_cast<CapsuleArrowStreamFactory*>(factory_ptr);
-
-        if (!factory->schema_cached) {
-            int result = factory->stream.arrow_array_stream.get_schema(&factory->stream.arrow_array_stream, &factory->cached_schema.arrow_schema);
-            if (result != 0) {
-                throw std::runtime_error("Failed to get schema from capsule stream");
-            }
-            factory->schema_cached = true;
-        }
-
         schema = factory->cached_schema.arrow_schema;
         schema.release = nullptr;
     }
@@ -794,7 +783,8 @@ struct CapsuleArrowStreamFactory {
     static duckdb::unique_ptr<duckdb::ArrowArrayStreamWrapper> Produce(uintptr_t factory_ptr, ArrowStreamParameters &params) {
         auto* factory = reinterpret_cast<CapsuleArrowStreamFactory*>(factory_ptr);
 
-        if (factory->produced) {
+        bool expected = false;
+        if (!factory->produced.compare_exchange_strong(expected, true)) {
             auto error_wrapper_ptr = new ErrorStreamWrapper(
                 "Arrow stream has already been consumed",
                 factory->cached_schema.arrow_schema
@@ -809,8 +799,6 @@ struct CapsuleArrowStreamFactory {
 
             return wrapper;
         }
-
-        factory->produced = true;
 
         auto wrapper = duckdb::make_uniq<duckdb::ArrowArrayStreamWrapper>();
         wrapper->arrow_array_stream = factory->stream.arrow_array_stream;
@@ -929,14 +917,7 @@ extern "C" void register_capsule_stream(
             children.push_back(duckdb::make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&CapsuleArrowStreamFactory::Produce))));
             children.push_back(duckdb::make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&CapsuleArrowStreamFactory::GetSchema))));
 
-            // Auto-select scan function based on cardinality
-            if (cardinality > 0) {
-                // Add GetCardinality pointer as 4th argument for arrow_scan_cardinality
-                children.push_back(duckdb::make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&CapsuleArrowStreamFactory::GetCardinality))));
-                scan_function = "arrow_scan_cardinality";
-            } else {
-                scan_function = "arrow_scan_dumb";
-            }
+            scan_function = "arrow_scan_dumb";
 
             factory_to_release = capsule_factory.release();
         }
@@ -945,7 +926,6 @@ extern "C" void register_capsule_stream(
 
         auto external_dependency = duckdb::make_shared_ptr<ExternalDependency>();
 
-        // Add factory to external dependency for automatic cleanup when view is dropped
         if (factory_to_release) {
             auto factory_dep = duckdb::make_shared_ptr<FactoryDependencyItem>(factory_to_release);
             external_dependency->AddDependency("arrow_factory", factory_dep);
@@ -1047,31 +1027,6 @@ extern "C" duckdb::QueryResult* execute_prepared_statement(
     }
 }
 
-// Initialize custom table functions
-extern "C" void initialize_custom_table_functions(duckdb_connection c_conn) {
-    try {
-        auto conn = get_cpp_connection(c_conn);
-        if (!conn) {
-            throw std::runtime_error("Invalid connection");
-        }
-
-        // Always register arrow_scan_cardinality for better Top-N optimization
-        try {
-            register_arrow_scan_cardinality(conn);
-        } catch (const std::exception &e) {
-            std::string error_msg(e.what());
-            if (error_msg.find("already exists") == std::string::npos &&
-                error_msg.find("duplicate") == std::string::npos) {
-                throw;
-            }
-        }
-    } catch (const std::exception &e) {
-        PyErr_SetString(PyExc_RuntimeError, e.what());
-    } catch (...) {
-        PyErr_SetString(PyExc_RuntimeError, "Unknown error in initialize_custom_table_functions");
-    }
-}
-
 inline duckdb::LogicalType* create_sqlnull_logical_type() {
     return new duckdb::LogicalType(duckdb::LogicalTypeId::SQLNULL);
 }
@@ -1081,5 +1036,3 @@ inline void destroy_logical_type(duckdb::LogicalType* type) {
 }
 
 } // namespace bareduckdb
-
-#include "arrow_cardinality.hpp"

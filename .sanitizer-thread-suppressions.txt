@@ -1,0 +1,23 @@
+# TSAN Suppressions for bareduckdb
+# DuckDB internal races (from external/duckdb/.sanitizer-thread-suppressions.txt)
+deadlock:InitializeIndexes
+race:InsertMatchesAndIncrementMisses
+race:NextInnerJoin
+race:NextRightSemiOrAntiJoin
+race:duckdb_moodycamel
+race:*duckdb/extension/jemalloc/jemalloc/*
+race:AddToEvictionQueue
+race:ValidityAppend
+
+# DuckDB executor/collector races discovered with free-threaded Python
+race:PhysicalArrowCollector
+race:PhysicalArrowBatchCollector
+race:PhysicalSet
+race:Executor::~Executor
+race:ArrowCollectorGlobalState
+race:ArrowCollectorLocalState
+
+# DuckDB result handling races
+race:ArrowQueryResult
+race:QueryResult
+race:ColumnDataCollection

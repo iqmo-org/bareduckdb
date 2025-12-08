@@ -10,6 +10,7 @@ import time
 from typing import TYPE_CHECKING
 
 from .impl.connection import ConnectionImpl  # type: ignore[import-untyped]
+from .registration import TableRegistration
 
 if TYPE_CHECKING:
     from typing import Any, Literal, Mapping, Optional, Sequence  # type: ignore[attr-defined]
@@ -30,7 +31,7 @@ class ConnectionBase:
     """
 
     # Class variables
-    _DUCKDB_INIT_LOCK = threading.Lock()  # Global lock to serialize unsafe operations
+    _DUCKDB_INIT_LOCK: threading.Lock = threading.Lock()  # Global lock to serialize unsafe operations
 
     _MODE_ARROW = "arrow"
     _MODE_ARROW_CAPSULE = "arrow_capsule"
@@ -38,9 +39,10 @@ class ConnectionBase:
 
     # Instance attributes
     _impl: Any
+    _lock: threading.Lock
+    _registrations: dict[str, TableRegistration]
     _registered_objects: dict[str, Any]
     _database_path: str | None
-    _lock: threading.Lock
     _arrow_table_collector: Literal["arrow", "stream"]
     _enable_arrow_dataset: bool
 
@@ -52,6 +54,9 @@ class ConnectionBase:
         *,
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
         enable_arrow_dataset: bool = False,
+        # https://arrow.apache.org/docs/format/Versioning.html#post-1-0-0-format-versions
+        # The idea here is to align the arrow output with Polars native types... but Pandas doesn't yet have a built-in mapper for string-views
+        init_sql: str | None = "set arrow_output_version='1.5';set produce_arrow_string_view=True;",
     ) -> None:
         """
         Create a minimal DuckDB connection.
@@ -61,6 +66,7 @@ class ConnectionBase:
             config: Dictionary of configuration options (e.g., {'threads': '4', 'memory_limit': '1GB'})
             read_only: Whether to open database in read-only mode
             arrow_table_collector: Arrow collection mode ("arrow" or "stream")
+            init_sql: SQL to run when creating the connection
         """
 
         with ConnectionBase._DUCKDB_INIT_LOCK:  # duckdb connection init is not thread-safe
@@ -70,13 +76,15 @@ class ConnectionBase:
                 read_only=read_only,
             )  # type: ignore[assignment]  # Cython module
 
+        self._lock = threading.Lock()
+        self._registrations: dict[str, TableRegistration] = {}
         self._registered_objects: dict[str, Any] = {}
-        self._factory_pointers: dict[str, int] = {}  # C++ factory pointers (need cleanup)
-        self._database_path: str | None = database  # Store for cursor() method
-        self._lock: threading.Lock = threading.Lock()  # Thread safety lock for _impl operations
+        self._database_path: str | None = database
         self.arrow_table_collector = arrow_table_collector
         self._enable_arrow_dataset = enable_arrow_dataset
 
+        if init_sql:
+            self._call(init_sql, output_type="arrow_capsule")
         logger.debug(
             "Created connection: database=%s, config=%s, read_only=%s",
             database,
@@ -161,30 +169,30 @@ class ConnectionBase:
         Returns:
             Result in requested format (pa.Table, pa.RecordBatchReader, or capsule)
         """
+        with self._lock:
+            if output_type == "arrow_table":
+                mode = ConnectionBase._MODE_ARROW if self.arrow_table_collector == "arrow" else ConnectionBase._MODE_STREAM
+            elif output_type == "arrow_reader":
+                mode = ConnectionBase._MODE_STREAM
+            elif output_type in ("arrow_capsule", "pl"):
+                mode = ConnectionBase._MODE_ARROW_CAPSULE
+            else:
+                raise ValueError(f"Invalid output_type: {output_type}")
 
-        if output_type == "arrow_table":
-            mode = ConnectionBase._MODE_ARROW if self.arrow_table_collector == "arrow" else ConnectionBase._MODE_STREAM
-        elif output_type == "arrow_reader":
-            mode = ConnectionBase._MODE_STREAM
-        elif output_type in ("arrow_capsule", "pl"):
-            mode = ConnectionBase._MODE_ARROW_CAPSULE
-        else:
-            raise ValueError(f"Invalid output_type: {output_type}")
+            logger.debug(
+                "Executing query with output_type=%s, mode=%s",
+                output_type,
+                mode,
+            )
 
-        logger.debug(
-            "Executing query with output_type=%s, mode=%s",
-            output_type,
-            mode,
-        )
+            _data_to_unregister: list[str] = []
 
-        _data_to_unregister: list[str] = []
-        if data:
-            for name, data_obj in data.items():
-                self._register_arrow(name, data_obj)
-                _data_to_unregister.append(name)
+            try:
+                if data:
+                    for name, data_obj in data.items():
+                        self._register_arrow(name, data_obj)
+                        _data_to_unregister.append(name)
 
-        try:
-            with self._lock:  # connections aren't thread-safe
                 t_exec_start = time.perf_counter()
                 base_result = self._impl.call_impl(query=query, mode=mode, batch_size=batch_size, parameters=parameters)
                 t_exec_end = time.perf_counter()
@@ -206,9 +214,9 @@ class ConnectionBase:
                     return base_result.__arrow_c_stream__(None)
                 else:
                     raise ValueError(f"Invalid output_type: {output_type}")
-        finally:
-            for name in _data_to_unregister:
-                self.unregister(name)
+            finally:
+                for name in _data_to_unregister:
+                    self.unregister(name)
 
     def unregister(self, name: str) -> None:
         """
@@ -218,21 +226,30 @@ class ConnectionBase:
             name: Table name to unregister
         """
         logger.debug("Unregistering table: %s", name)
-        with self._lock:
+        with self._DUCKDB_INIT_LOCK:
             self._impl.unregister(name)
 
+            # Clean up dataset registrations (outside query lock)
+            if name in self._registrations:
+                registration = self._registrations.pop(name)
+                registration.close()
+
+            # Clean up capsule registrations
             if name in self._registered_objects:
                 del self._registered_objects[name]
 
-            factory_ptr = self._factory_pointers.pop(name, None)
-            if factory_ptr:
-                from bareduckdb.dataset import backend
-
-                backend.delete_factory(self, factory_ptr)
-
     def close(self) -> None:
         logger.debug("Closing connection")
-        with self._lock:
+        with self._DUCKDB_INIT_LOCK:
+            for name, registration in list(self._registrations.items()):
+                try:
+                    registration.close()
+                except Exception as e:
+                    logger.warning(f"Error closing registration for {name}: {e}")
+            self._registrations.clear()
+
+            self._registered_objects.clear()
+
             self._impl.close()
 
     def __enter__(self) -> ConnectionBase:

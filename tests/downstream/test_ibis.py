@@ -2,8 +2,7 @@ import pytest
 import tempfile
 import os
 
-import ibis
-
+ibis = pytest.importorskip("ibis")
 
 import bareduckdb
 bareduckdb.register_as_duckdb()

@@ -39,7 +39,6 @@ test = [
     "pytest-run-parallel>=0.2.0",
     "pytest-forked>=1.6.0",
     "pyarrow>=22.0",
-    "pandas;python_version < '3.14'",  # For 3.14t manually install nightly pandas until 3.0 ships or PEP780 lands
 ]
 
 [tool.pyright]
@@ -142,7 +141,7 @@ dev = [
     "coverage>=7.11.0",
     "ipykernel>=7.0.1;python_version < '3.14'",
     #"magic-duckdb",  # Install with: uv pip install magic-duckdb --no-deps
-    "pandas",
+    "pandas>=3.0.0rc0",
     "pandas-stubs",
     "polars>=1.34.0;python_version < '3.14'",
     "pre-commit-uv>=4.2.0",
@@ -161,7 +160,7 @@ dev = [
 ]
 downstream = [
     "duckdb-engine>=0.17.0",
-    "ibis-framework[duckdb]>=11.0.0",
+    # "ibis-framework[duckdb]>=11.0.0",  # disabled until supports pandas 3.0
     "ipython>=9.7.0",
     "jupysql>=0.11.1",
     "magic-duckdb>=0.2.3",

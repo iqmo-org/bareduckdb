@@ -131,8 +131,6 @@ cdef extern from "cpp_helpers.hpp" namespace "bareduckdb":
 
     void unregister_python_object(duckdb_connection c_conn, const char* view_name) except +
 
-    void initialize_custom_table_functions(duckdb_connection c_conn) except +
-
     # Common result ops
     ArrowQueryResult* cast_to_arrow_result(QueryResult *result) nogil
     bool result_has_error(QueryResult *result) nogil

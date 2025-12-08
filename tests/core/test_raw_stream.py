@@ -1,11 +1,10 @@
 
 import pytest
 from bareduckdb.core import ConnectionBase
-from conftest import make_connection
 
 
-def test_raw_stream_materialized(connect_config, thread_index, iteration_index):
-    conn = make_connection(thread_index, iteration_index, connect_config)
+def test_raw_stream_materialized(make_connection, connect_config, thread_index, iteration_index):
+    conn = make_connection(thread_index, iteration_index)
 
     table = conn._call(query="select * from range(100) t(j)")
 
@@ -20,8 +19,8 @@ def test_raw_stream_materialized(connect_config, thread_index, iteration_index):
     conn.close()
 
 
-def test_raw_stream_deadlock(connect_config, thread_index, iteration_index):
-    conn = make_connection(thread_index, iteration_index, connect_config)
+def test_raw_stream_deadlock(make_connection, connect_config, thread_index, iteration_index):
+    conn = make_connection(thread_index, iteration_index)
 
     table = conn._call(query="select * from range(100) t(j)")
 

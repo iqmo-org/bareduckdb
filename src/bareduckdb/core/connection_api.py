@@ -5,6 +5,8 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
+from jinja2 import Environment, StrictUndefined
+
 if TYPE_CHECKING:
     from typing import Any, Callable, Literal, Mapping, Optional, Sequence
 
@@ -18,10 +20,25 @@ from .connection_base import ConnectionBase
 logger = logging.getLogger(__name__)
 
 
+class _UDTFNamespace:
+    """Namespace for UDTF template calls.
+
+    Enables {{ udtf.function_name(...) }} syntax in SQL templates.
+    """
+
+    def __init__(self, parent: ConnectionAPI, pending_data: dict[str, Any]) -> None:
+        self._parent = parent
+        self._pending_data = pending_data
+
+    def __getattr__(self, name: str) -> Callable:
+        return self._parent._create_udtf_wrapper(name, self._pending_data)
+
+
 class ConnectionAPI(ConnectionBase):
     _udtf_registry: dict[str, Callable]
     _last_result: Result  # Result or None
     _default_output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"]
+    _jinja_env: Environment
 
     def __init__(
         self,
@@ -55,6 +72,8 @@ class ConnectionAPI(ConnectionBase):
         self._udtf_registry: dict[str, Callable] = {}
         self._default_output_type = output_type
         self._last_result = None
+
+        self._jinja_env = Environment(undefined=StrictUndefined, autoescape=True)
 
         if udtf_functions:
             for name, func in udtf_functions.items():
@@ -161,31 +180,13 @@ class ConnectionAPI(ConnectionBase):
         if "{{" not in sql:
             return sql, {}
 
-        # Lazy import to avoid import-time dependency
-        from jinja2 import Environment, StrictUndefined
-
-        # Create a temporary storage for this rendering pass
         pending_udtf_data = {}
 
-        # Create Jinja2 environment
-        env = Environment(undefined=StrictUndefined, autoescape=True)
+        udtf_namespace = _UDTFNamespace(self, pending_udtf_data)
 
-        # Create a namespace object that allows attribute access
-        # This enables {{ udtf.function_name(...) }} syntax
-        class UDTFNamespace:
-            def __init__(self, parent, pending_data):
-                self._parent = parent
-                self._pending_data = pending_data
-
-            def __getattr__(self, name):
-                return self._parent._create_udtf_wrapper(name, self._pending_data)
-
-        env.globals["udtf"] = UDTFNamespace(self, pending_udtf_data)
-
-        # Render the template
         try:
-            template = env.from_string(sql)
-            modified_sql = template.render()
+            template = self._jinja_env.from_string(sql)
+            modified_sql = template.render(udtf=udtf_namespace)
         except Exception as e:
             raise ValueError(f"Error processing UDTF templates: {e}") from e
 

@@ -96,7 +96,8 @@ jobs:
         shell: bash
         run: |
           NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu)
-          THREADS=$((NPROC < 4 ? NPROC : 4))
+          THREADS=$((NPROC - 1))
+          THREADS=$((THREADS < 1 ? 1 : THREADS))  # Ensure at least 1 thread
           echo "NPROC: $NPROC"
           echo "THREADS: $THREADS"
           uv run --no-sync pytest tests/ -n 0 --parallel-threads=$THREADS --iterations=10 --tb=short -v -m "not asyncio" --ignore=tests/experimental --ignore=tests/comparison --ignore=tests/downstream --cov=bareduckdb --cov-append

@@ -6,8 +6,8 @@ include README.md
 include pyproject.toml
 include setup.py
 
-recursive-include bareduckdb *.pyx *.pxd *.hpp *.cpp
-recursive-include bareduckdb/_libs *.dylib *.so
+recursive-include src/bareduckdb *.pyx *.pxd *.hpp *.cpp
+recursive-include src/bareduckdb/_libs *.dylib *.so
 
 global-exclude *.pyc
 global-exclude *.pyo

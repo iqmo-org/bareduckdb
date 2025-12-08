@@ -173,9 +173,9 @@ download_and_extract_duckdb()
 
 def copy_library_to_package():
     """
-    Copy libduckdb.so into bareduckdb/_libs/ for wheel distribution.
+    Copy libduckdb.so into src/bareduckdb/_libs/ for wheel distribution.
     """
-    package_libs_dir = Path(os.path.dirname(__file__)) / "bareduckdb" / "_libs"
+    package_libs_dir = Path(os.path.dirname(__file__)) / "src" / "bareduckdb" / "_libs"
     package_libs_dir.mkdir(exist_ok=True)
 
     target_lib = package_libs_dir / f"libduckdb.{_LIB_EXT}"
@@ -305,7 +305,7 @@ def get_args(name, sources) -> dict[str, Any]:
     args = {
         "name": name,
         "sources": sources,
-        "include_dirs": ["bareduckdb/core/impl", _DUCKDB_INCLUDE],
+        "include_dirs": ["src/bareduckdb/core/impl", _DUCKDB_INCLUDE],
         "extra_objects": extra_objects,
         "libraries": libraries,
         "library_dirs": [str(package_libs_dir)],
@@ -323,17 +323,17 @@ def get_args(name, sources) -> dict[str, Any]:
 
 connection_kwargs = get_args(
     name="bareduckdb.core.impl.connection",
-    sources=["bareduckdb/core/impl/connection.pyx"],
+    sources=["src/bareduckdb/core/impl/connection.pyx"],
 )
 
 result_kwargs = get_args(
     name="bareduckdb.core.impl.result",
-    sources=["bareduckdb/core/impl/result.pyx"],
+    sources=["src/bareduckdb/core/impl/result.pyx"],
 )
 
 python_to_value_kwargs = get_args(
     name="bareduckdb.core.impl.python_to_value",
-    sources=["bareduckdb/core/impl/python_to_value.pyx"],
+    sources=["src/bareduckdb/core/impl/python_to_value.pyx"],
 )
 
 core_extensions = [
@@ -400,10 +400,10 @@ if ARROW_AVAILABLE:
 
     dataset_kwargs = {
         "name": "bareduckdb.dataset.impl.dataset",
-        "sources": ["bareduckdb/dataset/impl/dataset.pyx"],
+        "sources": ["src/bareduckdb/dataset/impl/dataset.pyx"],
         "include_dirs": [
-            "bareduckdb/dataset/impl",
-            "bareduckdb/core/impl",  # For cpp_helpers.hpp
+            "src/bareduckdb/dataset/impl",
+            "src/bareduckdb/core/impl",  # For cpp_helpers.hpp
             _DUCKDB_INCLUDE,
             PYARROW_INCLUDE,
         ],
@@ -480,7 +480,7 @@ class ParallelBuildExt(build_ext):
     def add_duckdb_version(self):
         # editable: write to source dir, regular: write to build dir
         # Note: This also serves as a sanity check on the build
-        source_version_file = os.path.join('bareduckdb', '_version.py')
+        source_version_file = os.path.join('src', 'bareduckdb', '_version.py')
 
         build_py = self.get_finalized_command('build_py')
         build_lib = build_py.build_lib
@@ -491,7 +491,7 @@ class ParallelBuildExt(build_ext):
             sys_path_dir = os.path.abspath(build_lib)
         elif os.path.exists(source_version_file):
             version_file = source_version_file
-            sys_path_dir = os.path.abspath('.')
+            sys_path_dir = os.path.abspath('src')
         else:
             raise ValueError("Unable to update _version file")
 
@@ -530,7 +530,7 @@ class ParallelBuildExt(build_ext):
 
         # For stable ABI builds, ensure wheels only contain .abi3.so extensions
         if USE_LIMITED_API:
-            for pattern in ["bareduckdb/**/*.cpython-*.so", "build/**/*.cpython-*.so"]:
+            for pattern in ["src/bareduckdb/**/*.cpython-*.so", "build/**/*.cpython-*.so"]:
                 for version_specific_so in glob.glob(pattern, recursive=True):
                     if os.path.exists(version_specific_so):
                         os.remove(version_specific_so)

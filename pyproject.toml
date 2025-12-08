@@ -39,6 +39,7 @@ test = [
     "pytest-run-parallel>=0.2.0",
     "pytest-forked>=1.6.0",
     "pyarrow>=22.0",
+    "pandas>=3.0.0rc0",
 ]
 
 [tool.pyright]
@@ -64,13 +65,14 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
+package-dir = {"" = "src"}
 packages = ["bareduckdb", "bareduckdb.core", "bareduckdb.core.impl", "bareduckdb.aio", "bareduckdb.compat",  "bareduckdb._libs", "bareduckdb.functional", "bareduckdb.dataset", "bareduckdb.dataset.impl"]
 
 [tool.setuptools.package-data]
 bareduckdb = ["_libs/libduckdb.*"]
 
 [tool.setuptools_scm]
-version_file = "bareduckdb/_version.py"
+version_file = "src/bareduckdb/_version.py"
 
 [tool.cibuildwheel]
 build-frontend = "build[uv]"
@@ -198,7 +200,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["bareduckdb"]
+source = ["src/bareduckdb"]
 branch = true
 omit = [
     "*/tests/*",

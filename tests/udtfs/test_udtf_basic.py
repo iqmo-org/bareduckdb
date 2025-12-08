@@ -3,9 +3,9 @@ import pyarrow as pa
 import bareduckdb
 import pytest
 
-def test_basic_udtf_registration():
+def test_basic_udtf_registration(thread_index, iteration_index):
 
-    conn = bareduckdb.connect()
+    conn = bareduckdb.connect(database=f":memory:udtf_basic_{thread_index}_{iteration_index}")
 
     def simple_range(n: int) -> pa.Table:
         return pa.table({"id": range(n), "value": [i * 2 for i in range(n)]})
@@ -19,10 +19,12 @@ def test_basic_udtf_registration():
     assert list(df["id"]) == [0, 1, 2, 3, 4]
     assert list(df["value"]) == [0, 2, 4, 6, 8]
 
+    conn.close()
 
-def test_udtf_with_aggregation():
 
-    conn = bareduckdb.connect()
+def test_udtf_with_aggregation(thread_index, iteration_index):
+
+    conn = bareduckdb.connect(database=f":memory:udtf_agg_{thread_index}_{iteration_index}")
 
     def data_gen(rows: int, multiplier: int = 1) -> pa.Table:
         return pa.table(
@@ -51,10 +53,12 @@ def test_udtf_with_aggregation():
     assert df[df["category"] == "A"]["count"].values[0] == 50
     assert df[df["category"] == "B"]["count"].values[0] == 50
 
+    conn.close()
 
-def test_udtf_with_conn_injection():
 
-    conn = bareduckdb.connect()
+def test_udtf_with_conn_injection(thread_index, iteration_index):
+
+    conn = bareduckdb.connect(database=f":memory:udtf_inject_{thread_index}_{iteration_index}")
 
     conn.execute("CREATE TABLE base_data AS SELECT * FROM range(10) t(id)")
 
@@ -71,10 +75,12 @@ def test_udtf_with_conn_injection():
     assert list(df["id"]) == [0, 1, 2, 3, 4]
     assert list(df["doubled"]) == [0, 2, 4, 6, 8]
 
+    conn.close()
 
-def test_udtf_multiple_calls():
 
-    conn = bareduckdb.connect()
+def test_udtf_multiple_calls(thread_index, iteration_index):
+
+    conn = bareduckdb.connect(database=f":memory:udtf_multi_{thread_index}_{iteration_index}")
 
     def range_gen(n: int, offset: int = 0) -> pa.Table:
         return pa.table({"id": [i + offset for i in range(n)]})
@@ -93,13 +99,18 @@ def test_udtf_multiple_calls():
     df = result.df()
     assert len(df) == 5
 
+    conn.close()
 
-def test_udtf_with_dict_registration():
+
+def test_udtf_with_dict_registration(thread_index, iteration_index):
 
     def my_generator(rows: int) -> pa.Table:
         return pa.table({"id": range(rows), "squared": [i**2 for i in range(rows)]})
 
-    conn = bareduckdb.connect(udtf_functions={"gen": my_generator})
+    conn = bareduckdb.connect(
+        database=f":memory:udtf_dict_{thread_index}_{iteration_index}",
+        udtf_functions={"gen": my_generator}
+    )
 
     result = conn.execute("SELECT * FROM {{ udtf.gen(rows=4) }}")
     df = result.df()
@@ -107,10 +118,12 @@ def test_udtf_with_dict_registration():
     assert len(df) == 4
     assert list(df["squared"]) == [0, 1, 4, 9]
 
+    conn.close()
 
-def test_udtf_runtime_registration():
 
-    conn = bareduckdb.connect()
+def test_udtf_runtime_registration(thread_index, iteration_index):
+
+    conn = bareduckdb.connect(database=f":memory:udtf_runtime_{thread_index}_{iteration_index}")
 
     def late_binding(n: int) -> pa.Table:
         return pa.table({"value": [i * 3 for i in range(n)]})
@@ -123,19 +136,23 @@ def test_udtf_runtime_registration():
     expected_sum = sum(i * 3 for i in range(10))
     assert df["total"].values[0] == expected_sum
 
+    conn.close()
 
-def test_udtf_error_not_registered():
- 
-    conn = bareduckdb.connect()
+
+def test_udtf_error_not_registered(thread_index, iteration_index):
+
+    conn = bareduckdb.connect(database=f":memory:udtf_error_{thread_index}_{iteration_index}")
 
     with pytest.raises(ValueError):
         conn.execute("SELECT * FROM {{ udtf.nonexistent(n=5) }}")
 
+    conn.close()
 
 
-def test_udtf_error_invalid_return_type():
-   
-    conn = bareduckdb.connect()
+
+def test_udtf_error_invalid_return_type(thread_index, iteration_index):
+
+    conn = bareduckdb.connect(database=f":memory:udtf_badret_{thread_index}_{iteration_index}")
 
     def bad_return(n: int) -> str:
         return "not a table"
@@ -145,12 +162,14 @@ def test_udtf_error_invalid_return_type():
     with pytest.raises(RuntimeError):
         conn.execute("SELECT * FROM {{ udtf.bad_return(n=5) }}")
 
+    conn.close()
 
-def test_udtf_with_pandas():
+
+def test_udtf_with_pandas(thread_index, iteration_index):
 
     import pandas as pd
 
-    conn = bareduckdb.connect()
+    conn = bareduckdb.connect(database=f":memory:udtf_pandas_{thread_index}_{iteration_index}")
 
     def pandas_gen(rows: int) -> pd.DataFrame:
         return pd.DataFrame({"x": range(rows), "y": [i**2 for i in range(rows)]})
@@ -163,10 +182,12 @@ def test_udtf_with_pandas():
     assert len(df) == 5
     assert list(df["y"]) == [0, 1, 4, 9, 16]
 
+    conn.close()
 
-def test_udtf_unique_naming():
+
+def test_udtf_unique_naming(thread_index, iteration_index):
     """Test that UDTF calls generate unique table names"""
-    conn = bareduckdb.connect()
+    conn = bareduckdb.connect(database=f":memory:udtf_unique_{thread_index}_{iteration_index}")
 
     def test_func(n: int) -> pa.Table:
         return pa.table({"id": range(n)})
@@ -189,10 +210,12 @@ def test_udtf_unique_naming():
     assert table1.startswith("_udtf_test_func_")
     assert table2.startswith("_udtf_test_func_")
 
+    conn.close()
 
-def test_udtf_with_data_param():
-   
-    conn = bareduckdb.connect()
+
+def test_udtf_with_data_param(thread_index, iteration_index):
+
+    conn = bareduckdb.connect(database=f":memory:udtf_data_{thread_index}_{iteration_index}")
 
     def gen_a(n: int) -> pa.Table:
         return pa.table({"id": range(n), "source": ["udtf"] * n})
@@ -219,4 +242,6 @@ def test_udtf_with_data_param():
     assert len(df) == 2
     assert df[df["source"] == "udtf"]["cnt"].values[0] == 5
     assert df[df["source"] == "external"]["cnt"].values[0] == 3
+
+    conn.close()
 

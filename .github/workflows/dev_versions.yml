@@ -162,7 +162,7 @@ jobs:
       - name: Rebuild with nightly PyArrow
         shell: bash
         run: |
-          rm -rf build/ && find bareduckdb -name "*.so" -delete  # Clean old build artifacts
+          rm -rf build/ && find src/bareduckdb -name "*.so" -delete  # Clean old build artifacts
           uv sync --reinstall-package bareduckdb -v
       
       - name: Run core tests against Nightlys

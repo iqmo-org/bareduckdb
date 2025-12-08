@@ -18,7 +18,8 @@ def test_raw_stream_materialized(make_connection, connect_config, thread_index, 
     assert table.to_pylist() == table2.to_pylist()
     conn.close()
 
-
+# fails on GHA in parallel: TODO - solution really is to avoid reusable registrations
+@pytest.mark.parallel_threads(1)  
 def test_raw_stream_deadlock(make_connection, connect_config, thread_index, iteration_index):
     conn = make_connection(thread_index, iteration_index)
 

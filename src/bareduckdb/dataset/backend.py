@@ -60,7 +60,7 @@ def register_table(
 
     conn_impl = _get_connection_impl(connection_base)
 
-    with connection_base._DUCKDB_INIT_LOCK:
+    with connection_base._lock:
         old_registration = connection_base._registrations.get(name)
 
         # Create new factory - DuckDB's CreateView with replace=True handles view replacement

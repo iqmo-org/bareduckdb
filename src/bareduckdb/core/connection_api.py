@@ -109,7 +109,8 @@ class ConnectionAPI(ConnectionBase):
 
         def udtf_jinja_wrapper(**kwargs) -> str:
             table_name = self._generate_table_name(func_name, kwargs)
-            pending_data[table_name] = lambda: self._call_udtf(func_name, kwargs)
+            kwargs_copy = dict(kwargs)
+            pending_data[table_name] = lambda: self._call_udtf(func_name, kwargs_copy)
             logger.debug("UDTF wrapper for %s generated table: %s (deferred)", func_name, table_name)
             return table_name
 

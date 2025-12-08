@@ -899,10 +899,15 @@ extern "C" void register_capsule_stream(
             auto* wrapper_ptr = new SingleUseStreamWrapper();
             wrapper_ptr->underlying_stream = original_stream;
 
-            // Deadlock Detection: Set to 0 (safe) for foreign streams
-            // We can't safely read creating_query_number from original_stream->private_data
-            // because we don't know if it's our wrapper or a PyArrow/foreign stream
-            wrapper_ptr->creating_query_number = 0;
+            // Deadlock Detection: extract creating_query_number from underlying stream
+            uint64_t extracted_query_number = 0;
+            if (original_stream->private_data) {
+                if (original_stream->get_next == StreamingArrowArrayStreamWrapper::GetNext) {
+                    auto* streaming_wrapper = reinterpret_cast<StreamingArrowArrayStreamWrapper*>(original_stream->private_data);
+                    extracted_query_number = streaming_wrapper->creating_query_number;
+                }
+            }
+            wrapper_ptr->creating_query_number = extracted_query_number;
 
             auto* wrapped_stream = new ArrowArrayStream();
             wrapped_stream->get_schema = SingleUseStreamWrapper::wrapped_get_schema;

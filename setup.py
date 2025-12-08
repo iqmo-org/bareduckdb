@@ -227,12 +227,12 @@ else:
     print(f"Building with {USE_LIMITED_API=}: stable ABI for {STABLE_PYTHON_VERSION=}")
 
 if OPTIMIZATION_LEVEL == "debug":
-    # Use -O1 for ASAN (Google recommendation) - provides better bug detection than -O0
+    # Use -O1 for ASAN - provides better bug detection than -O0
     # -fno-optimize-sibling-calls: preserves stack frames for better ASAN traces
     compile_args = ["-std=c++17", "-O1", "-g", "-Wall", "-fno-optimize-sibling-calls"]
     link_args = base_link_args.copy()
     define_macros = [("CYTHON_USE_MODULE_STATE", "1")]
-    # Don't use Py_LIMITED_API in debug mode - sanitizers (ASAN/TSAN) need full Python C API access
+    # Don't use Py_LIMITED_API in debug mode
     # if USE_LIMITED_API:
     #     define_macros.append(("Py_LIMITED_API", f"{PY_LIMITED_API_VERSION:#x}"))
     cython_directives = {

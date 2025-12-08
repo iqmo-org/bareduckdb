@@ -160,9 +160,8 @@ jobs:
       - name: Rebuild with nightly PyArrow
         shell: bash
         run: |
-          uv pip install setuptools wheel Cython  # Build dependencies
-          uv pip uninstall bareduckdb  # Explicitly uninstall to ensure clean rebuild
-          uv pip install . --no-deps --no-build-isolation -v
+          rm -rf build/ && find bareduckdb -name "*.so" -delete  # Clean old build artifacts
+          uv sync --reinstall-package bareduckdb -v
       
       - name: Run core tests against Nightlys
         shell: bash

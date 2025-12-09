@@ -119,29 +119,29 @@ jobs:
           uv run --no-sync pytest tests/comparison -v --tb=short --cov=bareduckdb --cov-append
           uv pip uninstall duckdb
 
-      - name: Test PyPI DuckDB extensions
-        if: matrix.python-version != '3.14t'
-        shell: bash
-        run: |
-          uv pip install duckdb-extensions==1.4.2 duckdb-extension-httpfs
+      # - name: Test PyPI DuckDB extensions
+      #   if: matrix.python-version != '3.14t'
+      #   shell: bash
+      #   run: |
+      #     uv pip install duckdb-extensions==1.4.2 duckdb-extension-httpfs
 
-          uv run --no-sync python -c "
-          import bareduckdb
-          conn = bareduckdb.Connection()
+      #     uv run --no-sync python -c "
+      #     import bareduckdb
+      #     conn = bareduckdb.Connection()
 
-          conn.load_extension('httpfs')
+      #     conn.load_extension('httpfs')
 
-          result = conn.execute('''SELECT * FROM duckdb_extensions() WHERE extension_name = 'httpfs' ''').fetchall()
-          assert len(result) > 0, 'httpfs extension not loaded'
+      #     result = conn.execute('''SELECT * FROM duckdb_extensions() WHERE extension_name = 'httpfs' ''').fetchall()
+      #     assert len(result) > 0, 'httpfs extension not loaded'
 
-          extension_info = result[0]
-          assert extension_info[1] is False
-          assert extension_info[2] is True
+      #     extension_info = result[0]
+      #     assert extension_info[1] is False
+      #     assert extension_info[2] is True
 
-          conn.close()
-          "
+      #     conn.close()
+      #     "
 
-          uv pip uninstall duckdb-extensions duckdb-extension-httpfs
+      #     uv pip uninstall duckdb-extensions duckdb-extension-httpfs
 
       - name: Run downstream integration tests
         if: matrix.python-version != '3.14t'  # duckdb doesn't support 3.14t

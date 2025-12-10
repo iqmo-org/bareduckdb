@@ -26,6 +26,7 @@ class Connection(ConnectionAPI):
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
         enable_arrow_dataset: bool = True,
         udtf_functions: Optional[dict] = None,
+        enable_replacement_scan: bool = True,
     ) -> None:
         """
         Create a DuckDB-compatible connection.
@@ -37,6 +38,7 @@ class Connection(ConnectionAPI):
             read_only: default False
             enable_arrow_dataset: Enable Arrow dataset backend
             udtf_functions: Dict of UDTF name -> function for template expansion
+            enable_replacement_scan: Enable automatic discovery from scope
         """
         super().__init__(
             database=database,
@@ -45,6 +47,7 @@ class Connection(ConnectionAPI):
             enable_arrow_dataset=enable_arrow_dataset,
             udtf_functions=udtf_functions,
             output_type=output_type,
+            enable_replacement_scan=enable_replacement_scan,
         )
 
         logger.debug("Created Connection (compat): database=%s", database)

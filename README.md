@@ -2,7 +2,7 @@
 
 **Simplified, Dynamically Linked DuckDB Python Bindings** — Fast, simple, and free-threaded.
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.13%2B-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -11,7 +11,7 @@
 
 **bareduckdb** provides extensible and easy to build Python bindings to DuckDB using Cython. 
 
-- **Simple**  ~4k lines of code - easy to extend or customize
+- **Simple**  ~2k lines of C++ and ~2k lines of Python - easy to extend or customize
 - **Arrow-first data conversion** supporting Polars, PyArrow, and Pandas
 - **Support for latest Python features** Free threading, subinterpreters, and asyncio
 - **Dynamically linked** to DuckDB's official library
@@ -151,60 +151,79 @@ cursor.execute("SELECT 1")
 
 ## Key Differences
 
-### Pushdown Differences
-- Pushdown to Arrow Tables (and Dataframes and Polars) is supported
-- But, pushdown to arbitrary Arrow DataSets (ie: File-based) is not
+
+### Experimental Features
+
+When pyarrow is installed, two experimental features are available - 
+
+#### Arrow Statistics and Cardinality
+
+In duckdb-python, Arrow Tables, Readers and Capsules are all converted to Streams via DataSet->Scanner->Reader. These Streams have no cardinality (number of rows) nor statistics (such as: min max, number of distinct values, contains nulls).
+
+Cardinality is used at determining whether to use [TopN](https://duckdb.org/2024/10/25/topn), which significantly speeds up (w/ less memory) "order by X limit N" queries when N is small relative to size of table. Statistics are used for query planning by the optimizer.
+
+In bareduckdb, Arrow Tables are registered directly (as Tables, not Streams) and used by `arrow_scan_dataset` which can then retrieve cardinality and column level statistics. 
+
+#### Arrow Pushdown
+
+Arrow projection and filter pushdowns are implemented using the Arrow C++ library. Pushdowns are only implemented for Tables currently. 
 
 ### Relational API
 - Use [Ibis](http://ibis-project.org/)
 
-### Automatic Replacement Scans
-- No automatic DataFrame registration (use `.register()` explicitly)
-- Added Inline Registration: `.execute("....query...", data={"name": df})`
+### Replacement Scans
 
-Comment: bareduckdb avoids any GIL acquisition by DuckDB. 
-
-### Not (Yet?) Supported
-- No Python UDFs
-- No fsspec integration
-
-### User Defined Table Functions
-
-Table Functions are provided via Jinja2 templates, similar to DBT. This separates the Table Function execution from the DuckDB query execution, enabling:
-- Python-based data generation (faker, synthetic data, API calls)
-- Connection injection for queries within queries
-- DBT compatibility (uses standard Jinja2)
-
-**Syntax:** `{{ udtf.function_name(param1=value1, param2=value2) }}`
+Automatically discover Arrow tables in the caller's scope without explicit registration:
 
 ```python
 import bareduckdb
 import pyarrow as pa
 
-# Define a UDTF
+conn = bareduckdb.connect(enable_replacement_scan=True)
+my_data = pa.table({"a": [1, 2, 3], "b": [4, 5, 6]})
+
+result = conn.execute("SELECT * FROM my_data").arrow_table()
+```
+
+**Customization:** Override `_get_replacement(name)` method for custom discovery logic (e.g., loading from disk, fetching from API).
+
+**Manual Registration:** Use `.register()` for explicit control or `.execute(..., data={"name": df})` for inline registration.
+
+### Not (Yet?) Supported
+- No Python UDFs (scalar functions)
+- No fsspec integration
+
+### User Defined Table Functions
+
+Table functions execute in Python before query execution, enabling data generation and connection injection without GIL interaction:
+
+```python
+import bareduckdb
+import pyarrow as pa
+
 def generate_data(rows: int, multiplier: int = 1) -> pa.Table:
     return pa.table({
         "id": range(rows),
         "value": [i * multiplier for i in range(rows)]
     })
 
-# Register and use
 conn = bareduckdb.connect()
 conn.register_udtf("generate_data", generate_data)
 
 result = conn.execute("""
-    SELECT * FROM {{ udtf.generate_data(rows=100, multiplier=10) }}
+    SELECT * FROM generate_data(100, 10)
     WHERE value > 500
-""")
+""").arrow_table()
 ```
+
+**Features:**
+- AST-based query preprocessing - pure Python
+- Connection injection: Add `conn` parameter to access connection during execution
+- Supports any Arrow-compatible object: PyArrow Table, Polars DataFrame, Pandas DataFrame
 
 ### Arrow Enhancements
 
-<TBD: Document>
-- Capsule vs Table registration
 - Deadlock detection
-- Cardinality & TopN
-- C++ implementation of Arrow Pushdown
 
 ### Type Mappings
 

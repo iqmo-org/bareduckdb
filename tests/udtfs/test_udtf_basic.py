@@ -12,7 +12,7 @@ def test_basic_udtf_registration(thread_index, iteration_index):
 
     conn.register_udtf("simple_range", simple_range)
 
-    result = conn.execute("SELECT * FROM {{ udtf.simple_range(n=5) }}")
+    result = conn.execute("SELECT * FROM simple_range(5)")
     df = result.df()
 
     assert len(df) == 5
@@ -42,7 +42,7 @@ def test_udtf_with_aggregation(thread_index, iteration_index):
             category,
             COUNT(*) as count,
             SUM(value) as total
-        FROM {{ udtf.data_gen(rows=100, multiplier=10) }}
+        FROM data_gen(100, 10)
         GROUP BY category
         ORDER BY category
     """
@@ -68,7 +68,7 @@ def test_udtf_with_conn_injection(thread_index, iteration_index):
 
     conn.register_udtf("query_wrapper", query_wrapper)
 
-    result = conn.execute("SELECT * FROM {{ udtf.query_wrapper(limit=5) }}")
+    result = conn.execute("SELECT * FROM query_wrapper(5)")
     df = result.df()
 
     assert len(df) == 5
@@ -90,8 +90,8 @@ def test_udtf_multiple_calls(thread_index, iteration_index):
     result = conn.execute(
         """
         SELECT a.id as id_a, b.id as id_b
-        FROM {{ udtf.range_gen(n=3, offset=0) }} a
-        CROSS JOIN {{ udtf.range_gen(n=3, offset=10) }} b
+        FROM range_gen(3, 0) a
+        CROSS JOIN range_gen(3, 10) b
         LIMIT 5
     """
     )
@@ -112,7 +112,7 @@ def test_udtf_with_dict_registration(thread_index, iteration_index):
         udtf_functions={"gen": my_generator}
     )
 
-    result = conn.execute("SELECT * FROM {{ udtf.gen(rows=4) }}")
+    result = conn.execute("SELECT * FROM gen(4)")
     df = result.df()
 
     assert len(df) == 4
@@ -130,7 +130,7 @@ def test_udtf_runtime_registration(thread_index, iteration_index):
 
     conn.register_udtf("late_func", late_binding)
 
-    result = conn.execute("SELECT SUM(value) as total FROM {{ udtf.late_func(n=10) }}")
+    result = conn.execute("SELECT SUM(value) as total FROM late_func(10)")
     df = result.df()
 
     expected_sum = sum(i * 3 for i in range(10))
@@ -143,8 +143,9 @@ def test_udtf_error_not_registered(thread_index, iteration_index):
 
     conn = bareduckdb.connect(database=f":memory:udtf_error_{thread_index}_{iteration_index}")
 
-    with pytest.raises(ValueError):
-        conn.execute("SELECT * FROM {{ udtf.nonexistent(n=5) }}")
+    # DuckDB raises RuntimeError for non-existent table functions
+    with pytest.raises(RuntimeError, match="nonexistent does not exist"):
+        conn.execute("SELECT * FROM nonexistent(5)")
 
     conn.close()
 
@@ -160,7 +161,7 @@ def test_udtf_error_invalid_return_type(thread_index, iteration_index):
     conn.register_udtf("bad_return", bad_return)
 
     with pytest.raises(RuntimeError):
-        conn.execute("SELECT * FROM {{ udtf.bad_return(n=5) }}")
+        conn.execute("SELECT * FROM bad_return(5)")
 
     conn.close()
 
@@ -176,7 +177,7 @@ def test_udtf_with_pandas(thread_index, iteration_index):
 
     conn.register_udtf("pandas_gen", pandas_gen)
 
-    result = conn.execute("SELECT * FROM {{ udtf.pandas_gen(rows=5) }}")
+    result = conn.execute("SELECT * FROM pandas_gen(5)")
     df = result.df()
 
     assert len(df) == 5
@@ -194,11 +195,11 @@ def test_udtf_unique_naming(thread_index, iteration_index):
 
     conn.register_udtf("test_func", test_func)
 
-    sql = "SELECT COUNT(*) as cnt FROM {{ udtf.test_func(n=10) }}"
+    sql = "SELECT COUNT(*) as cnt FROM test_func(10)"
 
     # Process same SQL twice - should get different table names (UUID-based)
-    sql1, data1 = conn._process_udtfs(sql)
-    sql2, data2 = conn._process_udtfs(sql)
+    sql1, data1 = conn._preprocess(sql, None)
+    sql2, data2 = conn._preprocess(sql, None)
 
     # Table names should be different (UUID ensures uniqueness)
     assert sql1 != sql2, "Different UDTF calls should generate different table names"
@@ -228,7 +229,7 @@ def test_udtf_with_data_param(thread_index, iteration_index):
         """
         SELECT source, COUNT(*) as cnt
         FROM (
-            SELECT * FROM {{ udtf.gen_a(n=5) }}
+            SELECT * FROM gen_a(5)
             UNION ALL
             SELECT * FROM external_data
         )

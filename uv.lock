@@ -41,7 +41,6 @@ wheels = [
 name = "bareduckdb"
 source = { editable = "." }
 dependencies = [
-    { name = "jinja2", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "typing-extensions", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
@@ -93,7 +92,6 @@ downstream = [
 
 [package.metadata]
 requires-dist = [
-    { name = "jinja2", specifier = ">=3.0.0" },
     { name = "pandas", marker = "extra == 'test'", specifier = ">=3.0.0rc0" },
     { name = "pyarrow", marker = "extra == 'arrow'", specifier = "==22.0" },
     { name = "pyarrow", marker = "extra == 'test'", specifier = ">=22.0" },

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import uuid
 from typing import TYPE_CHECKING
-
-from jinja2 import Environment, StrictUndefined
 
 if TYPE_CHECKING:
     from typing import Any, Callable, Literal, Mapping, Optional, Sequence
@@ -49,6 +48,7 @@ class ConnectionAPI(ConnectionBase):
         enable_arrow_dataset: bool = True,
         udtf_functions: Optional[dict[str, Callable]] = None,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
+        enable_replacement_scan: bool = True,
     ) -> None:
         """
         Args:
@@ -71,50 +71,13 @@ class ConnectionAPI(ConnectionBase):
         self._udtf_registry: dict[str, Callable] = {}
         self._default_output_type = output_type
         self._last_result = None
+        self.enable_replacement_scan = enable_replacement_scan
 
         if udtf_functions:
             for name, func in udtf_functions.items():
                 self.register_udtf(name, func)
 
         logger.debug("ConnectionAPI initialized with %d UDTFs", len(self._udtf_registry))
-
-    def register_udtf(self, name: str, func: Callable) -> None:
-        """
-        Register a UDTF by name.
-
-        Args:
-            name: UDTF name to use in SQL templates
-            func: Python function that returns Arrow-compatible data
-        """
-        if not callable(func):
-            raise TypeError(f"UDTF must be callable, got {type(func)}")
-
-        self._udtf_registry[name] = func
-        logger.debug("Registered UDTF: %s", name)
-
-    def _create_udtf_wrapper(self, func_name: str, pending_data: dict) -> Callable:
-        """
-        Create a Jinja2-callable wrapper for a UDTF.
-
-        Returns a function that Jinja2 can call, which generates a table name
-        and stores the Arrow data for later registration.
-
-        Args:
-            func_name: UDTF function name
-            pending_data: Dict to store pending UDTF data (passed to avoid closure issues)
-
-        Returns:
-            Callable that returns table name string
-        """
-
-        def udtf_jinja_wrapper(**kwargs) -> str:
-            table_name = self._generate_table_name(func_name, kwargs)
-            kwargs_copy = dict(kwargs)
-            pending_data[table_name] = lambda: self._call_udtf(func_name, kwargs_copy)
-            logger.debug("UDTF wrapper for %s generated table: %s (deferred)", func_name, table_name)
-            return table_name
-
-        return udtf_jinja_wrapper
 
     def _generate_table_name(self, func_name: str, kwargs: dict[str, Any]) -> str:
         """
@@ -134,108 +97,81 @@ class ConnectionAPI(ConnectionBase):
 
         return table_name
 
-    def _call_udtf(self, func_name: str, kwargs: dict[str, Any]) -> pa.Table | pa.RecordBatchReader | PyArrowCapsule:
-        """
-        Call a registered UDTF with argument and connection injection.
+    def _find_nodes_by_type(self, node: Any, node_type: str) -> list[dict]:
+        results = []
 
-        Args:
-            func_name: UDTF name
-            kwargs: Function arguments
+        if isinstance(node, dict):
+            if node.get("type") == node_type:
+                results.append(node)
 
-        Returns:
-            Arrow-compatible result
+            for value in node.values():
+                results.extend(self._find_nodes_by_type(value, node_type))
 
-        """
+        elif isinstance(node, list):
+            for item in node:
+                results.extend(self._find_nodes_by_type(item, node_type))
+
+        return results
+
+    def _extract_table_refs(self, node: Any, refs: set[str]) -> None:
+        base_tables = self._find_nodes_by_type(node, "BASE_TABLE")
+        for table_node in base_tables:
+            table_name = table_node.get("table_name", "")
+            if table_name:
+                refs.add(table_name)
+
+    def _extract_function_calls(self, node: Any, calls: list[dict]) -> None:
+        table_functions = self._find_nodes_by_type(node, "TABLE_FUNCTION")
+
+        for func_node in table_functions:
+            func_expr = func_node.get("function", {})
+            func_name = func_expr.get("function_name", "")
+            if func_name:
+                args = []
+                children = func_expr.get("children", [])
+                for child in children:
+                    if child.get("class") == "CONSTANT":
+                        value_dict = child.get("value", {})
+                        if isinstance(value_dict, dict):
+                            args.append(value_dict.get("value"))
+                        else:
+                            args.append(value_dict)
+
+                calls.append({"name": func_name, "args": args, "original_text": f"{func_name}({', '.join(str(a) for a in args)})"})
+
+    def _call_udtf(self, func_name: str, args: list[Any]) -> Any:
         if func_name not in self._udtf_registry:
             raise ValueError(f"UDTF '{func_name}' not registered")
 
         func = self._udtf_registry[func_name]
 
         sig = inspect.signature(func)
-        if "conn" in sig.parameters:
-            logger.debug("UDTF '%s' requests conn injection", func_name)
-            kwargs["conn"] = self
+        params = list(sig.parameters.keys())
 
-        result = func(**kwargs)
+        if params and params[-1] == "conn":
+            logger.debug("UDTF '%s' requests conn injection", func_name)
+            result = func(*args, conn=self)
+        else:
+            result = func(*args)
+
+        if not hasattr(result, "__arrow_c_stream__"):
+            raise TypeError(f"UDTF '{func_name}' must return an object with __arrow_c_stream__ method. Got {type(result).__name__}")
 
         return result
 
-    def _process_udtfs(self, sql: str) -> tuple[str, dict[str, Any]]:
+    def register_udtf(self, name: str, func: Callable) -> None:
         """
-        Process UDTF template calls in SQL string using Jinja2.
-
-        Finds all {{ udtf.function_name(...) }} patterns, calls the functions,
-        and replaces with generated table names.
+        Register a UDTF by name.
 
         Args:
-            sql: SQL string with UDTF templates (e.g., "SELECT * FROM {{ udtf.faker(rows=10) }}")
-
-        Returns:
-            (modified_sql, data_dict) where data_dict contains table_name -> Arrow data
+            name: UDTF name to use in SQL
+            func: Python function that returns Arrow-compatible data
         """
-        # Fast path: skip Jinja2 processing if no template markers present
-        if "{{" not in sql:
-            return sql, {}
+        if not callable(func):
+            raise TypeError(f"UDTF must be callable, got {type(func)}")
 
-        pending_udtf_closures = {}
-
-        udtf_namespace = _UDTFNamespace(self, pending_udtf_closures)
-
-        env = Environment(undefined=StrictUndefined, autoescape=True)
-
-        try:
-            template = env.from_string(sql)
-            modified_sql = template.render(udtf=udtf_namespace)
-        except Exception as e:
-            raise ValueError(f"Error processing UDTF templates: {e}") from e
-
-        pending_udtf_data = {}
-        for table_name, closure in pending_udtf_closures.items():
-            pending_udtf_data[table_name] = closure()  # Execute the UDTF now
-
-        if pending_udtf_data:
-            logger.info("Executed %d deferred UDTF calls", len(pending_udtf_data))
-
-        return modified_sql, pending_udtf_data
-
-    def _execute_with_udtf(
-        self,
-        query: str,
-        *,
-        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
-        parameters: Sequence[Any] | Mapping[str, Any] | None = None,
-        data: Mapping[str, Any] | None = None,
-        batch_size: int = 1_000_000,
-    ) -> Any:
-        """
-        Execute query with UDTF preprocessing.
-
-        Overrides ConnectionBase._call() to inject UDTF processing.
-
-        Args:
-            query: SQL query (may contain {{ udtf(...) }} templates)
-            output_type: Output format
-            parameters: Query parameters
-            data: Additional data tables to register
-            batch_size: Arrow batch size
-
-        Returns:
-            Result in requested format
-        """
-        query, udtf_data = self._process_udtfs(query)
-
-        if data:
-            merged_data = {**data, **udtf_data}
-        else:
-            merged_data = udtf_data if udtf_data else None
-
-        return super()._call(
-            query=query,
-            output_type=output_type,
-            parameters=parameters,
-            data=merged_data,
-            batch_size=batch_size,
-        )
+        self._udtf_registry[name] = func
+        logger.debug("Registered UDTF: %s", name)
 
     def execute(
         self,
@@ -249,11 +185,120 @@ class ConnectionAPI(ConnectionBase):
         if output_type is None:
             output_type = self._default_output_type
 
-        result = self._execute_with_udtf(query=query, output_type=output_type, parameters=parameters, data=data)
+        # Preprocess query for UDTFs and replacement scans
+        query, data = self._preprocess(query, data)
+
+        result = self._call(query=query, output_type=output_type, parameters=parameters, data=data)
         result = Result(result)
         self._last_result = result
 
         return self
+
+    def _get_replacement(self, name: str) -> PyArrowCapsule | None:
+        import inspect
+
+        for frame_info in inspect.stack()[1:]:  # Skip current frame
+            frame = frame_info.frame
+
+            if name in frame.f_locals:
+                obj = frame.f_locals[name]
+                if hasattr(obj, "__arrow_c_stream__"):
+                    logger.debug("Replacement scan: found %s in frame locals", name)
+                    return obj
+                else:
+                    logger.warning("Replacement scan: %s found but doesn't implement __arrow_c_stream__", name)
+                    return None
+
+            if name in frame.f_globals:
+                obj = frame.f_globals[name]
+                if hasattr(obj, "__arrow_c_stream__"):
+                    logger.debug("Replacement scan: found %s in frame globals", name)
+                    return obj
+                else:
+                    logger.warning("Replacement scan: %s found but doesn't implement __arrow_c_stream__", name)
+                    return None
+
+        return None
+
+    def _preprocess(self, query, data):
+        """Handle UDTFs and Replacement Scans
+        Implements replacement scans and user defined table functions (UDTFs) fully in Python:
+        Tables and Functions are extracted from the query and resolve before execution.
+
+        The goals here are:
+        - Bindings don't need to call back into Python, allowing threading
+        - Easier extension/customization of inspection & UDTF logic - all in Python
+        - Faster execution - no Python callbacks (which has threading implications), and arrow statistics
+        """
+        if not self.enable_replacement_scan and len(self._udtf_registry) == 0:
+            # shortcut, don't need to parse
+            return query, data
+
+        try:
+            parsed: pa.Table = self._call("SELECT json_serialize_sql(?::VARCHAR) as parsed", output_type="arrow_table", parameters=(query,))  # type: ignore
+            parsed_json = json.loads(parsed["parsed"][0].as_py())
+        except Exception as e:
+            logger.warning("Failed to parse SQL for preprocessing: %s", e)
+            return query, data or {}
+
+        if parsed_json.get("error"):
+            error_msg = parsed_json.get("error_message", "Unknown error")
+            logger.warning("SQL parsing error: %s", error_msg)
+            return query, data or {}
+
+        data = data or {}
+
+        if self.enable_replacement_scan:
+            try:
+                tables_result = self._call("SHOW TABLES", output_type="arrow_table")
+                existing_tables = {row["name"] for row in tables_result.to_pylist()}
+            except Exception as e:
+                logger.warning("Failed to get table list: %s", e)
+                existing_tables = set()
+
+            table_refs = set()
+            for stmt in parsed_json.get("statements", []):
+                self._extract_table_refs(stmt.get("node"), table_refs)
+
+            unknown_tables = table_refs - existing_tables
+            for table_name in unknown_tables:
+                replacement = self._get_replacement(table_name)
+                if replacement is not None:
+                    data[table_name] = replacement
+                    logger.debug("Replacement scan found: %s", table_name)
+
+        # UDTF processing: find function calls and execute them
+        if len(self._udtf_registry) > 0:
+            # Extract function calls from AST
+            function_calls = []
+            for stmt in parsed_json.get("statements", []):
+                self._extract_function_calls(stmt.get("node"), function_calls)
+
+            # Process each UDTF call
+            replacements = []
+            for func_info in function_calls:
+                func_name = func_info["name"]
+                if func_name in self._udtf_registry:
+                    # Generate unique table name
+                    table_name = self._generate_table_name(func_name, func_info.get("args", {}))
+
+                    # Execute UDTF
+                    try:
+                        result = self._call_udtf(func_name, func_info.get("args", []))
+                        data[table_name] = result
+                        logger.debug("Executed UDTF %s -> %s", func_name, table_name)
+
+                        # Track replacement for query rewriting
+                        replacements.append({"original": func_info["original_text"], "replacement": table_name})
+                    except Exception as e:
+                        logger.error("Failed to execute UDTF %s: %s", func_name, e)
+                        raise RuntimeError(f"UDTF execution failed for {func_name}: {e}") from e
+
+            # Rewrite query to replace function calls with table names
+            for repl in replacements:
+                query = query.replace(repl["original"], repl["replacement"])
+
+        return query, data
 
     def _last_result_get(self):
         """Get last result or raise if none available."""

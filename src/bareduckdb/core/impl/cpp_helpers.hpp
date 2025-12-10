@@ -983,17 +983,29 @@ extern "C" duckdb::QueryResult* execute_prepared_statement(
     try {
         auto conn = get_cpp_connection(c_conn);
         if (!conn) {
-            return nullptr;
+            return new duckdb::MaterializedQueryResult(
+                duckdb::ErrorData("Invalid connection pointer")
+            );
         }
 
         auto context = conn->context;
         if (!context) {
-            return nullptr;
+            return new duckdb::MaterializedQueryResult(
+                duckdb::ErrorData("Invalid client context")
+            );
         }
 
         duckdb::unique_ptr<duckdb::PreparedStatement> stmt = conn->Prepare(query);
         if (!stmt || !stmt->success) {
-            return nullptr;
+            if (stmt && !stmt->success) {
+                // PreparedStatement exists but failed - extract the error
+                return new duckdb::MaterializedQueryResult(stmt->GetErrorObject());
+            } else {
+                // stmt is null - create generic error
+                return new duckdb::MaterializedQueryResult(
+                    duckdb::ErrorData("Prepare failed: statement is null")
+                );
+            }
         }
 
         auto* params_map = reinterpret_cast<std::map<std::string, duckdb::BoundParameterData>*>(params_map_ptr);
@@ -1022,13 +1034,26 @@ extern "C" duckdb::QueryResult* execute_prepared_statement(
 
             return result.release();
 
+        } catch (const std::exception& e) {
+            config.get_result_collector = original;
+            return new duckdb::MaterializedQueryResult(
+                duckdb::ErrorData(std::string("Execute failed: ") + e.what())
+            );
         } catch (...) {
             config.get_result_collector = original;
-            return nullptr;
+            return new duckdb::MaterializedQueryResult(
+                duckdb::ErrorData("Execute failed: unknown exception")
+            );
         }
 
+    } catch (const std::exception& e) {
+        return new duckdb::MaterializedQueryResult(
+            duckdb::ErrorData(std::string("Prepared statement execution failed: ") + e.what())
+        );
     } catch (...) {
-        return nullptr;
+        return new duckdb::MaterializedQueryResult(
+            duckdb::ErrorData("Prepared statement execution failed: unknown exception")
+        );
     }
 }
 

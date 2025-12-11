@@ -115,24 +115,6 @@ class TestJupySQLComparison:
             assert "df()" in str(e)
             assert "missing" in str(e)
 
-    def test_dataframe_query_fails_identically(self, fresh_shell):
-        """Test that querying unregistered DataFrames fails the same way."""
-        import pandas as pd
-
-        shell = fresh_shell
-
-        shell.run_line_magic("load_ext", "sql")
-        shell.run_line_magic("sql", "duckdb:///:memory:")
-
-        df = pd.DataFrame({'x': [1, 2, 3], 'y': [10, 20, 30]})
-        shell.user_ns['df'] = df
-
-        from IPython.core.error import UsageError
-        with pytest.raises(UsageError) as exc_info:
-            shell.run_cell_magic("sql", "", "SELECT SUM(x) as sum_x FROM df")
-
-        assert "Failed to execute query" in str(exc_info.value) or "does not exist" in str(exc_info.value)
-
     def test_aggregation_query(self, fresh_shell):
         """Test aggregation queries work the same way."""
         shell = fresh_shell

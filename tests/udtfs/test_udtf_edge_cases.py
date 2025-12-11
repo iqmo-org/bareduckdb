@@ -80,3 +80,49 @@ def test_extract_table_refs_empty_name(thread_index, iteration_index):
 
     assert len(refs) == 0
     conn.close()
+
+
+def test_udtf_with_named_parameters(thread_index, iteration_index):
+    conn = bareduckdb.connect(database=f":memory:udtf_named_{thread_index}_{iteration_index}")
+
+    def gen_data(rows: int, multiplier: int = 1) -> pa.Table:
+        return pa.table({"id": range(rows), "value": [i * multiplier for i in range(rows)]})
+
+    conn.register_udtf("gen_data", gen_data)
+
+    result = conn.execute("SELECT * FROM gen_data(rows := 5, multiplier := 3)").arrow_table()
+
+    assert len(result) == 5
+    assert result["value"].to_pylist() == [0, 3, 6, 9, 12]
+    conn.close()
+
+
+def test_udtf_with_mixed_args(thread_index, iteration_index):
+    conn = bareduckdb.connect(database=f":memory:udtf_mixed_{thread_index}_{iteration_index}")
+
+    def gen_data(rows: int, multiplier: int = 1) -> pa.Table:
+        return pa.table({"id": range(rows), "value": [i * multiplier for i in range(rows)]})
+
+    conn.register_udtf("gen_data", gen_data)
+
+    result = conn.execute("SELECT * FROM gen_data(5, multiplier := 10)").arrow_table()
+
+    assert len(result) == 5
+    assert result["value"].to_pylist() == [0, 10, 20, 30, 40]
+    conn.close()
+
+
+def test_udtf_with_only_named_parameters(thread_index, iteration_index):
+    conn = bareduckdb.connect(database=f":memory:udtf_allnamed_{thread_index}_{iteration_index}")
+
+    def gen_data(rows: int, multiplier: int = 1, start_id: int = 0) -> pa.Table:
+        return pa.table({"id": range(start_id, start_id + rows), "value": [i * multiplier for i in range(rows)]})
+
+    conn.register_udtf("gen_data", gen_data)
+
+    result = conn.execute("SELECT * FROM gen_data(rows := 3, multiplier := 2, start_id := 10)").arrow_table()
+
+    assert len(result) == 3
+    assert result["id"].to_pylist() == [10, 11, 12]
+    assert result["value"].to_pylist() == [0, 2, 4]
+    conn.close()

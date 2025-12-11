@@ -170,6 +170,9 @@ cdef extern from "cpp_helpers.hpp" namespace "bareduckdb":
     LogicalType* create_sqlnull_logical_type() nogil
     void destroy_logical_type(LogicalType* type) nogil
 
+    # SQL Parser
+    const char* parse_sql_statements(const char* sql_query) nogil
+
     # ArrowArrayStream functions (returns opaque pointer to ArrowArrayStream)
     void* create_arrow_array_stream_from_arrow_result(ArrowQueryResult* arrow_result) nogil
     void* create_streaming_arrow_array_stream(QueryResult* result, uint64_t rows_per_batch) nogil

@@ -8,6 +8,7 @@ Cython implementation of DuckDB connection.
 """
 
 from libc.stdint cimport uint64_t, int64_t
+from libc.stdlib cimport free
 from cpython.ref cimport PyObject
 
 from bareduckdb.core.impl.result cimport _ResultBase
@@ -185,3 +186,28 @@ cdef class ConnectionImpl:
 
         # NOTE: Object lifetime cleanup managed in connection.py
         # Factory deletion is handled by Python if factory_ptr was tracked
+
+    def parse_sql(self, str query):
+        """
+        Parse SQL query using DuckDB's Parser and extract statement information.
+
+        Returns a dict with:
+        - statement_type: The type of SQL statement
+        - select_query: For CREATE TABLE AS, the extracted SELECT query
+        - error: True if parsing failed
+        - error_message: Error details if parsing failed
+        """
+        cdef bytes query_bytes = query.encode("utf-8")
+        cdef const char* c_query = query_bytes
+        cdef const char* result_json
+
+        result_json = parse_sql_statements(c_query)
+        if result_json == NULL:
+            return {"error": True, "error_message": "parse_sql_statements returned NULL"}
+
+        result_str = result_json.decode("utf-8")
+        # Free the strdup'd memory
+        free(<void*>result_json)
+
+        import json
+        return json.loads(result_str)

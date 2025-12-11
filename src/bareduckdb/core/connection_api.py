@@ -244,11 +244,31 @@ class ConnectionAPI(ConnectionBase):
             # shortcut, don't need to parse
             return query, data
 
+        # Parse SQL using DuckDB's Parser
         try:
-            parsed: pa.Table = self._call("SELECT json_serialize_sql(?::VARCHAR) as parsed", output_type="arrow_table", parameters=(query,))  # type: ignore
-            parsed_json = json.loads(parsed["parsed"][0].as_py())
+            parse_result = self._impl.parse_sql(query)
         except Exception as e:
             logger.warning("Failed to parse SQL for preprocessing: %s", e)
+            return query, data or {}
+
+        if parse_result.get("error"):
+            logger.warning("SQL parsing error: %s", parse_result.get("error_message"))
+            return query, data or {}
+
+        statement_type = parse_result.get("statement_type")
+        query_to_parse = query
+
+        if statement_type == "CREATE_TABLE_AS":
+            select_query = parse_result.get("select_query")
+            if select_query:
+                query_to_parse = select_query
+                logger.debug("Detected CREATE TABLE AS, extracting SELECT query for processing")
+
+        try:
+            parsed: pa.Table = self._call("SELECT json_serialize_sql(?::VARCHAR) as parsed", output_type="arrow_table", parameters=(query_to_parse,))  # type: ignore
+            parsed_json = json.loads(parsed["parsed"][0].as_py())
+        except Exception as e:
+            logger.warning("Failed to serialize SQL for preprocessing: %s", e)
             return query, data or {}
 
         if parsed_json.get("error"):

@@ -29,6 +29,10 @@
 #include "duckdb/main/external_dependencies.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
+#include "duckdb/parser/parsed_data/create_table_info.hpp"
+#include "duckdb/parser/statement/create_statement.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/parser.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include <Python.h>
 
@@ -1063,6 +1067,75 @@ inline duckdb::LogicalType* create_sqlnull_logical_type() {
 
 inline void destroy_logical_type(duckdb::LogicalType* type) {
     delete type;
+}
+
+// Parse SQL and extract statement type and SELECT query if present
+// We use DuckDB's Parser directly instead of json_serialize_sql because that function
+// only supports SELECT statements. For CREATE TABLE AS statements, we need to extract
+// the embedded SELECT query to process UDTFs and replacement scans.
+extern "C" const char* parse_sql_statements(const char* sql_query) {
+    try {
+        duckdb::Parser parser;
+        parser.ParseQuery(sql_query);
+
+        if (parser.statements.empty()) {
+            return strdup("{\"error\": true, \"error_message\": \"No statements found\"}");
+        }
+
+        // For now, handle only single statement
+        auto& stmt = parser.statements[0];
+
+        // Check if it's a CREATE TABLE AS statement
+        if (stmt->type == duckdb::StatementType::CREATE_STATEMENT) {
+            auto& create_stmt = stmt->Cast<duckdb::CreateStatement>();
+            if (create_stmt.info->type == duckdb::CatalogType::TABLE_ENTRY) {
+                auto& table_info = create_stmt.info->Cast<duckdb::CreateTableInfo>();
+
+                if (table_info.query) {
+                    std::string select_query = table_info.query->ToString();
+
+                    // Escape JSON
+                    std::string escaped_query;
+                    escaped_query.reserve(select_query.size());
+                    for (char c : select_query) {
+                        switch (c) {
+                            case '"':  escaped_query += "\\\""; break;
+                            case '\\': escaped_query += "\\\\"; break;
+                            case '\b': escaped_query += "\\b"; break;
+                            case '\f': escaped_query += "\\f"; break;
+                            case '\n': escaped_query += "\\n"; break;
+                            case '\r': escaped_query += "\\r"; break;
+                            case '\t': escaped_query += "\\t"; break;
+                            default:   escaped_query += c; break;
+                        }
+                    }
+
+                    std::string result = "{\"statement_type\": \"CREATE_TABLE_AS\", \"select_query\": \"" +
+                                       escaped_query + "\"}";
+                    return strdup(result.c_str());
+                }
+            }
+            return strdup("{\"statement_type\": \"CREATE_TABLE\"}");
+        } else if (stmt->type == duckdb::StatementType::SELECT_STATEMENT) {
+            return strdup("{\"statement_type\": \"SELECT\"}");
+        } else {
+            std::string type_str = duckdb::StatementTypeToString(stmt->type);
+            std::string result = "{\"statement_type\": \"" + type_str + "\"}";
+            return strdup(result.c_str());
+        }
+
+    } catch (const std::exception& e) {
+        std::string error_msg = e.what();
+        size_t pos = 0;
+        while ((pos = error_msg.find('"', pos)) != std::string::npos) {
+            error_msg.replace(pos, 1, "\\\"");
+            pos += 2;
+        }
+        std::string result = "{\"error\": true, \"error_message\": \"" + error_msg + "\"}";
+        return strdup(result.c_str());
+    } catch (...) {
+        return strdup("{\"error\": true, \"error_message\": \"Unknown parsing error\"}");
+    }
 }
 
 } // namespace bareduckdb

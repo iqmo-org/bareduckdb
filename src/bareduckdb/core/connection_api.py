@@ -128,31 +128,42 @@ class ConnectionAPI(ConnectionBase):
             func_name = func_expr.get("function_name", "")
             if func_name:
                 args = []
+                kwargs = {}
                 children = func_expr.get("children", [])
                 for child in children:
                     if child.get("class") == "CONSTANT":
+                        alias = child.get("alias", "")
                         value_dict = child.get("value", {})
-                        if isinstance(value_dict, dict):
-                            args.append(value_dict.get("value"))
+                        value = value_dict.get("value") if isinstance(value_dict, dict) else value_dict
+
+                        if alias:
+                            kwargs[alias] = value
                         else:
-                            args.append(value_dict)
+                            args.append(value)
 
-                calls.append({"name": func_name, "args": args, "original_text": f"{func_name}({', '.join(str(a) for a in args)})"})
+                # Reconstruct original text with both positional and named args
+                arg_parts = [str(a) for a in args]
+                kwarg_parts = [f"{k} := {v}" for k, v in kwargs.items()]
+                all_parts = arg_parts + kwarg_parts
+                original_text = f"{func_name}({', '.join(all_parts)})"
 
-    def _call_udtf(self, func_name: str, args: list[Any]) -> Any:
+                calls.append({"name": func_name, "args": args, "kwargs": kwargs, "original_text": original_text})
+
+    def _call_udtf(self, func_name: str, args: list[Any], kwargs: dict[str, Any] | None = None) -> Any:
         if func_name not in self._udtf_registry:
             raise ValueError(f"UDTF '{func_name}' not registered")
 
         func = self._udtf_registry[func_name]
+        kwargs = kwargs or {}
 
         sig = inspect.signature(func)
         params = list(sig.parameters.keys())
 
         if params and params[-1] == "conn":
             logger.debug("UDTF '%s' requests conn injection", func_name)
-            result = func(*args, conn=self)
+            result = func(*args, **kwargs, conn=self)
         else:
-            result = func(*args)
+            result = func(*args, **kwargs)
 
         if not hasattr(result, "__arrow_c_stream__"):
             raise TypeError(f"UDTF '{func_name}' must return an object with __arrow_c_stream__ method. Got {type(result).__name__}")
@@ -185,7 +196,6 @@ class ConnectionAPI(ConnectionBase):
         if output_type is None:
             output_type = self._default_output_type
 
-        # Preprocess query for UDTFs and replacement scans
         query, data = self._preprocess(query, data)
 
         result = self._call(query=query, output_type=output_type, parameters=parameters, data=data)
@@ -234,11 +244,31 @@ class ConnectionAPI(ConnectionBase):
             # shortcut, don't need to parse
             return query, data
 
+        # Parse SQL using DuckDB's Parser
         try:
-            parsed: pa.Table = self._call("SELECT json_serialize_sql(?::VARCHAR) as parsed", output_type="arrow_table", parameters=(query,))  # type: ignore
-            parsed_json = json.loads(parsed["parsed"][0].as_py())
+            parse_result = self._impl.parse_sql(query)
         except Exception as e:
             logger.warning("Failed to parse SQL for preprocessing: %s", e)
+            return query, data or {}
+
+        if parse_result.get("error"):
+            logger.warning("SQL parsing error: %s", parse_result.get("error_message"))
+            return query, data or {}
+
+        statement_type = parse_result.get("statement_type")
+        query_to_parse = query
+
+        if statement_type == "CREATE_TABLE_AS":
+            select_query = parse_result.get("select_query")
+            if select_query:
+                query_to_parse = select_query
+                logger.debug("Detected CREATE TABLE AS, extracting SELECT query for processing")
+
+        try:
+            parsed: pa.Table = self._call("SELECT json_serialize_sql(?::VARCHAR) as parsed", output_type="arrow_table", parameters=(query_to_parse,))  # type: ignore
+            parsed_json = json.loads(parsed["parsed"][0].as_py())
+        except Exception as e:
+            logger.warning("Failed to serialize SQL for preprocessing: %s", e)
             return query, data or {}
 
         if parsed_json.get("error"):
@@ -267,34 +297,28 @@ class ConnectionAPI(ConnectionBase):
                     data[table_name] = replacement
                     logger.debug("Replacement scan found: %s", table_name)
 
-        # UDTF processing: find function calls and execute them
+        # UDTF processing
         if len(self._udtf_registry) > 0:
-            # Extract function calls from AST
             function_calls = []
             for stmt in parsed_json.get("statements", []):
                 self._extract_function_calls(stmt.get("node"), function_calls)
 
-            # Process each UDTF call
             replacements = []
             for func_info in function_calls:
                 func_name = func_info["name"]
                 if func_name in self._udtf_registry:
-                    # Generate unique table name
                     table_name = self._generate_table_name(func_name, func_info.get("args", {}))
 
-                    # Execute UDTF
                     try:
-                        result = self._call_udtf(func_name, func_info.get("args", []))
+                        result = self._call_udtf(func_name, func_info.get("args", []), func_info.get("kwargs", {}))
                         data[table_name] = result
                         logger.debug("Executed UDTF %s -> %s", func_name, table_name)
 
-                        # Track replacement for query rewriting
                         replacements.append({"original": func_info["original_text"], "replacement": table_name})
                     except Exception as e:
                         logger.error("Failed to execute UDTF %s: %s", func_name, e)
                         raise RuntimeError(f"UDTF execution failed for {func_name}: {e}") from e
 
-            # Rewrite query to replace function calls with table names
             for repl in replacements:
                 query = query.replace(repl["original"], repl["replacement"])
 

@@ -112,7 +112,7 @@ jobs:
         run: |
           # Test that bareduckdb works with polars without pyarrow installed
           uv pip uninstall pyarrow
-          uv run --no-sync pytest tests/polars_only -v --cov=bareduckdb --cov-append
+          uv run --no-sync pytest tests/polars_only tests/polars_pushdown -v --cov=bareduckdb --cov-append
           uv pip install pyarrow
 
       - name: Run DuckDB comparison tests

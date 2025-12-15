@@ -82,9 +82,8 @@ class TestRegistrationReplacement:
         result = conn.sql(f"SELECT count(*) FROM {unique_table_name}").fetchone()
         assert result[0] == 4, f"Expected count=4 after second replacement, got {result[0]}"
 
-        if self.connect_config.get('enable_arrow_dataset', True):
-            result = conn.sql(f"SELECT MIN(value), MAX(value) FROM {unique_table_name}").fetchone()
-            assert result == (100, 400), f"Expected (100, 400) from third table, got {result}"
+        result = conn.sql(f"SELECT MIN(value), MAX(value) FROM {unique_table_name}").fetchone()
+        assert result == (100, 400), f"Expected (100, 400) from third table, got {result}"
 
     def test_replacement_preserves_other_tables(self, unique_table_name):
         conn = self.make_connection(self.thread_index, self.iteration_index)
@@ -109,11 +108,10 @@ class TestRegistrationReplacement:
 
         result_a = conn.sql(f"SELECT count(*) FROM {table_name_a}").fetchone()
         assert result_a[0] == 3, f"Expected table_a to have 3 rows after replacement, got {result_a[0]}"
-        if self.connect_config.get('enable_arrow_dataset', True):
-            result_b = conn.sql(f"SELECT * FROM {table_name_b} ORDER BY id").fetchall()
-            assert len(result_b) == 2, f"Expected table_b to still have 2 rows, got {len(result_b)}"
-            assert result_b[0] == (10, 'B1'), f"Expected table_b data unchanged, got {result_b[0]}"
-            assert result_b[1] == (20, 'B2')
+        result_b = conn.sql(f"SELECT * FROM {table_name_b} ORDER BY id").fetchall()
+        assert len(result_b) == 2, f"Expected table_b to still have 2 rows, got {len(result_b)}"
+        assert result_b[0] == (10, 'B1'), f"Expected table_b data unchanged, got {result_b[0]}"
+        assert result_b[1] == (20, 'B2')
 
     def test_replacement_with_uuid_data(self, unique_table_name):
         conn = self.make_connection(self.thread_index, self.iteration_index)
@@ -162,7 +160,6 @@ class TestRegistrationReplacement:
 
         result = conn.sql(f"SELECT count(*) FROM {unique_table_name} WHERE category = 'A'").fetchone()
         assert result[0] == 3, f"Expected 3 rows with category='A' from new table, got {result[0]}"
-        
-        if self.connect_config.get('enable_arrow_dataset', True):
-            result = conn.sql(f"SELECT id FROM {unique_table_name} WHERE category = 'A' ORDER BY id").fetchall()
-            assert result == [(10,), (20,), (30,)], f"Expected IDs from new table, got {result}"
+
+        result = conn.sql(f"SELECT id FROM {unique_table_name} WHERE category = 'A' ORDER BY id").fetchall()
+        assert result == [(10,), (20,), (30,)], f"Expected IDs from new table, got {result}"

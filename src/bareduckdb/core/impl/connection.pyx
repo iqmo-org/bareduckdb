@@ -8,7 +8,6 @@ Cython implementation of DuckDB connection.
 """
 
 from libc.stdint cimport uint64_t, int64_t
-from libc.stdlib cimport free
 from cpython.ref cimport PyObject
 
 from bareduckdb.core.impl.result cimport _ResultBase
@@ -193,21 +192,31 @@ cdef class ConnectionImpl:
 
         Returns a dict with:
         - statement_type: The type of SQL statement
-        - select_query: For CREATE TABLE AS, the extracted SELECT query
+        - table_refs: List of table names referenced
+        - function_calls: List of table function calls with name, args, kwargs, original_text
         - error: True if parsing failed
         - error_message: Error details if parsing failed
         """
         cdef bytes query_bytes = query.encode("utf-8")
         cdef const char* c_query = query_bytes
-        cdef const char* result_json
+        cdef ParseResultInfo result = parse_sql_extract_refs(c_query)
 
-        result_json = parse_sql_statements(c_query)
-        if result_json == NULL:
-            return {"error": True, "error_message": "parse_sql_statements returned NULL"}
+        py_result = {
+            "statement_type": result.statement_type.decode("utf-8") if result.statement_type.size() > 0 else "",
+            "table_refs": [ref.decode("utf-8") for ref in result.table_refs],
+            "function_calls": [],
+            "error": result.error,
+        }
 
-        result_str = result_json.decode("utf-8")
-        # Free the strdup'd memory
-        free(<void*>result_json)
+        if result.error:
+            py_result["error_message"] = result.error_message.decode("utf-8") if result.error_message.size() > 0 else "Unknown error"
 
-        import json
-        return json.loads(result_str)
+        for func in result.function_calls:
+            py_result["function_calls"].append({
+                "name": func.name.decode("utf-8") if func.name.size() > 0 else "",
+                "args": [arg.decode("utf-8") for arg in func.args],
+                "kwargs": {k.decode("utf-8"): v.decode("utf-8") for k, v in func.kwargs},
+                "original_text": func.original_text.decode("utf-8") if func.original_text.size() > 0 else "",
+            })
+
+        return py_result

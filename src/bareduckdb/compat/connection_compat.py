@@ -24,7 +24,7 @@ class Connection(ConnectionAPI):
         read_only: bool = False,
         *,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
-        enable_arrow_dataset: bool = True,
+        default_statistics: "Literal['numeric'] | bool | None" = None,
         udtf_functions: Optional[dict] = None,
         enable_replacement_scan: bool = True,
     ) -> None:
@@ -36,7 +36,10 @@ class Connection(ConnectionAPI):
             output_type: Default output format for queries
             config: {'threads': '4', 'memory_limit': '1GB'}
             read_only: default False
-            enable_arrow_dataset: Enable Arrow dataset backend
+            default_statistics: Default statistics mode for register() calls:
+                - None: No statistics (default)
+                - "numeric": Compute statistics for numeric columns only (fast)
+                - True: Compute statistics for all columns
             udtf_functions: Dict of UDTF name -> function for template expansion
             enable_replacement_scan: Enable automatic discovery from scope
         """
@@ -44,7 +47,7 @@ class Connection(ConnectionAPI):
             database=database,
             config=config,
             read_only=read_only,
-            enable_arrow_dataset=enable_arrow_dataset,
+            default_statistics=default_statistics,
             udtf_functions=udtf_functions,
             output_type=output_type,
             enable_replacement_scan=enable_replacement_scan,
@@ -86,8 +89,22 @@ class Connection(ConnectionAPI):
         self,
         name: str,
         data: object,
+        statistics: "list[str] | Literal['numeric'] | str | bool | None" = None,
+        *,
+        replace: bool = True,
     ) -> Any:
-        self._register_arrow(name=name, data=data)
+        """
+        Register data for querying.
+
+        Args:
+            name: Table name to register
+            data: Data source (PyArrow Table, Polars DataFrame, Pandas DataFrame)
+            statistics: Statistics specification for query optimization
+            replace: If True (default), replace existing registration with same name
+        """
+        from bareduckdb.dataset.backend import register_table
+
+        return register_table(self, name, data, statistics=statistics, replace=replace)
 
     def unregister(self, name: str) -> None:
         super().unregister(name)

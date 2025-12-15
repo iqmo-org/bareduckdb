@@ -10,12 +10,14 @@ import time
 from typing import TYPE_CHECKING
 
 from .impl.connection import ConnectionImpl  # type: ignore[import-untyped]
-from .registration import TableRegistration
 
 if TYPE_CHECKING:
     from typing import Any, Literal, Mapping, Optional, Sequence  # type: ignore[attr-defined]
 
+    import pandas as pd
+    import polars as pl
     import pyarrow as pa
+    from pyarrow import dataset as ds
 
     from . import PyArrowCapsule
 
@@ -40,11 +42,10 @@ class ConnectionBase:
     # Instance attributes
     _impl: Any
     _lock: threading.Lock
-    _registrations: dict[str, TableRegistration]
     _registered_objects: dict[str, Any]
     _database_path: str | None
     _arrow_table_collector: Literal["arrow", "stream"]
-    _enable_arrow_dataset: bool
+    _default_statistics: "Literal['numeric'] | bool | None"
 
     def __init__(
         self,
@@ -53,7 +54,7 @@ class ConnectionBase:
         read_only: bool = False,
         *,
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
-        enable_arrow_dataset: bool = False,
+        default_statistics: "Literal['numeric'] | bool | None" = None,
         # https://arrow.apache.org/docs/format/Versioning.html#post-1-0-0-format-versions
         # The idea here is to align the arrow output with Polars native types... but Pandas doesn't yet have a built-in mapper for string-views
         init_sql: str | None = "set arrow_output_version='1.5';set produce_arrow_string_view=True;",
@@ -66,6 +67,7 @@ class ConnectionBase:
             config: Dictionary of configuration options (e.g., {'threads': '4', 'memory_limit': '1GB'})
             read_only: Whether to open database in read-only mode
             arrow_table_collector: Arrow collection mode ("arrow" or "stream")
+            default_statistics: Default statistics mode for register() when statistics=None
             init_sql: SQL to run when creating the connection
         """
 
@@ -77,11 +79,10 @@ class ConnectionBase:
             )  # type: ignore[assignment]  # Cython module
 
         self._lock = threading.Lock()
-        self._registrations: dict[str, TableRegistration] = {}
         self._registered_objects: dict[str, Any] = {}
         self._database_path: str | None = database
         self.arrow_table_collector = arrow_table_collector
-        self._enable_arrow_dataset = enable_arrow_dataset
+        self._default_statistics = default_statistics
 
         if init_sql:
             self._call(init_sql, output_type="arrow_capsule")
@@ -92,23 +93,29 @@ class ConnectionBase:
             read_only,
         )
 
-    def _register_arrow(self, name: str, data: Any) -> None:
-        if self._enable_arrow_dataset:
-            from ..dataset import register_table
+    def _register_arrow(
+        self,
+        name: str,
+        data: PyArrowCapsule | pa.Table | ds.Dataset | ds.Scanner | pd.DataFrame | pl.DataFrame | pl.LazyFrame | pa.RecordBatchReader,
+        statistics: "list[str] | Literal['numeric'] | str | bool | None" = None,
+    ) -> None:
+        """Register data using DataHolder"""
+        effective_statistics = statistics if statistics is not None else self._default_statistics
 
-            is_registered = register_table(self, name, data)
-            if is_registered:
-                logger.debug("Registered table '%s' via dataset backend", name)
-                return
+        from ..dataset import register_table
 
-            logger.debug("Falling through to register arrow via capsule '%s'", name)
+        is_registered = register_table(self, name, data, statistics=effective_statistics)
+        if is_registered:
+            logger.debug("Registered table '%s' via DataHolder", name)
+            return
 
-        else:
-            logger.debug("_enable_arrow_dataset is False, registering %s: %s", name, type(data))
-
+        # Fallback to capsule
+        logger.debug("DataHolder unavailable for %s, using capsule registration", type(data).__name__)
         self._register_capsule(name, data)
 
-    def _register_capsule(self, name: str, capsule: Any) -> None:
+    def _register_capsule(
+        self, name: str, capsule: PyArrowCapsule | pa.Table | ds.Dataset | ds.Scanner | pd.DataFrame | pl.DataFrame | pl.LazyFrame | pa.RecordBatchReader
+    ) -> None:
         """
         Register Arrow C Stream Interface capsule directly.
 
@@ -120,7 +127,7 @@ class ConnectionBase:
         """
 
         if hasattr(capsule, "__len__"):
-            cardinality = len(capsule)
+            cardinality = len(capsule)  # type: ignore
         else:
             cardinality = -1
 
@@ -131,9 +138,9 @@ class ConnectionBase:
         )
 
         if hasattr(capsule, "scanner"):
-            capsule = capsule.scanner().to_reader()
+            capsule = capsule.scanner().to_reader()  # type: ignore
         if hasattr(capsule, "to_reader"):
-            capsule = capsule.to_reader()
+            capsule = capsule.to_reader()  # type: ignore
 
         if hasattr(capsule, "__arrow_c_stream__"):
             data = capsule.__arrow_c_stream__()
@@ -201,6 +208,12 @@ class ConnectionBase:
                 # Convert
                 t_convert_start = time.perf_counter()
                 if output_type == "arrow_table":
+                    try:
+                        import pyarrow  # noqa: F401
+                    except ImportError:
+                        logger.debug("pyarrow not available, returning capsule")
+                        return base_result.__arrow_c_stream__(None)
+
                     result = base_result.to_arrow()
                     t_convert_end = time.perf_counter()
                     logger.debug("Arrow conversion: %.4fs", (t_convert_end - t_convert_start))
@@ -229,11 +242,6 @@ class ConnectionBase:
         with self._DUCKDB_INIT_LOCK:
             self._impl.unregister(name)
 
-            # Clean up dataset registrations (outside query lock)
-            if name in self._registrations:
-                registration = self._registrations.pop(name)
-                registration.close()
-
             # Clean up capsule registrations
             if name in self._registered_objects:
                 del self._registered_objects[name]
@@ -241,15 +249,7 @@ class ConnectionBase:
     def close(self) -> None:
         logger.debug("Closing connection")
         with self._DUCKDB_INIT_LOCK:
-            for name, registration in list(self._registrations.items()):
-                try:
-                    registration.close()
-                except Exception as e:
-                    logger.warning(f"Error closing registration for {name}: {e}")
-            self._registrations.clear()
-
             self._registered_objects.clear()
-
             self._impl.close()
 
     def __enter__(self) -> ConnectionBase:

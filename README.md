@@ -15,6 +15,9 @@
 - **Arrow-first data conversion** supporting Polars, PyArrow, and Pandas
 - **Support for latest Python features** Free threading, subinterpreters, and asyncio
 - **Dynamically linked** to DuckDB's official library
+- **User Defined Table Functions** inline function registration
+- **Polars Enhancements** - Native Polars pushdowns w/o PyArrow
+- **Appender (In Progress)**
 
 ## Installation
 
@@ -162,7 +165,54 @@ In duckdb-python, Arrow Tables, Readers and Capsules are all converted to Stream
 
 Cardinality is used at determining whether to use [TopN](https://duckdb.org/2024/10/25/topn), which significantly speeds up (w/ less memory) "order by X limit N" queries when N is small relative to size of table. Statistics are used for query planning by the optimizer.
 
-In bareduckdb, Arrow Tables are registered directly (as Tables, not Streams) and used by `arrow_scan_dataset` which can then retrieve cardinality and column level statistics. 
+In bareduckdb, Arrow Tables are registered directly (as Tables, not Streams) and used by `arrow_scan_dataset` which can then retrieve cardinality and column level statistics.
+
+**Statistics Options:**
+
+The `register()` method accepts a `statistics` parameter to control which columns have statistics computed:
+
+```python
+import bareduckdb
+
+conn = bareduckdb.connect()
+
+# No statistics (fastest registration, default)
+conn.register("table", df, statistics=None)
+
+# Numeric columns only (recommended for most use cases)
+conn.register("table", df, statistics="numeric")
+
+# All columns (slowest - includes string min/max)
+conn.register("table", df, statistics=True)
+
+# Specific columns by name
+conn.register("table", df, statistics=["id", "price", "date"])
+
+# Regex pattern to match column names
+conn.register("table", df, statistics=".*_id")  # all columns ending with _id
+```
+
+**Setting a Default:**
+
+Configure the default statistics mode at connection level:
+
+```python
+# All register() calls will use numeric statistics by default
+conn = bareduckdb.connect(default_statistics="numeric")
+conn.register("table1", df1)  # uses numeric stats
+conn.register("table2", df2)  # uses numeric stats
+conn.register("table3", df3, statistics=False)  # override: no stats
+```
+
+**Performance Impact (500K rows, 2 numeric + 2 string columns):**
+
+| Mode | Registration Time | Use Case |
+|------|------------------|----------|
+| `None` | ~0.4ms | No filter pushdown needed |
+| `"numeric"` | ~10ms | JOIN/filter on numeric columns |
+| `True` | ~22ms | Filter pushdown on all columns |
+
+The `"numeric"` option provides the best balance: fast registration with statistics for the columns most commonly used in filters and JOINs (IDs, dates, prices). 
 
 #### Arrow Pushdown
 

@@ -29,21 +29,9 @@ _test_counter_lock = threading.Lock()
 def unique_table_name(request):
     return f"test_{uuid.uuid4().hex[:8]}"
 
-config_params = [
-    pytest.param(
-        {"enable_arrow_dataset": False},
-        id="capsule_only"
-    ),
-    pytest.param(
-        {"enable_arrow_dataset": True},
-        id="enable_arrow_dataset"
-    )]
-
-
-
-@pytest.fixture(params=config_params)
+@pytest.fixture
 def connect_config(request):
-    return request.param
+    return {}
 
 @pytest.fixture
 def make_connection(connect_config):

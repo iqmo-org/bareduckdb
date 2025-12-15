@@ -71,17 +71,6 @@ def test_udtf_execution_exception(thread_index, iteration_index):
     conn.close()
 
 
-def test_extract_table_refs_empty_name(thread_index, iteration_index):
-    conn = bareduckdb.connect(database=f":memory:extract_empty_{thread_index}_{iteration_index}")
-
-    node = {"type": "BASE_TABLE", "table_name": ""}
-    refs = set()
-    conn._extract_table_refs(node, refs)
-
-    assert len(refs) == 0
-    conn.close()
-
-
 def test_udtf_with_named_parameters(thread_index, iteration_index):
     conn = bareduckdb.connect(database=f":memory:udtf_named_{thread_index}_{iteration_index}")
 

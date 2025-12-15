@@ -38,16 +38,8 @@ def test_unregister(make_connection, connect_config, thread_index, iteration_ind
     conn._register_arrow("mydata", table)
     table_1 = conn._call(query="select * from mydata", output_type="arrow_table")
 
-    # With dataset backend (enable_arrow_dataset=True), tables are reusable
-    # With capsule mode (enable_arrow_dataset=False), capsules can only be consumed once
-    if connect_config.get('enable_arrow_dataset', True):
-        # Dataset mode: second query should succeed
-        table_2 = conn._call(query="select * from mydata", output_type="arrow_table")
-        assert len(table_2) == 100
-    else:
-        # Capsule mode: second query should fail
-        with pytest.raises(RuntimeError, match=".*has already been consumed.*"):
-            table_2 = conn._call(query="select * from mydata", output_type="arrow_table")
+    table_2 = conn._call(query="select * from mydata", output_type="arrow_table")
+    assert len(table_2) == 100
 
 
 def test_inline_register(make_connection, connect_config, thread_index, iteration_index):

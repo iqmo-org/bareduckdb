@@ -58,13 +58,13 @@ requires = [
     "setuptools-scm>=8",
     "wheel",
     "Cython>=3.0",
-    "pyarrow>=22.0",  # Required at build time
+    "pyarrow>=22.0",
 ]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["bareduckdb", "bareduckdb.core", "bareduckdb.core.impl", "bareduckdb.aio", "bareduckdb.compat",  "bareduckdb._libs", "bareduckdb.functional", "bareduckdb.dataset", "bareduckdb.dataset.impl"]
+packages = ["bareduckdb", "bareduckdb.core", "bareduckdb.core.impl", "bareduckdb.aio", "bareduckdb.compat", "bareduckdb._libs", "bareduckdb.functional", "bareduckdb.dataset", "bareduckdb.data_sources", "bareduckdb.common", "bareduckdb.common.impl"]
 
 [tool.setuptools.package-data]
 bareduckdb = ["_libs/libduckdb.*"]
@@ -168,7 +168,7 @@ downstream = [
 ]
 
 [tool.uv.extra-build-dependencies]
-bareduckdb = ["Cython", "pyarrow>=22.0"]
+bareduckdb = ["Cython"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

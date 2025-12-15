@@ -41,14 +41,12 @@ class TestNaNFilterPushdown:
     def test_nan_equal_float32(self, float_table_with_nan, unique_table_name, make_connection, connect_config, thread_index, iteration_index):
 
         conn = make_connection(thread_index, iteration_index)
-        """Test a = NaN with FLOAT (should match NaN values only)."""
         conn.register(unique_table_name, float_table_with_nan)
 
         result = conn.sql(f"SELECT * FROM {unique_table_name} WHERE a = 'NaN'::FLOAT").fetchall()
 
         assert len(result) == 2, f"Expected 2 rows (both NaNs), got {len(result)}"
 
-        # Verify both are NaN
         import math
         assert all(math.isnan(row[0]) for row in result), "All results should be NaN"
 
@@ -176,13 +174,8 @@ class TestNaNFilterPushdown:
         explain = conn.sql(f"EXPLAIN SELECT * FROM {unique_table_name} WHERE a = 'NaN'::FLOAT").fetchall()
         plan = explain[0][1]
 
-        if connect_config.get('enable_arrow_dataset', True):
-
-            assert "ARROW_SCAN_DATASET" in plan, "Plan should use ARROW_SCAN_DATASET"
-            assert "Filters:" in plan, "Plan should show filter pushdown"
-        else:
-            assert "ARROW_SCAN_DATASET" not in plan, "Plan should use ARROW_SCAN_DATASET"
-            assert "Filters:" not in plan, "Plan should not show filter pushdown"
+        assert "PYTHON_DATA_SCAN" in plan, "Plan should use PYTHON_DATA_SCAN"
+        assert "Filters:" in plan, "Plan should show filter pushdown"
 
     @pytest.mark.skip(reason="RecordBatchReader not supported by dataset backend")
     def test_explain_without_pushdown_shows_separate_filter(self, float_table_with_nan, make_connection, connect_config, thread_index, iteration_index):

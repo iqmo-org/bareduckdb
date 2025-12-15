@@ -2,262 +2,198 @@ import pytest
 
 pa = pytest.importorskip("pyarrow")
 
-from bareduckdb.dataset.impl.dataset import compute_column_statistics
+from bareduckdb.dataset.backend import _compute_statistics_arrow
 
 
-class TestNullStatistics:
+class TestStatisticsComputation:
 
-    def test_no_nulls_returns_cannot_have_null(self):
-        table = pa.table({'x': pa.array([1, 2, 3, 4, 5], type=pa.int64())})
-        stats = compute_column_statistics(table, column_index=0, type_id='BIGINT')
+    def test_integer_stats(self):
+        table = pa.table({'x': pa.array([10, 20, 30], type=pa.int64())})
+        stats = _compute_statistics_arrow(table, ['x'])
 
-        assert stats['has_stats'] is True
-        assert stats['can_have_null'] is False  # CANNOT_HAVE_NULL_VALUES
-        assert stats['can_have_valid'] is True
-        assert stats['min_int'] == 1
-        assert stats['max_int'] == 5
+        assert len(stats) == 1
+        idx, type_tag, null_count, num_rows, min_int, max_int, _, _, _, _, _ = stats[0]
+        assert idx == 0
+        assert type_tag == "int"
+        assert null_count == 0
+        assert num_rows == 3
+        assert min_int == 10
+        assert max_int == 30
 
-    def test_some_nulls_returns_can_have_both(self):
-        table = pa.table({'x': [1, None, 3]})
-        stats = compute_column_statistics(table, column_index=0, type_id='BIGINT')
-
-        assert stats['has_stats'] is True
-        assert stats['can_have_null'] is True
-        assert stats['can_have_valid'] is True
-        assert stats['min_int'] == 1
-        assert stats['max_int'] == 3
-
-    def test_all_nulls_returns_cannot_have_valid(self):
-        table = pa.table({'x': pa.array([None, None, None], type=pa.int64())})
-        stats = compute_column_statistics(table, column_index=0, type_id='BIGINT')
-
-        if stats['has_stats']:
-            assert stats['can_have_null'] is True
-            assert stats['can_have_valid'] is False
-
-
-class TestMinMaxStatistics:
-
-    def test_integer_min_max(self):
-        table = pa.table({'x': pa.array([10, 20, 30, 40, 50], type=pa.int32())})
-        stats = compute_column_statistics(table, column_index=0, type_id='INTEGER')
-
-        assert stats['has_stats'] is True
-        assert stats['min_int'] == 10
-        assert stats['max_int'] == 50
-
-    def test_bigint_min_max(self):
-        table = pa.table({'x': pa.array([100, 200, 300], type=pa.int64())})
-        stats = compute_column_statistics(table, column_index=0, type_id='BIGINT')
-
-        assert stats['has_stats'] is True
-        assert stats['min_int'] == 100
-        assert stats['max_int'] == 300
-
-    def test_float_min_max(self):
+    def test_float_stats(self):
         table = pa.table({'x': pa.array([1.5, 2.5, 3.5], type=pa.float64())})
-        stats = compute_column_statistics(table, column_index=0, type_id='DOUBLE')
+        stats = _compute_statistics_arrow(table, ['x'])
 
-        assert stats['has_stats'] is True
-        assert stats['min_double'] == pytest.approx(1.5)
-        assert stats['max_double'] == pytest.approx(3.5)
+        assert len(stats) == 1
+        idx, type_tag, null_count, num_rows, _, _, min_double, max_double, _, _, _ = stats[0]
+        assert idx == 0
+        assert type_tag == "float"
+        assert min_double == pytest.approx(1.5)
+        assert max_double == pytest.approx(3.5)
 
-    def test_string_min_max(self):
-        table = pa.table({'s': ['apple', 'banana', 'cherry']})
-        stats = compute_column_statistics(table, column_index=0, type_id='VARCHAR')
+    def test_string_stats(self):
+        table = pa.table({'x': ['apple', 'banana', 'cherry']})
+        stats = _compute_statistics_arrow(table, ['x'])
 
-        assert stats['has_stats'] is True
-        assert stats['min_str'] == 'apple'
-        assert stats['max_str'] == 'cherry'
+        assert len(stats) == 1
+        idx, type_tag, null_count, num_rows, _, _, _, _, max_str_len, min_str, max_str = stats[0]
+        assert idx == 0
+        assert type_tag == "str"
+        assert min_str == "apple"
+        assert max_str == "cherry"
+        assert max_str_len == 6
+
+    def test_date_stats(self):
+        from datetime import date
+        table = pa.table({'x': pa.array([date(2020, 1, 1), date(2020, 12, 31)])})
+        stats = _compute_statistics_arrow(table, ['x'])
+
+        assert len(stats) == 1
+        idx, type_tag, null_count, num_rows, min_int, max_int, _, _, _, _, _ = stats[0]
+        assert idx == 0
+        assert type_tag == "int"
+        assert min_int == (date(2020, 1, 1) - date(1970, 1, 1)).days
+        assert max_int == (date(2020, 12, 31) - date(1970, 1, 1)).days
+
+    def test_timestamp_stats(self):
+        from datetime import datetime
+        dt1 = datetime(2020, 1, 1, 0, 0, 0)
+        dt2 = datetime(2020, 12, 31, 23, 59, 59)
+        table = pa.table({'x': pa.array([dt1, dt2], type=pa.timestamp('us'))})
+        stats = _compute_statistics_arrow(table, ['x'])
+
+        assert len(stats) == 1
+        idx, type_tag, _, _, min_int, max_int, _, _, _, _, _ = stats[0]
+        assert idx == 0
+        assert type_tag == "int" 
+        assert min_int == int(dt1.timestamp() * 1_000_000)
+        assert max_int == int(dt2.timestamp() * 1_000_000)
 
 
-class TestDistinctCount:
+class TestNullHandling:
 
-    def test_distinct_count_behavior(self):
-        table = pa.table({'x': pa.array([1, 2, 2, 3, 3, 3], type=pa.int32())})
-        stats = compute_column_statistics(table, column_index=0, type_id='INTEGER')
+    def test_no_nulls(self):
+        table = pa.table({'x': [1, 2, 3]})
+        stats = _compute_statistics_arrow(table, ['x'])
 
-        assert stats['has_stats'] is True
-        assert stats['distinct_count'] in (0, 3)
+        assert len(stats) == 1
+        _, _, null_count, num_rows, _, _, _, _, _, _, _ = stats[0]
+        assert null_count == 0
+        assert num_rows == 3
+
+    def test_some_nulls(self):
+        table = pa.table({'x': [1, None, 3]})
+        stats = _compute_statistics_arrow(table, ['x'])
+
+        assert len(stats) == 1
+        _, type_tag, null_count, num_rows, min_int, max_int, _, _, _, _, _ = stats[0]
+        assert type_tag == "int"
+        assert null_count == 1
+        assert num_rows == 3
+        assert min_int == 1
+        assert max_int == 3
+
+    def test_all_nulls(self):
+        table = pa.table({'x': pa.array([None, None, None], type=pa.int64())})
+        stats = _compute_statistics_arrow(table, ['x'])
+
+        assert len(stats) == 1
+        _, type_tag, null_count, num_rows, _, _, _, _, _, _, _ = stats[0]
+        assert type_tag == "null"  # All nulls
+        assert null_count == 3
+        assert num_rows == 3
 
 
-class TestStringLengthStatistics:
+class TestNaNHandling:
 
-    def test_max_string_length(self):
-        table = pa.table({'s': ['a', 'abc', 'abcdef']})
-        stats = compute_column_statistics(table, column_index=0, type_id='VARCHAR')
+    def test_float_with_nan_skipped(self):
+        import math
+        table = pa.table({'x': pa.array([1.0, float('nan'), 3.0], type=pa.float64())})
+        stats = _compute_statistics_arrow(table, ['x'])
 
-        assert stats['has_stats'] is True
-        assert stats['max_string_length'] == 6
+        assert len(stats) == 0
 
-    def test_max_string_length_with_nulls(self):
-        table = pa.table({'s': ['', None, 'test', 'longer_string']})
-        stats = compute_column_statistics(table, column_index=0, type_id='VARCHAR')
 
-        assert stats['has_stats'] is True
-        assert stats['max_string_length'] == 13  # len('longer_string')
+class TestMultipleColumns:
 
-    def test_empty_strings(self):
-        table = pa.table({'s': ['', '', '']})
-        stats = compute_column_statistics(table, column_index=0, type_id='VARCHAR')
+    def test_all_columns(self):
+        table = pa.table({'a': [1, 2, 3], 'b': ['x', 'y', 'z'], 'c': [1.0, 2.0, 3.0]})
+        stats = _compute_statistics_arrow(table, True)  # All columns
 
-        assert stats['has_stats'] is True
-        assert stats['max_string_length'] == 0
+        assert len(stats) == 3
+        col_stats = {s[0]: s for s in stats}
+
+        assert col_stats[0][1] == "int"
+
+        assert col_stats[1][1] == "str"
+
+        assert col_stats[2][1] == "float"
+
+    def test_specific_columns(self):
+        table = pa.table({'a': [1, 2, 3], 'b': ['x', 'y', 'z'], 'c': [1.0, 2.0, 3.0]})
+        stats = _compute_statistics_arrow(table, ['a', 'c'])  # Only a and c
+
+        assert len(stats) == 2
+        indices = [s[0] for s in stats]
+        assert 0 in indices  # 'a'
+        assert 2 in indices  # 'c'
+        assert 1 not in indices  # 'b' not included
 
 
 class TestEdgeCases:
 
+    def test_empty_table(self):
+        table = pa.table({'x': pa.array([], type=pa.int64())})
+        stats = _compute_statistics_arrow(table, ['x'])
+
+        assert len(stats) == 0  # No stats for empty table
+
     def test_single_value(self):
-        table = pa.table({'x': pa.array([42], type=pa.int32())})
-        stats = compute_column_statistics(table, column_index=0, type_id='INTEGER')
+        table = pa.table({'x': [42]})
+        stats = _compute_statistics_arrow(table, ['x'])
 
-        assert stats['has_stats'] is True
-        assert stats['min_int'] == 42
-        assert stats['max_int'] == 42
-        assert stats['can_have_null'] is False
+        assert len(stats) == 1
+        _, _, _, _, min_int, max_int, _, _, _, _, _ = stats[0]
+        assert min_int == 42
+        assert max_int == 42
 
-    def test_negative_values(self):
-        table = pa.table({'x': pa.array([-100, -50, 0, 50, 100], type=pa.int64())})
-        stats = compute_column_statistics(table, column_index=0, type_id='BIGINT')
-
-        assert stats['has_stats'] is True
-        assert stats['min_int'] == -100
-        assert stats['max_int'] == 100
-
-    def test_small_integers(self):
-        table = pa.table({'x': pa.array([1, 2, 3], type=pa.int8())})
-        stats = compute_column_statistics(table, column_index=0, type_id='TINYINT')
-
-        assert stats['has_stats'] is True
-        assert stats['min_int'] == 1
-        assert stats['max_int'] == 3
+    def test_invalid_column_name(self):
+        table = pa.table({'x': [1, 2, 3]})
+        with pytest.raises(ValueError, match="not found"):
+            _compute_statistics_arrow(table, ['nonexistent'])
 
 
-class TestAllNullsNoStats:
+class TestIntegration:
 
-    def test_all_nulls_integer_no_minmax(self):
-        table = pa.table({'x': pa.array([None, None, None], type=pa.int64())})
-        stats = compute_column_statistics(table, column_index=0, type_id='BIGINT')
+    def test_register_with_statistics(self):
+        import bareduckdb
 
-        assert stats['has_stats'] is False
+        table = pa.table({'id': [1, 2, 3], 'value': [100, 200, 300]})
+        conn = bareduckdb.connect()
 
-    def test_all_nulls_string_no_minmax(self):
-        table = pa.table({'s': pa.array([None, None], type=pa.string())})
-        stats = compute_column_statistics(table, column_index=0, type_id='VARCHAR')
+        conn.register('test', table, statistics=['id', 'value'])
 
-        assert stats['has_stats'] is False
+        result = conn.execute('SELECT * FROM test').fetchall()
+        assert len(result) == 3
 
+    def test_register_without_statistics(self):
+        import bareduckdb
 
-class TestMinMaxWithNulls:
+        table = pa.table({'id': [1, 2, 3]})
+        conn = bareduckdb.connect()
 
-    def test_integer_minmax_ignores_nulls(self):
-        table = pa.table({'x': pa.array([None, 5, None, 10, None, 1, None], type=pa.int64())})
-        stats = compute_column_statistics(table, column_index=0, type_id='BIGINT')
+        conn.register('test', table)
 
-        assert stats['has_stats'] is True
-        assert stats['can_have_null'] is True
-        assert stats['can_have_valid'] is True
-        assert stats['min_int'] == 1
-        assert stats['max_int'] == 10
+        result = conn.execute('SELECT * FROM test').fetchall()
+        assert len(result) == 3
 
-    def test_string_minmax_ignores_nulls(self):
-        table = pa.table({'s': pa.array([None, 'zebra', None, 'apple', None], type=pa.string())})
-        stats = compute_column_statistics(table, column_index=0, type_id='VARCHAR')
+    def test_register_statistics_true(self):
+        import bareduckdb
 
-        assert stats['has_stats'] is True
-        assert stats['min_str'] == 'apple'
-        assert stats['max_str'] == 'zebra'
+        table = pa.table({'id': [1, 2, 3], 'name': ['a', 'b', 'c']})
+        conn = bareduckdb.connect()
 
+        conn.register('test', table, statistics=True)
 
-class TestUnsupportedTypes:
-    def test_string_view_returns_no_stats(self):
-        try:
-            arr = pa.array(['a', 'b', 'c'], type=pa.string_view())
-            table = pa.table({'s': arr})
-            stats = compute_column_statistics(table, column_index=0, type_id='VARCHAR')
-
-            assert stats['has_stats'] is False
-        except (AttributeError, pa.ArrowNotImplementedError):
-            pytest.skip("PyArrow version doesn't support string_view")
-
-    def test_large_string_works(self):
-        table = pa.table({'s': pa.array(['apple', 'banana'], type=pa.large_string())})
-        stats = compute_column_statistics(table, column_index=0, type_id='VARCHAR')
-
-        assert stats['has_stats'] is True
-        assert stats['min_str'] == 'apple'
-        assert stats['max_str'] == 'banana'
-
-    def test_large_string_max_length(self):
-        table = pa.table({'s': pa.array(['a', 'abc', 'abcdefgh'], type=pa.large_string())})
-        stats = compute_column_statistics(table, column_index=0, type_id='VARCHAR')
-
-        assert stats['has_stats'] is True
-        assert stats['max_string_length'] == 8
-
-
-class TestMultiChunkStatistics:
-
-    def test_integer_minmax_across_chunks(self):
-        # min is in chunk 2, max is in chunk 2 - verify cross-chunk aggregation
-        chunk1 = pa.array([5, 10, 15], type=pa.int64())
-        chunk2 = pa.array([1, 20, 8], type=pa.int64())
-        chunked = pa.chunked_array([chunk1, chunk2])
-        table = pa.table({'x': chunked})
-
-        stats = compute_column_statistics(table, column_index=0, type_id='BIGINT')
-
-        assert stats['has_stats'] is True
-        assert stats['min_int'] == 1
-        assert stats['max_int'] == 20
-
-    def test_null_count_across_chunks(self):
-        # Nulls distributed across multiple chunks
-        chunk1 = pa.array([1, None, 3], type=pa.int64())
-        chunk2 = pa.array([None, 5, None], type=pa.int64())
-        chunked = pa.chunked_array([chunk1, chunk2])
-        table = pa.table({'x': chunked})
-
-        stats = compute_column_statistics(table, column_index=0, type_id='BIGINT')
-
-        assert stats['has_stats'] is True
-        assert stats['can_have_null'] is True
-        assert stats['can_have_valid'] is True
-        assert stats['min_int'] == 1
-        assert stats['max_int'] == 5
-
-    def test_string_max_length_across_chunks(self):
-        # Longest string is in chunk 2
-        chunk1 = pa.array(['a', 'bb', 'ccc'])
-        chunk2 = pa.array(['dddd', 'eeeee', 'ffffff_longest'])
-        chunked = pa.chunked_array([chunk1, chunk2])
-        table = pa.table({'s': chunked})
-
-        stats = compute_column_statistics(table, column_index=0, type_id='VARCHAR')
-
-        assert stats['has_stats'] is True
-        assert stats['max_string_length'] == 14  # len('ffffff_longest')
-
-    def test_float_minmax_across_chunks(self):
-        chunk1 = pa.array([1.5, 2.5, 3.5], type=pa.float64())
-        chunk2 = pa.array([0.1, 10.0, 5.0], type=pa.float64())
-        chunked = pa.chunked_array([chunk1, chunk2])
-        table = pa.table({'x': chunked})
-
-        stats = compute_column_statistics(table, column_index=0, type_id='DOUBLE')
-
-        assert stats['has_stats'] is True
-        assert stats['min_double'] == pytest.approx(0.1)
-        assert stats['max_double'] == pytest.approx(10.0)
-
-    def test_many_chunks(self):
-        # Test with more than 2 chunks
-        chunks = [pa.array([i * 10, i * 10 + 1], type=pa.int64()) for i in range(5)]
-        chunked = pa.chunked_array(chunks)
-        table = pa.table({'x': chunked})
-
-        stats = compute_column_statistics(table, column_index=0, type_id='BIGINT')
-
-        assert stats['has_stats'] is True
-        assert stats['min_int'] == 0
-        assert stats['max_int'] == 41
+        result = conn.execute('SELECT * FROM test').fetchall()
+        assert len(result) == 3

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import ast
 import inspect
-import json
 import logging
 import uuid
 from typing import TYPE_CHECKING
@@ -9,28 +9,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import Any, Callable, Literal, Mapping, Optional, Sequence
 
-    import pyarrow as pa
-
     from . import PyArrowCapsule
 
 from ..compat.result_compat import Result
 from .connection_base import ConnectionBase
 
 logger = logging.getLogger(__name__)
-
-
-class _UDTFNamespace:
-    """Namespace for UDTF template calls.
-
-    Enables {{ udtf.function_name(...) }} syntax in SQL templates.
-    """
-
-    def __init__(self, parent: ConnectionAPI, pending_data: dict[str, Any]) -> None:
-        self._parent = parent
-        self._pending_data = pending_data
-
-    def __getattr__(self, name: str) -> Callable:
-        return self._parent._create_udtf_wrapper(name, self._pending_data)
 
 
 class ConnectionAPI(ConnectionBase):
@@ -45,7 +29,7 @@ class ConnectionAPI(ConnectionBase):
         read_only: bool = False,
         *,
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
-        enable_arrow_dataset: bool = True,
+        default_statistics: "Literal['numeric'] | bool | None" = None,
         udtf_functions: Optional[dict[str, Callable]] = None,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
         enable_replacement_scan: bool = True,
@@ -56,7 +40,7 @@ class ConnectionAPI(ConnectionBase):
             config: Configuration dict (e.g., {'threads': '4'})
             read_only: Whether to open in read-only mode
             arrow_table_collector: Arrow collection mode
-            enable_arrow_dataset: Enable Arrow dataset backend
+            default_statistics: Default statistics mode for register() ("numeric", True, or None)
             udtf_functions: Dict of UDTF name -> function
             output_type: Default output format for queries
         """
@@ -65,7 +49,7 @@ class ConnectionAPI(ConnectionBase):
             config=config,
             read_only=read_only,
             arrow_table_collector=arrow_table_collector,
-            enable_arrow_dataset=enable_arrow_dataset,
+            default_statistics=default_statistics,
         )
 
         self._udtf_registry: dict[str, Callable] = {}
@@ -78,6 +62,18 @@ class ConnectionAPI(ConnectionBase):
                 self.register_udtf(name, func)
 
         logger.debug("ConnectionAPI initialized with %d UDTFs", len(self._udtf_registry))
+
+    def _parse_sql_value(self, value_str: str) -> Any:
+        if not value_str:
+            return value_str
+
+        if value_str.startswith("'") and value_str.endswith("'"):
+            return value_str[1:-1].replace("''", "'")
+
+        try:
+            return ast.literal_eval(value_str)
+        except (ValueError, SyntaxError):
+            return value_str
 
     def _generate_table_name(self, func_name: str, kwargs: dict[str, Any]) -> str:
         """
@@ -96,58 +92,6 @@ class ConnectionAPI(ConnectionBase):
         logger.debug("Generated table name: %s for %s(%s)", table_name, func_name, kwargs)
 
         return table_name
-
-    def _find_nodes_by_type(self, node: Any, node_type: str) -> list[dict]:
-        results = []
-
-        if isinstance(node, dict):
-            if node.get("type") == node_type:
-                results.append(node)
-
-            for value in node.values():
-                results.extend(self._find_nodes_by_type(value, node_type))
-
-        elif isinstance(node, list):
-            for item in node:
-                results.extend(self._find_nodes_by_type(item, node_type))
-
-        return results
-
-    def _extract_table_refs(self, node: Any, refs: set[str]) -> None:
-        base_tables = self._find_nodes_by_type(node, "BASE_TABLE")
-        for table_node in base_tables:
-            table_name = table_node.get("table_name", "")
-            if table_name:
-                refs.add(table_name)
-
-    def _extract_function_calls(self, node: Any, calls: list[dict]) -> None:
-        table_functions = self._find_nodes_by_type(node, "TABLE_FUNCTION")
-
-        for func_node in table_functions:
-            func_expr = func_node.get("function", {})
-            func_name = func_expr.get("function_name", "")
-            if func_name:
-                args = []
-                kwargs = {}
-                children = func_expr.get("children", [])
-                for child in children:
-                    if child.get("class") == "CONSTANT":
-                        alias = child.get("alias", "")
-                        value_dict = child.get("value", {})
-                        value = value_dict.get("value") if isinstance(value_dict, dict) else value_dict
-
-                        if alias:
-                            kwargs[alias] = value
-                        else:
-                            args.append(value)
-
-                # Reconstruct original text with both positional and named args
-                arg_parts = [str(a) for a in args]
-                kwarg_parts = [f"{k} := {v}" for k, v in kwargs.items()]
-                all_parts = arg_parts + kwarg_parts
-                original_text = f"{func_name}({', '.join(all_parts)})"
-
-                calls.append({"name": func_name, "args": args, "kwargs": kwargs, "original_text": original_text})
 
     def _call_udtf(self, func_name: str, args: list[Any], kwargs: dict[str, Any] | None = None) -> Any:
         if func_name not in self._udtf_registry:
@@ -232,8 +176,6 @@ class ConnectionAPI(ConnectionBase):
 
     def _preprocess(self, query, data):
         """Handle UDTFs and Replacement Scans
-        Implements replacement scans and user defined table functions (UDTFs) fully in Python:
-        Tables and Functions are extracted from the query and resolve before execution.
 
         The goals here are:
         - Bindings don't need to call back into Python, allowing threading
@@ -241,10 +183,9 @@ class ConnectionAPI(ConnectionBase):
         - Faster execution - no Python callbacks (which has threading implications), and arrow statistics
         """
         if not self.enable_replacement_scan and len(self._udtf_registry) == 0:
-            # shortcut, don't need to parse
             return query, data
 
-        # Parse SQL using DuckDB's Parser
+        # using DuckDB Parser
         try:
             parse_result = self._impl.parse_sql(query)
         except Exception as e:
@@ -253,27 +194,6 @@ class ConnectionAPI(ConnectionBase):
 
         if parse_result.get("error"):
             logger.warning("SQL parsing error: %s", parse_result.get("error_message"))
-            return query, data or {}
-
-        statement_type = parse_result.get("statement_type")
-        query_to_parse = query
-
-        if statement_type == "CREATE_TABLE_AS":
-            select_query = parse_result.get("select_query")
-            if select_query:
-                query_to_parse = select_query
-                logger.debug("Detected CREATE TABLE AS, extracting SELECT query for processing")
-
-        try:
-            parsed: pa.Table = self._call("SELECT json_serialize_sql(?::VARCHAR) as parsed", output_type="arrow_table", parameters=(query_to_parse,))  # type: ignore
-            parsed_json = json.loads(parsed["parsed"][0].as_py())
-        except Exception as e:
-            logger.warning("Failed to serialize SQL for preprocessing: %s", e)
-            return query, data or {}
-
-        if parsed_json.get("error"):
-            error_msg = parsed_json.get("error_message", "Unknown error")
-            logger.warning("SQL parsing error: %s", error_msg)
             return query, data or {}
 
         data = data or {}
@@ -286,11 +206,9 @@ class ConnectionAPI(ConnectionBase):
                 logger.warning("Failed to get table list: %s", e)
                 existing_tables = set()
 
-            table_refs = set()
-            for stmt in parsed_json.get("statements", []):
-                self._extract_table_refs(stmt.get("node"), table_refs)
-
+            table_refs = set(parse_result.get("table_refs", []))
             unknown_tables = table_refs - existing_tables
+
             for table_name in unknown_tables:
                 replacement = self._get_replacement(table_name)
                 if replacement is not None:
@@ -299,22 +217,30 @@ class ConnectionAPI(ConnectionBase):
 
         # UDTF processing
         if len(self._udtf_registry) > 0:
-            function_calls = []
-            for stmt in parsed_json.get("statements", []):
-                self._extract_function_calls(stmt.get("node"), function_calls)
-
+            function_calls = parse_result.get("function_calls", [])
             replacements = []
+
             for func_info in function_calls:
                 func_name = func_info["name"]
                 if func_name in self._udtf_registry:
-                    table_name = self._generate_table_name(func_name, func_info.get("args", {}))
+                    raw_args = func_info.get("args", [])
+                    raw_kwargs = func_info.get("kwargs", {})
+                    args = [self._parse_sql_value(arg) for arg in raw_args]
+                    kwargs = {k: self._parse_sql_value(v) for k, v in raw_kwargs.items()}
+
+                    table_name = self._generate_table_name(func_name, args)  # type: ignore
 
                     try:
-                        result = self._call_udtf(func_name, func_info.get("args", []), func_info.get("kwargs", {}))
+                        result = self._call_udtf(func_name, args, kwargs)
                         data[table_name] = result
                         logger.debug("Executed UDTF %s -> %s", func_name, table_name)
 
-                        replacements.append({"original": func_info["original_text"], "replacement": table_name})
+                        # Reconstruct original text
+                        arg_parts = list(raw_args)
+                        kwarg_parts = [f"{k} := {v}" for k, v in raw_kwargs.items()]
+                        original_text = f"{func_name}({', '.join(arg_parts + kwarg_parts)})"
+
+                        replacements.append({"original": original_text, "replacement": table_name})
                     except Exception as e:
                         logger.error("Failed to execute UDTF %s: %s", func_name, e)
                         raise RuntimeError(f"UDTF execution failed for {func_name}: {e}") from e

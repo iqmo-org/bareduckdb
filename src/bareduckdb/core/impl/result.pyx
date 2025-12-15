@@ -138,34 +138,37 @@ cdef class _ResultBase:
             param_map = transform_parameters(parameters)
             _logger.debug("execute_prepared_statement")
 
-            result._result = execute_prepared_statement(
-                connection._conn,
-                c_query,
-                <void*>&param_map,
-                stream,  # Controls DuckDB execution mode
-                physical_arrow_collector,  # Enable PhysicalArrowCollector if requested
-                batch_size  # Batch size for Arrow arrays
-            )
+            with nogil:
+                result._result = execute_prepared_statement(
+                    connection._conn,
+                    c_query,
+                    <void*>&param_map,
+                    stream,
+                    physical_arrow_collector,
+                    batch_size
+                )
 
         elif physical_arrow_collector:
             # Materialized Arrow Table
             _logger.debug("execute_with_arrow_collector")
 
-            result._result = execute_with_arrow_collector(
-                connection._conn,
-                c_query,
-                batch_size,
-                False  # always materialized arrow table
-            )
+            with nogil:
+                result._result = execute_with_arrow_collector(
+                    connection._conn,
+                    c_query,
+                    batch_size,
+                    False
+                )
         else:
             # Stream mode: StreamQueryResult
             _logger.debug("execute_without_arrow_collector")
 
-            result._result = execute_without_arrow_collector(
-                connection._conn,
-                c_query,
-                stream  # Pass stream parameter - controls DuckDB execution
-            )
+            with nogil:
+                result._result = execute_without_arrow_collector(
+                    connection._conn,
+                    c_query,
+                    stream
+                )
 
         # Handle errors
         if result._result == NULL:

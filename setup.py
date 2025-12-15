@@ -44,18 +44,6 @@ _DUCKDB_LIB_DIR = str(_DUCKDB_LIB_DIR_PATH)
 _DUCKDB_INCLUDE_PATH = Path(os.path.dirname(__file__)) / "external/duckdb/src/include"
 _DUCKDB_INCLUDE = str(_DUCKDB_INCLUDE_PATH)
 
-# PyArrow C++ headers and libraries (or dataset module
-try:
-    import pyarrow
-    PYARROW_INCLUDE = pyarrow.get_include()
-    PYARROW_LIB_DIRS = pyarrow.get_library_dirs()
-    ARROW_AVAILABLE = True
-    print(f"PyArrow {pyarrow.__version__} found - dataset module will be built")
-except ImportError:
-    ARROW_AVAILABLE = False
-    PYARROW_INCLUDE = None
-    PYARROW_LIB_DIRS = None
-    print("WARNING: PyArrow not found - dataset module will not be built")
 
 def setup_compiler_cache():
     if shutil.which("sccache"):
@@ -298,7 +286,6 @@ print(f"Link args: {' '.join(link_args)}")
 
 
 # Core extensions - only dependency is duckdb
-# Some other experiments use pyarrow, but this code should never require any other lib at build.
 
 def get_args(name, sources) -> dict[str, Any]:
 
@@ -342,89 +329,23 @@ core_extensions = [
     Extension(**python_to_value_kwargs),
 ]
 
-# Dataset extension with PyArrow support
-dataset_extensions = []
-if ARROW_AVAILABLE:
-    def find_pyarrow_libraries():
-        if not PYARROW_LIB_DIRS:
-            return None, ["arrow_python", "arrow"]
-
-        lib_dir = PYARROW_LIB_DIRS[0]
-
-        # Try unversioned symlinks
-        arrow_lib = os.path.join(lib_dir, f"libarrow.{_LIB_EXT}")
-        arrow_python_lib = os.path.join(lib_dir, f"libarrow_python.{_LIB_EXT}")
-
-        if os.path.exists(arrow_lib) and os.path.exists(arrow_python_lib):
-            print(f"Using PyArrow library names: -larrow -larrow_python")
-            return None, ["arrow_python", "arrow"]
-
-        # Versioned libraries
-        if _IS_MACOS:
-            arrow_libs = glob.glob(os.path.join(lib_dir, "libarrow.*.dylib"))
-            arrow_python_libs = glob.glob(os.path.join(lib_dir, "libarrow_python.*.dylib"))
-        else:
-            arrow_libs = glob.glob(os.path.join(lib_dir, "libarrow.so.*"))
-            arrow_python_libs = glob.glob(os.path.join(lib_dir, "libarrow_python.so.*"))
-
-        if arrow_libs and arrow_python_libs:
-            arrow_lib = sorted(arrow_libs, key=lambda x: x.count("."), reverse=True)[0]
-            arrow_python_lib = sorted(arrow_python_libs, key=lambda x: x.count("."), reverse=True)[0]
-            print(f"Using versioned PyArrow libraries: {os.path.basename(arrow_lib)}, {os.path.basename(arrow_python_lib)}")
-            return [arrow_lib, arrow_python_lib], None
-
-        return None, ["arrow_python", "arrow"]
-
-    pyarrow_lib_files, pyarrow_libraries = find_pyarrow_libraries()
-
-    # Configure dataset extension
-    if pyarrow_lib_files:
-        dataset_extra_objects = extra_objects + pyarrow_lib_files
-        dataset_libraries = libraries
-        dataset_library_dirs = [str(package_libs_dir)]
-    else:
-        dataset_extra_objects = extra_objects
-        dataset_libraries = libraries + pyarrow_libraries
-        dataset_library_dirs = [str(package_libs_dir)] + (PYARROW_LIB_DIRS if PYARROW_LIB_DIRS else [])
-    
-    dataset_runtime_dirs = []  # find PyArrow in venv
-
-    # Dataset extension needs additional rpath to find PyArrow at runtime
-    dataset_link_args = link_args.copy()
-    if _IS_MACOS:
-        # On macOS, add @loader_path to search for Arrow libs in pyarrow package
-        dataset_link_args.append("-Wl,-rpath,@loader_path/../../../pyarrow")
-    else:
-        # On Linux, add $ORIGIN rpath for Arrow libs
-        dataset_link_args.append("-Wl,-rpath,$ORIGIN/../../../pyarrow")
-
-    dataset_kwargs = {
-        "name": "bareduckdb.dataset.impl.dataset",
-        "sources": ["src/bareduckdb/dataset/impl/dataset.pyx"],
-        "include_dirs": [
-            "src/bareduckdb/dataset/impl",
-            "src/bareduckdb/core/impl",  # For cpp_helpers.hpp
-            _DUCKDB_INCLUDE,
-            PYARROW_INCLUDE,
-        ],
-        "extra_objects": dataset_extra_objects,
-        "libraries": dataset_libraries,
-        "library_dirs": dataset_library_dirs,
-        "runtime_library_dirs": dataset_runtime_dirs,
-        "extra_compile_args": compile_args,
-        "extra_link_args": dataset_link_args,
-        "language": "c++",
-        "define_macros": define_macros,
-    }
-
-    if USE_LIMITED_API:
-        dataset_kwargs["py_limited_api"] = True
-
-    dataset_extensions.append(Extension(**dataset_kwargs))
-    print(f"Dataset extension configured successfully")
+holder_scan_extensions = []
+holder_scan_pyx = Path("src/bareduckdb/common/impl/holder_scan.pyx")
+if holder_scan_pyx.exists():
+    holder_scan_kwargs = get_args(
+        name="bareduckdb.common.impl.holder_scan",
+        sources=[str(holder_scan_pyx)],
+    )
+    holder_scan_kwargs["include_dirs"] = [
+        "src/bareduckdb/common/impl",
+        "src/bareduckdb/core/impl",
+        _DUCKDB_INCLUDE,
+    ]
+    holder_scan_extensions.append(Extension(**holder_scan_kwargs))
+    print(f"Unified holder scan extension configured successfully")
 
 # Combine all extensions
-extensions = core_extensions + dataset_extensions
+extensions = core_extensions + holder_scan_extensions
 
 
 nthreads = int(os.getenv("CYTHON_NTHREADS", os.cpu_count() or 1))

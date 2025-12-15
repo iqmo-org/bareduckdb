@@ -30,14 +30,20 @@
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
+#include "duckdb/parser/parsed_data/create_view_info.hpp"
 #include "duckdb/parser/statement/create_statement.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/statement/insert_statement.hpp"
+#include "duckdb/parser/statement/update_statement.hpp"
+#include "duckdb/parser/statement/delete_statement.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/tableref/basetableref.hpp"
+#include "duckdb/parser/tableref/joinref.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/query_node/set_operation_node.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include <Python.h>
-
-// Forward decl for arrow_scan_dataset (defined in arrow_cardinality.hpp, only available with pyarrow)
-extern "C" void register_arrow_scan_dataset(duckdb::Connection* cpp_conn);
 
 namespace bareduckdb {
 
@@ -1069,73 +1075,222 @@ inline void destroy_logical_type(duckdb::LogicalType* type) {
     delete type;
 }
 
-// Parse SQL and extract statement type and SELECT query if present
-// We use DuckDB's Parser directly instead of json_serialize_sql because that function
-// only supports SELECT statements. For CREATE TABLE AS statements, we need to extract
-// the embedded SELECT query to process UDTFs and replacement scans.
-extern "C" const char* parse_sql_statements(const char* sql_query) {
+struct FunctionCallInfo {
+    std::string name;
+    std::vector<std::string> args;
+    std::vector<std::pair<std::string, std::string>> kwargs;
+    std::string original_text;
+};
+
+struct ParseResultInfo {
+    std::string statement_type;
+    std::vector<std::string> table_refs;
+    std::vector<FunctionCallInfo> function_calls;
+    bool error = false;
+    std::string error_message;
+};
+
+// Forward decls
+void walk_table_ref(TableRef* ref, ParseResultInfo& result);
+void walk_query_node(QueryNode* node, ParseResultInfo& result);
+void walk_select_statement(SelectStatement* stmt, ParseResultInfo& result);
+void walk_cte_map(const CommonTableExpressionMap& cte_map, ParseResultInfo& result);
+
+// Extract function call info
+inline void extract_function_call(ParsedExpression* expr, ParseResultInfo& result) {
+    if (!expr || expr->GetExpressionClass() != ExpressionClass::FUNCTION) return;
+
+    auto& func = expr->Cast<FunctionExpression>();
+    FunctionCallInfo info;
+    info.name = func.function_name;
+    info.original_text = func.ToString();
+
+    for (auto& child : func.children) {
+        std::string alias = child->GetAlias();
+        std::string value_str = child->ToString();
+
+        if (!alias.empty()) {
+            info.kwargs.push_back({alias, value_str});
+        } else {
+            info.args.push_back(value_str);
+        }
+    }
+
+    result.function_calls.push_back(std::move(info));
+}
+
+inline void walk_cte_map(const CommonTableExpressionMap& cte_map, ParseResultInfo& result) {
+    for (auto& cte : cte_map.map) {
+        if (cte.second && cte.second->query) {
+            walk_select_statement(cte.second->query.get(), result);
+        }
+    }
+}
+
+inline void walk_table_ref(TableRef* ref, ParseResultInfo& result) {
+    if (!ref) return;
+
+    switch (ref->type) {
+        case TableReferenceType::BASE_TABLE: {
+            auto& base = ref->Cast<BaseTableRef>();
+            if (!base.table_name.empty()) {
+                result.table_refs.push_back(base.table_name);
+            }
+            break;
+        }
+        case TableReferenceType::TABLE_FUNCTION: {
+            auto& func_ref = ref->Cast<TableFunctionRef>();
+            if (func_ref.function) {
+                extract_function_call(func_ref.function.get(), result);
+            }
+            if (func_ref.subquery) {
+                walk_select_statement(func_ref.subquery.get(), result);
+            }
+            break;
+        }
+        case TableReferenceType::JOIN: {
+            auto& join = ref->Cast<JoinRef>();
+            walk_table_ref(join.left.get(), result);
+            walk_table_ref(join.right.get(), result);
+            break;
+        }
+        case TableReferenceType::SUBQUERY: {
+            auto& subquery = ref->Cast<SubqueryRef>();
+            if (subquery.subquery) {
+                walk_select_statement(subquery.subquery.get(), result);
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+inline void walk_query_node(QueryNode* node, ParseResultInfo& result) {
+    if (!node) return;
+
+    switch (node->type) {
+        case QueryNodeType::SELECT_NODE: {
+            auto& select = node->Cast<SelectNode>();
+            walk_table_ref(select.from_table.get(), result);
+            break;
+        }
+        case QueryNodeType::SET_OPERATION_NODE: {
+            auto& set_op = node->Cast<SetOperationNode>();
+            walk_query_node(set_op.left.get(), result);
+            walk_query_node(set_op.right.get(), result);
+            break;
+        }
+        default:
+            break;
+    }
+
+    walk_cte_map(node->cte_map, result);
+}
+
+inline void walk_select_statement(SelectStatement* stmt, ParseResultInfo& result) {
+    if (!stmt || !stmt->node) return;
+    walk_query_node(stmt->node.get(), result);
+}
+
+inline void walk_statement(SQLStatement* stmt, ParseResultInfo& result) {
+    if (!stmt) return;
+
+    switch (stmt->type) {
+        case StatementType::SELECT_STATEMENT: {
+            auto& select = stmt->Cast<SelectStatement>();
+            walk_select_statement(&select, result);
+            result.statement_type = "SELECT";
+            break;
+        }
+        case StatementType::INSERT_STATEMENT: {
+            auto& insert = stmt->Cast<InsertStatement>();
+            if (insert.select_statement) {
+                walk_select_statement(insert.select_statement.get(), result);
+            }
+            if (insert.table_ref) {
+                walk_table_ref(insert.table_ref.get(), result);
+            }
+            walk_cte_map(insert.cte_map, result);
+            result.statement_type = "INSERT";
+            break;
+        }
+        case StatementType::UPDATE_STATEMENT: {
+            auto& update = stmt->Cast<UpdateStatement>();
+            if (update.table) {
+                walk_table_ref(update.table.get(), result);
+            }
+            if (update.from_table) {
+                walk_table_ref(update.from_table.get(), result);
+            }
+            walk_cte_map(update.cte_map, result);
+            result.statement_type = "UPDATE";
+            break;
+        }
+        case StatementType::DELETE_STATEMENT: {
+            auto& del = stmt->Cast<DeleteStatement>();
+            if (del.table) {
+                walk_table_ref(del.table.get(), result);
+            }
+            for (auto& using_ref : del.using_clauses) {
+                walk_table_ref(using_ref.get(), result);
+            }
+            walk_cte_map(del.cte_map, result);
+            result.statement_type = "DELETE";
+            break;
+        }
+        case StatementType::CREATE_STATEMENT: {
+            auto& create = stmt->Cast<CreateStatement>();
+            if (create.info->type == CatalogType::TABLE_ENTRY) {
+                auto& table_info = create.info->Cast<CreateTableInfo>();
+                if (table_info.query) {
+                    walk_select_statement(table_info.query.get(), result);
+                    result.statement_type = "CREATE_TABLE_AS";
+                } else {
+                    result.statement_type = "CREATE_TABLE";
+                }
+            } else if (create.info->type == CatalogType::VIEW_ENTRY) {
+                auto& view_info = create.info->Cast<CreateViewInfo>();
+                if (view_info.query) {
+                    walk_select_statement(view_info.query.get(), result);
+                }
+                result.statement_type = "CREATE_VIEW";
+            } else {
+                result.statement_type = "CREATE";
+            }
+            break;
+        }
+        default:
+            result.statement_type = StatementTypeToString(stmt->type);
+            break;
+    }
+}
+
+inline ParseResultInfo parse_sql_extract_refs(const char* sql_query) {
+    ParseResultInfo result;
+
     try {
-        duckdb::Parser parser;
+        Parser parser;
         parser.ParseQuery(sql_query);
 
         if (parser.statements.empty()) {
-            return strdup("{\"error\": true, \"error_message\": \"No statements found\"}");
+            result.error = true;
+            result.error_message = "No statements found";
+            return result;
         }
 
-        // For now, handle only single statement
-        auto& stmt = parser.statements[0];
-
-        // Check if it's a CREATE TABLE AS statement
-        if (stmt->type == duckdb::StatementType::CREATE_STATEMENT) {
-            auto& create_stmt = stmt->Cast<duckdb::CreateStatement>();
-            if (create_stmt.info->type == duckdb::CatalogType::TABLE_ENTRY) {
-                auto& table_info = create_stmt.info->Cast<duckdb::CreateTableInfo>();
-
-                if (table_info.query) {
-                    std::string select_query = table_info.query->ToString();
-
-                    // Escape JSON
-                    std::string escaped_query;
-                    escaped_query.reserve(select_query.size());
-                    for (char c : select_query) {
-                        switch (c) {
-                            case '"':  escaped_query += "\\\""; break;
-                            case '\\': escaped_query += "\\\\"; break;
-                            case '\b': escaped_query += "\\b"; break;
-                            case '\f': escaped_query += "\\f"; break;
-                            case '\n': escaped_query += "\\n"; break;
-                            case '\r': escaped_query += "\\r"; break;
-                            case '\t': escaped_query += "\\t"; break;
-                            default:   escaped_query += c; break;
-                        }
-                    }
-
-                    std::string result = "{\"statement_type\": \"CREATE_TABLE_AS\", \"select_query\": \"" +
-                                       escaped_query + "\"}";
-                    return strdup(result.c_str());
-                }
-            }
-            return strdup("{\"statement_type\": \"CREATE_TABLE\"}");
-        } else if (stmt->type == duckdb::StatementType::SELECT_STATEMENT) {
-            return strdup("{\"statement_type\": \"SELECT\"}");
-        } else {
-            std::string type_str = duckdb::StatementTypeToString(stmt->type);
-            std::string result = "{\"statement_type\": \"" + type_str + "\"}";
-            return strdup(result.c_str());
-        }
+        walk_statement(parser.statements[0].get(), result);
 
     } catch (const std::exception& e) {
-        std::string error_msg = e.what();
-        size_t pos = 0;
-        while ((pos = error_msg.find('"', pos)) != std::string::npos) {
-            error_msg.replace(pos, 1, "\\\"");
-            pos += 2;
-        }
-        std::string result = "{\"error\": true, \"error_message\": \"" + error_msg + "\"}";
-        return strdup(result.c_str());
+        result.error = true;
+        result.error_message = e.what();
     } catch (...) {
-        return strdup("{\"error\": true, \"error_message\": \"Unknown parsing error\"}");
+        result.error = true;
+        result.error_message = "Unknown parsing error";
     }
+
+    return result;
 }
+
 
 } // namespace bareduckdb

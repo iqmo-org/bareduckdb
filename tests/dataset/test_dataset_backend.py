@@ -43,25 +43,15 @@ def test_dataset_pushdown_in_explain(connect_config):
             assert f'cat_{id_val % 10}' == 'cat_5'
             assert value_val > 100
 
-        if connect_config.get('enable_arrow_dataset', True):
-            has_filter_pushdown = 'Filters:' in explain_text
-            has_projection_pushdown = 'Projections:' in explain_text
-            has_arrow_scan = 'ARROW_SCAN' in explain_text
-            has_filter_operator = '│           FILTER          │' in explain_text
+        has_filter_pushdown = 'Filters:' in explain_text
+        has_projection_pushdown = 'Projections:' in explain_text
+        has_python_data_scan = 'PYTHON_DATA_SCAN' in explain_text
+        has_filter_operator = '|           FILTER          |' in explain_text
 
-            # With dataset backend, filters should be pushed down (not a separate FILTER operator)
-            assert has_arrow_scan
-            assert has_filter_pushdown
-            assert has_projection_pushdown
-            assert not has_filter_operator
-        else:
-            has_capsule_scan = 'ARROW_SCAN_DUMB' in explain_text
-            has_filter_operator = '│           FILTER          │' in explain_text
-            has_projection_operator = '│         PROJECTION        │' in explain_text
-
-            assert has_capsule_scan
-            assert has_filter_operator
-            assert has_projection_operator
+        assert has_python_data_scan
+        assert has_filter_pushdown
+        assert has_projection_pushdown
+        assert not has_filter_operator
 
     finally:
         conn.close()
@@ -85,10 +75,9 @@ def test_dataset_filter_pushdown_correctness(connect_config):
         assert result1[0] == (0, 0, 'str_0')
         assert result1[4] == (4, 8, 'str_4')
 
-        if connect_config.get('enable_arrow_dataset', True):
-            result2 = conn.execute('SELECT a, c FROM filter_test WHERE b > 50 AND b < 100').fetchall()
-            assert len(result2) == 24
-            assert result2[0] == (26, 'str_26')
+        result2 = conn.execute('SELECT a, c FROM filter_test WHERE b > 50 AND b < 100').fetchall()
+        assert len(result2) == 24
+        assert result2[0] == (26, 'str_26')
 
     finally:
         conn.close()
@@ -113,11 +102,10 @@ def test_dataset_projection_pushdown_correctness(connect_config):
         assert result[0] == ('a', 1)
         assert result[4] == ('e', 5)
 
-        if connect_config.get('enable_arrow_dataset', True):
-            result2 = conn.execute('SELECT col3 FROM proj_test WHERE col1 > 2').fetchall()
-            assert len(result2) == 3
-            assert result2[0] == (30.5,)
-            assert result2[2] == (50.5,)
+        result2 = conn.execute('SELECT col3 FROM proj_test WHERE col1 > 2').fetchall()
+        assert len(result2) == 3
+        assert result2[0] == (30.5,)
+        assert result2[2] == (50.5,)
 
     finally:
         conn.close()

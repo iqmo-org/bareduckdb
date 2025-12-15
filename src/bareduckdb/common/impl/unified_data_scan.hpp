@@ -557,6 +557,19 @@ static bool HolderScanPushdownType(const FunctionData& bind_data, idx_t col_idx)
         }
     }
 
+    // PyArrow's array_filter can't handle string_view columns at all
+    // See https://github.com/duckdb/duckdb-python/issues/227
+    const auto& columns = data.arrow_table.GetColumns();
+    for (const auto& col_pair : columns) {
+        if (data.all_types[col_pair.first].id() == LogicalTypeId::VARCHAR) {
+            const auto& arrow_type = *col_pair.second;
+            if (arrow_type.GetTypeInfo<ArrowStringInfo>().GetSizeType() == ArrowVariableSizeType::VIEW) {
+                return false;
+            }
+        }
+    }
+
+
     // For holders that don't support views
     switch (type_id) {
         case LogicalTypeId::BOOLEAN:

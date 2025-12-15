@@ -341,6 +341,11 @@ if holder_scan_pyx.exists():
         "src/bareduckdb/core/impl",
         _DUCKDB_INCLUDE,
     ]
+    holder_scan_kwargs["depends"] = [
+        "src/bareduckdb/common/impl/unified_data_scan.hpp",
+        "src/bareduckdb/common/impl/filter_types.hpp",
+        "src/bareduckdb/core/impl/cpp_helpers.hpp",
+    ]
     holder_scan_extensions.append(Extension(**holder_scan_kwargs))
     print(f"Unified holder scan extension configured successfully")
 

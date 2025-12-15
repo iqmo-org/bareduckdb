@@ -1,5 +1,7 @@
-import polars as pl
 import pytest
+
+pl = pytest.importorskip("polars")
+
 from bareduckdb import Connection
 
 

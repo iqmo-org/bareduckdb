@@ -323,10 +323,16 @@ python_to_value_kwargs = get_args(
     sources=["src/bareduckdb/core/impl/python_to_value.pyx"],
 )
 
+appender_kwargs = get_args(
+    name="bareduckdb.core.impl.appender",
+    sources=["src/bareduckdb/core/impl/appender.pyx"],
+)
+
 core_extensions = [
     Extension(**connection_kwargs),
     Extension(**result_kwargs),
     Extension(**python_to_value_kwargs),
+    Extension(**appender_kwargs),
 ]
 
 holder_scan_extensions = []

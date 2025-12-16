@@ -1,8 +1,9 @@
 from typing import Protocol
 
+from bareduckdb.core.appender import Appender
 from bareduckdb.core.connection_base import ConnectionBase
 
-__all__ = ["ConnectionBase"]
+__all__ = ["ConnectionBase", "Appender"]
 
 
 class PyArrowCapsule(Protocol):

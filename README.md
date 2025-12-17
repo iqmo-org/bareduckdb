@@ -13,11 +13,22 @@
 
 - **Simple**  ~2k lines of C++ and ~2k lines of Python - easy to extend or customize
 - **Arrow-first data conversion** supporting Polars, PyArrow, and Pandas
-- **Support for latest Python features** Free threading, subinterpreters, and asyncio
+- **Support for latest Python features** Free threading, subinterpreters, ABI3 and asyncio
 - **Dynamically linked** to DuckDB's official library
-- **User Defined Table Functions** inline function registration
-- **Polars Enhancements** - Native Polars pushdowns w/o PyArrow
-- **Appender (In Progress)**
+- **Experimental Enhancements** 
+
+## Experimental Enhancements
+
+- **Explicit Stream vs Materialization Modes** - At connection & execution time, select whether you want materialized arrow_tables or streaming arrow_readers. 
+- **Arrow Deadlock Detection** - certain use cases involving reuse of Arrow Readers can cause deadlocks
+- **Table Statistics** - Extracts and passes table statistics at registration time
+- **Polars - No PyArrow Required** - Polars can be read and produced without importing / installing PyArrow
+- **Polars - Native LazyFrame Pushdown** - whereas DuckDB collects() LazyFrames before pushdown, bareduckdb pushes down native Polars predicates
+- **Inline Registration** - bareduckdb.execute("query", data={...}) allows registration at call time
+- **User Defined Table Functions** - extracts UDTFs at parse time and executes registered functions
+- **Appender - Row by Row ** Exposes DuckDB's appender API for fast sequential writes to duckdb databases
+
+
 
 ## Installation
 

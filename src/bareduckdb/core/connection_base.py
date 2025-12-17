@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from pyarrow import dataset as ds
 
     from . import PyArrowCapsule
+    from .appender import Appender
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +252,25 @@ class ConnectionBase:
         with self._DUCKDB_INIT_LOCK:
             self._registered_objects.clear()
             self._impl.close()
+
+    def appender(
+        self,
+        table: str,
+        schema: Optional[str] = None,
+        catalog: Optional[str] = None,
+    ) -> "Appender":
+        """
+        Args:
+            table: Target table name
+            schema: Schema name (optional, defaults to current schema)
+            catalog: Catalog name (optional, for multi-catalog databases)
+
+        Returns:
+            Appender instance
+        """
+        from .appender import Appender
+
+        return Appender(self, table, schema, catalog)
 
     def __enter__(self) -> ConnectionBase:
         return self

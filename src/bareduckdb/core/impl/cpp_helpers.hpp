@@ -737,9 +737,16 @@ struct SingleUseStreamWrapper {
 
     static void wrapped_release(ArrowArrayStream* stream) {
         auto* wrapper = static_cast<SingleUseStreamWrapper*>(stream->private_data);
+
         if (wrapper->underlying_stream && wrapper->underlying_stream->release) {
-            wrapper->underlying_stream->release(wrapper->underlying_stream);
+            auto release_fn = wrapper->underlying_stream->release;
+            auto* underlying = wrapper->underlying_stream;
+
+            wrapper->underlying_stream = nullptr;
+
+            release_fn(underlying);
         }
+
         delete wrapper;
         stream->release = nullptr;
     }

@@ -26,6 +26,11 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
+[project.urls]
+Homepage = "https://github.com/iqmo-org/bareduckdb"
+Repository = "https://github.com/iqmo-org/bareduckdb"
+Issues = "https://github.com/iqmo-org/bareduckdb/issues"
+
 [project.optional-dependencies]
 arrow = ["pyarrow==22.0"]
 test = [

@@ -42,6 +42,7 @@ test = [
     "pytest-randomly>=4.0.1",
     "pytest-run-parallel>=0.2.0",
     "pytest-forked>=1.6.0",
+    "pytest-codspeed>=4.2.0",
     "pyarrow>=22.0",
     "pandas>=3.0.0rc0",
 ]
@@ -162,6 +163,7 @@ dev = [
     "pytest-xdist>=3.8.0",
     "vortex-data;python_version < '3.14'", # no free-threaded
     "tabulate",
+    "ruff>=0.14.10",
 ]
 downstream = [
     "duckdb-engine>=0.17.0",
@@ -193,7 +195,7 @@ addopts = [
     "--ignore=tests/downstream",
     "--ignore=tests/experimental",
     "--ignore=tests/comparison",
-
+    "--ignore=tests/benchmarks",
 ]
 # For free-threaded Python: Convert GIL re-enablement warnings to errors
 # This prevents INTERNALERROR in xdist and gives clear error messages

@@ -80,9 +80,14 @@ class Connection(ConnectionAPI):
         query: str,
         parameters: Sequence[Any] | Mapping[str, Any] | None = None,
         *,
+        params: Sequence[Any] | Mapping[str, Any] | None = None,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] | None = None,
         data: Mapping[str, Any] | None = None,
     ) -> Connection:
+        if params is not None and parameters is None:
+            # For compatibility with duckdb pyrelations
+            parameters = params
+
         return super().execute(query=query, parameters=parameters, output_type=output_type, data=data)
 
     def register(

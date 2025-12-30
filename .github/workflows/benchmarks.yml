@@ -13,7 +13,7 @@ concurrency:
 jobs:
   benchmark:
     name: 'CodSpeed Benchmarks'
-    runs-on: codspeed-macro
+    runs-on: ubuntu-latest
 
     permissions:
       contents: read

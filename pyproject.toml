@@ -161,6 +161,7 @@ dev = [
     "pytest-run-parallel>=0.2.0",
     "pytest-timeout>=2.3.1",
     "pytest-xdist>=3.8.0",
+    "pytest-codspeed>=4.2.0",
     "vortex-data;python_version < '3.14'", # no free-threaded
     "tabulate",
     "ruff>=0.14.10",

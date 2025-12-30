@@ -65,4 +65,5 @@ jobs:
       - name: Benchmark w CodSpeed
         uses: CodSpeedHQ/action@v4
         with:
+          mode: simulation
           run: uv run --no-sync pytest tests/benchmarks --codspeed

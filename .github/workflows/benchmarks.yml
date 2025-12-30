@@ -66,4 +66,4 @@ jobs:
         uses: CodSpeedHQ/action@v4
         with:
           mode: walltime
-          run: uv run --no-sync pytest tests/benchmarks --codspeed
+          run: uv run --no-sync pytest tests/benchmarks --codspeed -n 0 --no-cov

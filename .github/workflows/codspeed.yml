@@ -1,0 +1,69 @@
+name: CodSpeed
+
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  codspeed:
+    name: Run benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Initialize DuckDB submodule (headers only)
+        shell: bash
+        run: |
+          # Initialize the duckdb submodule with sparse checkout (headers only)
+          git submodule update --init external/duckdb
+          cd external/duckdb
+          git sparse-checkout init --cone
+          git sparse-checkout set src/include
+          cd ../..
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: -codspeed
+
+      - name: Setup Compiler
+        shell: bash
+        run: |
+          # Ubuntu: Install and configure GCC 14
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
+          echo "CC=gcc-14" >> $GITHUB_ENV
+          echo "CXX=g++-14" >> $GITHUB_ENV
+          gcc --version
+          g++ --version
+
+      - name: Build and install package
+        shell: bash
+        run: |
+          uv sync --no-install-project --no-build
+          uv sync --reinstall-package bareduckdb -v
+
+      - name: Run benchmarks
+        uses: CodSpeedHQ/action@v4.5.1
+        with:
+          mode: simulation
+          run: uv run --no-sync pytest tests/benchmarks --codspeed

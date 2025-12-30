@@ -26,7 +26,7 @@ class Connection(ConnectionAPI):
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
         default_statistics: "Literal['numeric'] | bool | None" = None,
         udtf_functions: Optional[dict] = None,
-        enable_replacement_scan: bool = True,
+        enable_replacement_scan: bool = False,
     ) -> None:
         """
         Create a DuckDB-compatible connection.

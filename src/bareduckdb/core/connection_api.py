@@ -32,7 +32,7 @@ class ConnectionAPI(ConnectionBase):
         default_statistics: "Literal['numeric'] | bool | None" = None,
         udtf_functions: Optional[dict[str, Callable]] = None,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
-        enable_replacement_scan: bool = True,
+        enable_replacement_scan: bool = False,
     ) -> None:
         """
         Args:

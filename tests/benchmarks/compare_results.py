@@ -12,7 +12,7 @@ def main():
 
     regexp = r"(.*)::([^\[]+?)(\[((.*)-)?(\d+)-(\d+)\])?$"
 
-    query = fr"""
+    query = rf"""
     create or replace table all_results as
     select * exclude (test, timestamp),
         if(test like '%[%', regexp_extract(test, '{regexp}', 2), test) as pytest,
@@ -57,9 +57,7 @@ def main():
     with bareduckdb.connect() as conn:
         df = conn.execute(query).df()
 
-        df_check = conn.execute(
-            "select filename, pid, count(*) c from latest_results group by filename, pid having c > 1"
-        ).df()
+        df_check = conn.execute("select filename, pid, count(*) c from latest_results group by filename, pid having c > 1").df()
 
     print("## Benchmark Results\n")
     print(df.to_markdown(index=False))
@@ -68,6 +66,7 @@ def main():
     if len(df_check) > 0:
         print("\n**WARNING: Fork isolation issue detected!** Multiple tests ran in same process:\n")
         print(df_check.to_markdown(index=False))
+
 
 if __name__ == "__main__":
     main()

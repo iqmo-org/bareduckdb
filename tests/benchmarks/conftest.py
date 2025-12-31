@@ -47,11 +47,13 @@ def pytest_configure(config):
 
     if use_duckdb:
         import duckdb
+
         conn = duckdb.connect()
         _lib_info["library"] = "duckdb"
         _lib_info["lib_version"] = duckdb.__version__
     else:
         import bareduckdb
+
         conn = bareduckdb.connect()
         _lib_info["library"] = "bareduckdb"
         _lib_info["lib_version"] = bareduckdb.__version__
@@ -139,9 +141,11 @@ def conn_with_like_data(request, ensure_parquet_files):
 
     if use_duckdb:
         import duckdb
+
         connection = duckdb.connect()
     else:
         import bareduckdb
+
         connection = bareduckdb.connect()
 
     connection.execute("CREATE TABLE t1 AS SELECT * FROM 'testdata/t1.parquet'")
@@ -158,9 +162,11 @@ def conn(request):
 
     if use_duckdb:
         import duckdb
+
         connection = duckdb.connect()
     else:
         import bareduckdb
+
         connection = bareduckdb.connect()
 
     # Warm the connection
@@ -177,9 +183,11 @@ def conne(request):
 
     if use_duckdb:
         import duckdb
+
         connection = duckdb.connect()
     else:
         import bareduckdb
+
         connection = bareduckdb.connect()
 
     # Warm the connection

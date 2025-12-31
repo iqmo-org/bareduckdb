@@ -18,9 +18,7 @@ def test_range_param(conn):
 @pytest.mark.benchmark
 def test_like_no_param(conn_with_like_data):
     """LIKE without parameter - should be fast."""
-    result = conn_with_like_data.execute(
-        "SELECT t1.value FROM t1 JOIN t2 ON t1.t2_id = t2.id WHERE t2.code LIKE '0001%'"
-    ).fetch_arrow_table()
+    result = conn_with_like_data.execute("SELECT t1.value FROM t1 JOIN t2 ON t1.t2_id = t2.id WHERE t2.code LIKE '0001%'").fetch_arrow_table()
     assert len(result) > 0
 
 
@@ -32,4 +30,3 @@ def test_like_with_param(conn_with_like_data):
         params=("0001%",),
     ).fetch_arrow_table()
     assert len(result) > 0
-

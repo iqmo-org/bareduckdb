@@ -74,6 +74,7 @@ jobs:
           uv venv .venv-duckdb
           uv pip install duckdb pyarrow pytest pytest-forked pytest-repeat --python .venv-duckdb/bin/python
           .venv-duckdb/bin/pytest tests/benchmarks \
+            --confcutdir=tests/benchmarks \
             --forked \
             --count=3 \
             -n 0 \

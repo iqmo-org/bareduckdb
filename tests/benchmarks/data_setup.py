@@ -94,14 +94,17 @@ PARQUET_DEFINITIONS = {
 
 
 def setup_data(data_dir: Path | None = None, force: bool = False):
-    import bareduckdb
+    try:
+        import bareduckdb as db
+    except ImportError:
+        import duckdb as db
 
     if data_dir is None:
         data_dir = DATA_DIR
 
     data_dir.mkdir(exist_ok=True)
 
-    with bareduckdb.connect() as conn:
+    with db.connect() as conn:
         for filename, query in PARQUET_DEFINITIONS.items():
             filepath = data_dir / filename
 

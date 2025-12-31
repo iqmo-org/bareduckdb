@@ -75,9 +75,9 @@ jobs:
           uv pip install duckdb pyarrow pytest pytest-forked pytest-repeat --python .venv-duckdb/bin/python
           .venv-duckdb/bin/pytest tests/benchmarks \
             --confcutdir=tests/benchmarks \
+            -o "addopts=" \
             --forked \
             --count=3 \
-            -n 0 \
             -v \
             --use-duckdb
 
@@ -85,11 +85,10 @@ jobs:
         run: |
           uv venv .venv-bareduckdb-release
           uv pip install bareduckdb pyarrow pytest pytest-forked pytest-repeat --python .venv-bareduckdb-release/bin/python
-
           .venv-bareduckdb-release/bin/pytest tests/benchmarks \
+            -o "addopts=" \
             --forked \
             --count=3 \
-            -n 0 \
             -v \
             --benchmark-suffix=release
 

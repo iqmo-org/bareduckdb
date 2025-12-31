@@ -239,3 +239,5 @@ duckdb_nightly/duck*
 
 *.code-workspace
 .codspeed
+testdata
+benchmark-results/

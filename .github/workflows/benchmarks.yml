@@ -12,11 +12,12 @@ concurrency:
 
 jobs:
   benchmark:
-    name: 'CodSpeed Benchmarks'
+    name: 'Benchmarks'
     runs-on: ubuntu-latest
 
     permissions:
       contents: read
+      pull-requests: write
 
     steps:
       - name: Checkout code
@@ -55,15 +56,56 @@ jobs:
           echo "CC=gcc-14" >> $GITHUB_ENV
           echo "CXX=g++-14" >> $GITHUB_ENV
 
-      - name: Build
-        shell: bash
-        run: |
-          uv sync --no-install-project --no-build
-          uv sync --reinstall-package bareduckdb -v
-          uv pip install "duckdb==1.4.*" --pre
+      - name: Build current repo
+        run: uv sync
 
-      - name: Benchmark w CodSpeed
-        uses: CodSpeedHQ/action@v4
+      - name: Run benchmarks
+        run: |
+          uv run pytest tests/benchmarks \
+            --forked \
+            --count=3 \
+            -n 0 \
+            --no-cov \
+            -v \
+            --benchmark-suffix=dev
+
+      - name: Run benchmarks - duckdb
+        run: |
+          uv venv .venv-duckdb
+          uv pip install duckdb pyarrow pytest pytest-forked pytest-repeat --python .venv-duckdb/bin/python
+          .venv-duckdb/bin/pytest tests/benchmarks \
+            --forked \
+            --count=3 \
+            -n 0 \
+            -v \
+            --use-duckdb
+
+      - name: Run benchmarks - bareduckdb release
+        run: |
+          uv venv .venv-bareduckdb-release
+          uv pip install bareduckdb pyarrow pytest pytest-forked pytest-repeat --python .venv-bareduckdb-release/bin/python
+
+          .venv-bareduckdb-release/bin/pytest tests/benchmarks \
+            --forked \
+            --count=3 \
+            -n 0 \
+            -v \
+            --benchmark-suffix=release
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
         with:
-          mode: walltime
-          run: uv run --no-sync pytest tests/benchmarks --codspeed -n 0 --no-cov
+          name: benchmark-results-${{ github.sha }}
+          path: benchmark-results/
+
+      - name: Generate comparison
+        run: |
+          uv run python tests/benchmarks/compare_results.py benchmark-results > comparison.md
+          cat comparison.md
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body-file comparison.md

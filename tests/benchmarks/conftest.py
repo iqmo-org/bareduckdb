@@ -170,7 +170,7 @@ def conn(request):
         connection = bareduckdb.connect()
 
     # Warm the connection
-    _ = connection.execute("select * from range(10)").df()
+    _ = connection.execute("select * from range(10)").fetch_arrow_table()
 
     yield connection
     connection.close()

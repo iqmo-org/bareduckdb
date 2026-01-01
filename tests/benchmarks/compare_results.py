@@ -34,24 +34,29 @@ def main():
     select
         lib,
         test,
-        min(wall_time_s)*1000 as time_ms_min,
-        min(rusage_maxrss_delta_kb) as memory_kb_delta,
+        avg(wall_time_s)*1000 as time_ms_avg,
+        avg(rusage_maxrss_delta_kb) as memory_kb_delta,
         count(*) num_tests
      from latest_results
      group by lib, test
     ;
     create or replace table pivoted_stats as
-    pivot result_stats on lib using last(num_tests) as num_tests, last(time_ms_min) as time_ms, last(memory_kb_delta)/1024 as mem_mb group by test
+    pivot result_stats on lib using last(num_tests) as num_tests, last(time_ms_avg) as time_ms, last(memory_kb_delta)/1024 as mem_mb group by test
     order by test
     ;
-
+    
     select test,
-        bareduckdb_dev_time_ms,
-        duckdb_time_ms,
-        bareduckdb_dev_time_ms / duckdb_time_ms as time_ratio,
-        bareduckdb_dev_mem_mb / duckdb_mem_mb as mem_ratio,
-        bareduckdb_dev_num_tests
+
+        round(bareduckdb_dev_time_ms / duckdb_time_ms, 2) as ms_ratio_duckdb,
+        round(bareduckdb_dev_time_ms / bareduckdb_time_ms, 2) as ms_ratio_rel,
+
+        round(bareduckdb_dev_mem_mb / duckdb_mem_mb, 2) as mem_ratio_duckdb,
+        round(bareduckdb_dev_mem_mb / bareduckdb_mem_mb, 2) as mem_ratio_duckdb_rel,
+        round(bareduckdb_dev_time_ms, 1) as dev_ms,
+        round(duckdb_time_ms, 1) as duckdb_ms,
+        bareduckdb_dev_num_tests as num_tests
     from pivoted_stats
+    order by ms_ratio_duckdb
     """.replace("RESULTS_DIR", str(results_dir))
 
     with bareduckdb.connect() as conn:

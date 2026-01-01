@@ -90,7 +90,7 @@ jobs:
 
       - name: Run benchmarks - duckdb
         run: |
-          uv venv --clear .venv-duckdb
+          uv venv --clear .venv-duckdb -p 3.12
           uv pip install duckdb pyarrow pytest pytest-forked pytest-repeat --python .venv-duckdb/bin/python
           .venv-duckdb/bin/pytest tests/benchmarks \
             --confcutdir=tests/benchmarks \
@@ -102,7 +102,7 @@ jobs:
 
       - name: Run benchmarks - bareduckdb release
         run: |
-          uv venv --clear .venv-bareduckdb-release
+          uv venv --clear .venv-bareduckdb-release -p 3.12
           uv pip install bareduckdb pyarrow pytest pytest-forked pytest-repeat --python .venv-bareduckdb-release/bin/python
           .venv-bareduckdb-release/bin/pytest tests/benchmarks \
             -o "addopts=" \

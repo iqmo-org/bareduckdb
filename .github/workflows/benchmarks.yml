@@ -45,12 +45,16 @@ jobs:
         with:
           enable-cache: true
           cache-suffix: -benchmarks
-
+      - name: Check resources
+        run: |
+          cat /proc/meminfo | head -5
+          ulimit -a
+          nproc
       - name: Setup Compiler
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-14 g++-14
+          # sudo apt-get install -y gcc-14 g++-14 gdb
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
           echo "CC=gcc-14" >> $GITHUB_ENV
@@ -58,6 +62,21 @@ jobs:
 
       - name: Build current repo
         run: uv sync
+
+      # - name: Debug segfault
+      #   run: |
+      #     uv run gdb -batch \
+      #       -ex "set confirm off" \
+      #       -ex "run" \
+      #       -ex "bt full" \
+      #       -ex "info registers" \
+      #       --args python -m pytest tests/benchmarks/test_sql_cases.py \
+      #         -k "limits_topn_large" \
+      #         -o "addopts=" \
+      #         --count=20 \
+      #         -v \
+      #         --no-cov \
+      #         2>&1 | tail -500
 
       - name: Run benchmarks
         run: |
@@ -71,7 +90,7 @@ jobs:
 
       - name: Run benchmarks - duckdb
         run: |
-          uv venv .venv-duckdb
+          uv venv --clear .venv-duckdb
           uv pip install duckdb pyarrow pytest pytest-forked pytest-repeat --python .venv-duckdb/bin/python
           .venv-duckdb/bin/pytest tests/benchmarks \
             --confcutdir=tests/benchmarks \
@@ -83,7 +102,7 @@ jobs:
 
       - name: Run benchmarks - bareduckdb release
         run: |
-          uv venv .venv-bareduckdb-release
+          uv venv --clear .venv-bareduckdb-release
           uv pip install bareduckdb pyarrow pytest pytest-forked pytest-repeat --python .venv-bareduckdb-release/bin/python
           .venv-bareduckdb-release/bin/pytest tests/benchmarks \
             -o "addopts=" \

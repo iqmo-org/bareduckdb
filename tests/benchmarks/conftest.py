@@ -130,13 +130,11 @@ def pytest_runtest_call(item):
 
 @pytest.fixture
 def ensure_parquet_files():
-    """Create parquet files if they don't exist."""
     setup_data()
 
 
 @pytest.fixture
 def conn_with_like_data(request, ensure_parquet_files):
-    """Connection with t1/t2 tables loaded."""
     use_duckdb = request.config.getoption("--use-duckdb")
 
     if use_duckdb:

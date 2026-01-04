@@ -9,9 +9,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
-    from .data_setup import DATA_DIR, PARQUET_DEFINITIONS, setup_data
+    from .data_setup import (
+        DATA_DIR, PARQUET_DEFINITIONS, setup_data,
+        load_data_by_mode, rewrite_sql_for_registration, parse_sql_case,
+    )
 except ImportError:
-    from data_setup import DATA_DIR, PARQUET_DEFINITIONS, setup_data
+    from data_setup import (
+        DATA_DIR, PARQUET_DEFINITIONS, setup_data,
+        load_data_by_mode, rewrite_sql_for_registration, parse_sql_case,
+    )
 
 # macOS reports ru_maxrss in bytes, Linux in KB
 _MAXRSS_DIVISOR = 1024 if platform.system() == "Darwin" else 1
@@ -22,6 +28,7 @@ _output_file = None
 
 BENCHMARK_OUTPUT_DIR = Path("benchmark-results")
 
+BENCHMARK_SUFFIX = None
 
 def pytest_addoption(parser):
     parser.addoption(
@@ -35,6 +42,19 @@ def pytest_addoption(parser):
         default="",
         help="Suffix to add to benchmark output filename (e.g., 'dev', 'release')",
     )
+    parser.addoption(
+        "--registration-modes",
+        default="parquet",
+        help="Comma-separated list of data registration modes: parquet,arrow,polars,polars_lazy",
+    )
+
+
+def pytest_generate_tests(metafunc):
+    """Generate test variants for each registration mode."""
+    if "registration_mode" in metafunc.fixturenames:
+        modes_str = metafunc.config.getoption("--registration-modes")
+        modes = [m.strip() for m in modes_str.split(",")]
+        metafunc.parametrize("registration_mode", modes)
 
 
 def pytest_configure(config):
@@ -67,6 +87,9 @@ def pytest_configure(config):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     library = _lib_info["library"]
     suffix = config.getoption("--benchmark-suffix")
+    global BENCHMARK_SUFFIX
+    BENCHMARK_SUFFIX = suffix
+
     suffix_part = f"-{suffix}" if suffix else ""
     filename = BENCHMARK_OUTPUT_DIR / f"benchmark_{library}{suffix_part}_{timestamp}.jsonl"
     _output_file = open(filename, "w")
@@ -111,8 +134,15 @@ def pytest_runtest_call(item):
         "rusage": rusage_delta,
     }
 
+    mode = "parquet"
+    if hasattr(item, "callspec") and "registration_mode" in item.callspec.params:
+        mode = item.callspec.params["registration_mode"]
+
     result = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "python": sys.version.split(" ")[0],
+        "bench": BENCHMARK_SUFFIX,
+        "mode": mode,
         "test": item.nodeid,
         "pid": os.getpid(),
         "library": _lib_info.get("library", "unknown"),
@@ -131,6 +161,31 @@ def pytest_runtest_call(item):
 @pytest.fixture
 def ensure_parquet_files():
     setup_data()
+
+
+@pytest.fixture
+def registered_tables(conn, request):
+    if not hasattr(request.node, "callspec"):
+        return {}
+
+    params = request.node.callspec.params
+    mode = params.get("registration_mode", "parquet")
+
+    if mode == "parquet":
+        return {}
+
+    sql_path = params.get("sql_path")
+    if not sql_path:
+        return {}
+
+    raw_sql, _ = parse_sql_case(sql_path, replace_placeholders=False)
+    _, tables_to_register = rewrite_sql_for_registration(raw_sql, mode)
+
+    for table_name, filepath in tables_to_register.items():
+        data = load_data_by_mode(filepath, mode)
+        conn.register(table_name, data)
+
+    return tables_to_register
 
 
 @pytest.fixture

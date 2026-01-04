@@ -21,8 +21,49 @@ def replace_data_placeholders(sql: str) -> str:
     return sql
 
 
-def parse_sql_case(path: Path) -> tuple[str, str | None]:
-    """Parse SQL file, return (sql, expected_len expression or None)."""
+def load_data_by_mode(filepath: Path, mode: str):
+    """Load parquet file in the specified format.
+
+    Modes:
+        parquet: Direct parquet file path in SQL (no registration)
+        arrow: PyArrow Table - full filter/projection pushdown
+        polars: Polars DataFrame - Polars expression pushdown
+        polars_lazy: Polars LazyFrame - lazy evaluation with pushdown
+    """
+    if mode == "parquet":
+        return None
+    elif mode == "arrow":
+        import pyarrow.parquet as pq
+        return pq.read_table(filepath)
+    elif mode == "polars":
+        import polars as pl
+        return pl.read_parquet(filepath)
+    elif mode == "polars_lazy":
+        import polars as pl
+        return pl.scan_parquet(filepath)
+    else:
+        raise ValueError(f"Unknown registration mode: {mode}")
+
+
+def rewrite_sql_for_registration(sql: str, mode: str) -> tuple[str, dict[str, Path]]:
+    """'parquet' mode: replaces placeholders with file paths (current behavior).
+    other modes: keeps placeholders as table names, returns tables to register.
+
+    """
+    if mode == "parquet":
+        return replace_data_placeholders(sql), {}
+
+    tables_to_register = {}
+    for placeholder, filepath in DATA_FILE_MAP.items():
+        if placeholder in sql:
+            tables_to_register[placeholder] = filepath
+    return sql, tables_to_register
+
+
+def parse_sql_case(path: Path, replace_placeholders: bool = True) -> tuple[str, str | None]:
+    """Parse SQL file, return (sql, expected_len expression or None).
+
+    """
     content = path.read_text()
     lines = content.strip().split("\n")
 
@@ -34,11 +75,13 @@ def parse_sql_case(path: Path) -> tuple[str, str | None]:
             lines = lines[1:]
 
     sql = "\n".join(lines).strip()
-    return replace_data_placeholders(sql), expected
+    if replace_placeholders:
+        sql = replace_data_placeholders(sql)
+    return sql, expected
 
 
 def discover_sql_cases() -> list[tuple[str, Path]]:
-    """Discover all SQL case files, return list of (test_id, path)."""
+    """returns list of (test_id, path)."""
     cases = []
     for sql_file in sorted(CASES_DIR.rglob("*.sql")):
         # test_id: category/name (without .sql)

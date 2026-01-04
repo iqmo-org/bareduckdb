@@ -16,10 +16,15 @@ def main():
     create or replace table all_results as
     select * exclude (test, timestamp),
         if(test like '%[%', regexp_extract(test, '{regexp}', 2), test) as pytest,
-        if(test like '%[%', regexp_extract(test, '{regexp}', 5), test) as test_name,
+        if(test like '%[%', regexp_extract(test, '{regexp}', 5), test) as test_name_raw,
+        -- Strip mode prefix from test_name (e.g., "parquet-limits_topn_small" -> "limits_topn_small")
+        if(test_name_raw is not null and test_name_raw like mode || '-%',
+           regexp_replace(test_name_raw, '^' || mode || '-', ''),
+           test_name_raw) as test_name,
         if(test_name is not null and len(test_name)>0, test_name, pytest) as test,
         if(test like '%[%', regexp_extract(test, '{regexp}', 6)::int, 1) as test_run,
-        case when library = 'duckdb' then library
+        case when bench is not null then bench
+            when library = 'duckdb' then library
             when library = 'bareduckdb' and 'dev' in lib_version then 'bareduckdb_dev'
             else library
         end as lib,
@@ -28,35 +33,48 @@ def main():
 
     create or replace table latest_results as
     select * from all_results where filename in
-    (select max(filename) from all_results group by library, lib_version)
+    (select max(filename) from all_results group by lib, lib_version)
     ;
     create or replace table result_stats as
     select
         lib,
         test,
+        mode,
         avg(wall_time_s)*1000 as time_ms_avg,
         avg(rusage_maxrss_delta_kb) as memory_kb_delta,
         count(*) num_tests
      from latest_results
-     group by lib, test
+     group by lib, test, mode
     ;
-    create or replace table pivoted_stats as
-    pivot result_stats on lib using last(num_tests) as num_tests, last(time_ms_avg) as time_ms, last(memory_kb_delta)/1024 as mem_mb group by test
-    order by test
+
+    create or replace table baseline as (select * from result_stats where lib='duckdb');
+
+    create or replace table result_vs_baseline as
+    select r.*, r.time_ms_avg/b.time_ms_avg as ms_ratio, r.memory_kb_delta/b.memory_kb_delta as mem_ratio
+    from result_stats r
+    join baseline b 
+    on b.test=r.test
+        and b.mode=r.mode
+    order by r.test, r.mode, r.lib
     ;
     
-    select test,
 
-        round(bareduckdb_dev_time_ms / duckdb_time_ms, 2) as ms_ratio_duckdb,
-        round(bareduckdb_dev_time_ms / bareduckdb_time_ms, 2) as ms_ratio_rel,
-
-        round(bareduckdb_dev_mem_mb / duckdb_mem_mb, 2) as mem_ratio_duckdb,
-        round(bareduckdb_dev_mem_mb / bareduckdb_mem_mb, 2) as mem_ratio_duckdb_rel,
-        round(bareduckdb_dev_time_ms, 1) as dev_ms,
-        round(duckdb_time_ms, 1) as duckdb_ms,
-        bareduckdb_dev_num_tests as num_tests
-    from pivoted_stats
-    order by ms_ratio_duckdb
+    with time_pivoted as (
+    pivot result_vs_baseline on lib using round(last(ms_ratio),2) as time group by test
+    ),
+    mem_pivoted as (
+    pivot result_vs_baseline on lib using round(last(mem_ratio),1) as mem group by test
+    )
+    select b.test,
+        b.mode,
+        round(b.time_ms_avg,1) base_ms,
+        round(b.memory_kb_delta,1) base_kb,
+        t.* exclude (test, duckdb_time),
+        m.* exclude (test, duckdb_mem) 
+    from baseline b
+    join mem_pivoted m on m.test=b.test
+    join time_pivoted t on t.test=b.test 
+    order by b.test, b.mode
     """.replace("RESULTS_DIR", str(results_dir))
 
     with bareduckdb.connect() as conn:

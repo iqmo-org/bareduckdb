@@ -1,11 +1,9 @@
-"""SQL case benchmarks - parameterized from cases/*.sql files."""
-
 import pytest
 
 try:
-    from .data_setup import discover_sql_cases, parse_sql_case, setup_data
+    from .data_setup import discover_sql_cases, parse_sql_case, setup_data, rewrite_sql_for_registration
 except ImportError:
-    from data_setup import discover_sql_cases, parse_sql_case, setup_data
+    from data_setup import discover_sql_cases, parse_sql_case, setup_data, rewrite_sql_for_registration
 
 
 def _check_result(result, expected_expr: str | None):
@@ -39,8 +37,9 @@ def data_files():
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("test_id,sql_path", _SQL_CASES, ids=[c[0] for c in _SQL_CASES])
-def test_sql_case(conn, data_files, test_id, sql_path):
-    """Run SQL case benchmark."""
-    sql, expected = parse_sql_case(sql_path)
+def test_sql_case(conn, data_files, registered_tables, test_id, sql_path, registration_mode):
+    raw_sql, expected = parse_sql_case(sql_path, replace_placeholders=False)
+    sql, _ = rewrite_sql_for_registration(raw_sql, registration_mode)
+
     result = conn.execute(sql).fetch_arrow_table()
     _check_result(result, expected)

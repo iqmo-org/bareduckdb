@@ -134,16 +134,55 @@ def pytest_runtest_call(item):
         "rusage": rusage_delta,
     }
 
-    mode = "parquet"
-    if hasattr(item, "callspec") and "registration_mode" in item.callspec.params:
-        mode = item.callspec.params["registration_mode"]
+    # Extract test metadata from item
+    # Default to test function name, strip parametrization suffix like "[1-3]"
+    test_name = item.name.split("[")[0] if "[" in item.name else item.name
+    test_run = 1
+    test_total = 1
+    sql_path = None
+    mode = ""
+
+    if hasattr(item, "callspec") and item.callspec:
+        params = item.callspec.params
+        if "registration_mode" in params:
+            mode = params["registration_mode"]
+        elif params.get("sql_path"):
+            mode = "parquet"
+        sql_path = params.get("sql_path")
+
+        if sql_path:
+            # e.g., "tests/benchmarks/cases/filters/string_comparison.sql" -> "filters_string_comparison"
+            sql_path_obj = Path(sql_path)
+            try:
+                if "tests/benchmarks/cases" in str(sql_path_obj):
+                    parts = sql_path_obj.parts
+                    cases_idx = parts.index("cases")
+                    path_parts = parts[cases_idx + 1:]
+                    path_parts = list(path_parts)
+                    path_parts[-1] = Path(path_parts[-1]).stem
+                    test_name = "_".join(path_parts)
+            except (ValueError, IndexError):
+                pass  # Keep the default test name if parsing fails
+
+        test_id = item.callspec.id
+        if test_id:
+            parts = test_id.split("-")
+            if len(parts) >= 2:
+                try:
+                    test_run = int(parts[-2])
+                    test_total = int(parts[-1])
+                except (ValueError, IndexError):
+                    pass
 
     result = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "python": sys.version.split(" ")[0],
         "bench": BENCHMARK_SUFFIX,
         "mode": mode,
-        "test": item.nodeid,
+        "test_name": test_name,
+        "test_run": test_run,
+        "test_total": test_total,
+        "nodeid": item.nodeid,
         "pid": os.getpid(),
         "library": _lib_info.get("library", "unknown"),
         "lib_version": _lib_info.get("lib_version", "unknown"),
@@ -181,9 +220,17 @@ def registered_tables(conn, request):
     raw_sql, _ = parse_sql_case(sql_path, replace_placeholders=False)
     _, tables_to_register = rewrite_sql_for_registration(raw_sql, mode)
 
+    # Enable statistics for tests in cases/statistics/ directory
+    enable_statistics = "statistics/" in str(sql_path)
+    statistics_param = "numeric" if enable_statistics else None
+
     for table_name, filepath in tables_to_register.items():
         data = load_data_by_mode(filepath, mode)
-        conn.register(table_name, data)
+        # Only bareduckdb supports statistics parameter
+        if hasattr(conn, '__class__') and 'bareduckdb' in conn.__class__.__module__:
+            conn.register(table_name, data, statistics=statistics_param)
+        else:
+            conn.register(table_name, data)
 
     return tables_to_register
 

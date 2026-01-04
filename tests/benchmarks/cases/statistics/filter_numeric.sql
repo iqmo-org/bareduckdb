@@ -1,0 +1,3 @@
+-- expected_len > 0
+SELECT * FROM DATA_CATEGORY_DATE_PRICE
+WHERE price > 9000

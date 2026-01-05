@@ -24,7 +24,7 @@ class Connection(ConnectionAPI):
         read_only: bool = False,
         *,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
-        default_statistics: "Literal['numeric'] | bool | None" = None,
+        default_statistics: "Literal['numeric'] | bool | None" = "numeric",
         udtf_functions: Optional[dict] = None,
         enable_replacement_scan: bool = False,
     ) -> None:

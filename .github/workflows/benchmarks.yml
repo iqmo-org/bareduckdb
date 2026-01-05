@@ -1,0 +1,101 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: 'Benchmarks'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@main
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Initialize DuckDB submodule (headers only)
+        shell: bash
+        run: |
+          git submodule update --init external/duckdb
+          cd external/duckdb
+          git sparse-checkout init --cone
+          git sparse-checkout set src/include
+          cd ../..
+
+      - name: Set up Python
+        uses: actions/setup-python@main
+        with:
+          python-version: '3.12'
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: -benchmarks
+      - name: Check resources
+        run: |
+          cat /proc/meminfo | head -5
+          ulimit -a
+          nproc
+      - name: Setup Compiler
+        shell: bash
+        run: |
+          sudo apt-get update
+          # sudo apt-get install -y gcc-14 g++-14 gdb
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
+          echo "CC=gcc-14" >> $GITHUB_ENV
+          echo "CXX=g++-14" >> $GITHUB_ENV
+
+      - name: Build current repo
+        run: uv sync
+
+      # - name: Debug segfault
+      #   run: |
+      #     uv run gdb -batch \
+      #       -ex "set confirm off" \
+      #       -ex "run" \
+      #       -ex "bt full" \
+      #       -ex "info registers" \
+      #       --args python -m pytest tests/benchmarks/test_sql_cases.py \
+      #         -k "limits_topn_large" \
+      #         -o "addopts=" \
+      #         --count=20 \
+      #         -v \
+      #         --no-cov \
+      #         2>&1 | tail -500
+
+      - name: Run benchmarks
+        run: |
+          ./run_benchmarks.sh
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: benchmark-results/
+
+      - name: Generate comparison
+        run: |
+          uv run python tests/benchmarks/compare_results.py benchmark-results > comparison.md
+          cat comparison.md
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body-file comparison.md

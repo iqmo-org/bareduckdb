@@ -55,7 +55,7 @@ class ConnectionBase:
         read_only: bool = False,
         *,
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
-        default_statistics: "Literal['numeric'] | bool | None" = None,
+        default_statistics: "Literal['numeric'] | bool | None" = "numeric",
         # https://arrow.apache.org/docs/format/Versioning.html#post-1-0-0-format-versions
         # The idea here is to align the arrow output with Polars native types... but Pandas doesn't yet have a built-in mapper for string-views
         init_sql: str | None = "set arrow_output_version='1.5';set produce_arrow_string_view=True;",

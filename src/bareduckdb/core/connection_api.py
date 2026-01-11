@@ -29,10 +29,10 @@ class ConnectionAPI(ConnectionBase):
         read_only: bool = False,
         *,
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
-        default_statistics: "Literal['numeric'] | bool | None" = None,
+        default_statistics: "Literal['numeric'] | bool | None" = "numeric",
         udtf_functions: Optional[dict[str, Callable]] = None,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
-        enable_replacement_scan: bool = True,
+        enable_replacement_scan: bool = False,
     ) -> None:
         """
         Args:

@@ -349,7 +349,7 @@ namespace bareduckdb
             }
 
             const auto &ps = factory->precomputed_stats[column_index];
-            auto stats = duckdb::BaseStatistics::CreateEmpty(column_type);
+            auto stats = duckdb::BaseStatistics::CreateUnknown(column_type);
 
             if (ps.null_count == 0)
             {
@@ -712,6 +712,19 @@ namespace duckdb
         return stats;
     }
 
+    // Disables statement caching due to dynamic data sources seeing stale cached stats
+    class DynamicArrowScanFunctionData : public duckdb::ArrowScanFunctionData
+    {
+    public:
+        using ArrowScanFunctionData::ArrowScanFunctionData;
+
+        // forces DuckDB to rebind the table function on every execution
+        bool SupportStatementCache() const override
+        {
+            return false;
+        }
+    };
+
     static unique_ptr<FunctionData> HolderScanBind(
         ClientContext &context,
         TableFunctionBindInput &input,
@@ -735,7 +748,9 @@ namespace duckdb
         auto stream_factory_produce = (stream_factory_produce_t)input.inputs[1].GetPointer();
         auto stream_factory_get_schema = (stream_factory_get_schema_t)input.inputs[2].GetPointer();
 
-        auto res = make_uniq<ArrowScanFunctionData>(stream_factory_produce, stream_factory_ptr, std::move(dependency));
+        // Use DynamicArrowScanFunctionData instead of ArrowScanFunctionData
+        // This disables statement caching, allowing data={} to work with statistics
+        auto res = make_uniq<DynamicArrowScanFunctionData>(stream_factory_produce, stream_factory_ptr, std::move(dependency));
         res->projection_pushdown_enabled = true;
 
         auto &data = *res;

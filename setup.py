@@ -20,7 +20,8 @@ os.environ["CYTHON_FORCE_REGEN"] = "1"  # Slower but safer when moving submodule
 LINK_MODE = os.getenv("BAREDUCKDB_LINK_MODE", "dynamic")  # Dynamic linking against prebuilt .so
 OPTIMIZATION_LEVEL = os.getenv("BAREDUCKDB_OPTIMIZATION", "balanced")
 
-LATEST_DUCKDB_VERSION = "v1.4.3"
+# LATEST_DUCKDB_VERSION = "v1.4.3"
+LATEST_DUCKDB_VERSION = "preview"
 
 # The non-free-threaded builds will target this version. 
 # The following two fields should match
@@ -122,21 +123,31 @@ def check_gcc_version(*, compiler_launcher, min_major=14, min_minor=0):
 def download_and_extract_duckdb():
     # TODO: Support nightlys
 
-    
+
     if _DUCKDB_SHARED_LIB_PATH.exists():
         return
     else:
         print(f"{_DUCKDB_SHARED_LIB=} doesn't exist, downloading and extracting")
 
     if _IS_MACOS:
-        url = f"https://install.duckdb.org/{LATEST_DUCKDB_VERSION}/libduckdb-osx-universal.zip"
+        if LATEST_DUCKDB_VERSION == "preview":
+            url="https://artifacts.duckdb.org/latest/duckdb-binaries-osx.zip"
+            nested_lib_zip = "libduckdb-osx-universal.zip"
+        else:
+            url = f"https://install.duckdb.org/{LATEST_DUCKDB_VERSION}/libduckdb-osx-universal.zip"
+            nested_lib_zip = None
     elif sys.platform == "linux":
-        url = f"https://install.duckdb.org/{LATEST_DUCKDB_VERSION}/libduckdb-linux-amd64.zip"
+        if LATEST_DUCKDB_VERSION == "preview":
+            url = "https://artifacts.duckdb.org/latest/duckdb-binaries-linux-amd64.zip"
+            nested_lib_zip = "libduckdb-linux-amd64.zip"
+        else:
+            url = f"https://install.duckdb.org/{LATEST_DUCKDB_VERSION}/libduckdb-linux-amd64.zip"
+            nested_lib_zip = None
     else:
         raise RuntimeError(f"Unsupported platform: {sys.platform}")
 
     _DUCKDB_LIB_DIR_PATH.mkdir(exist_ok=True)
-    
+
     # Download to temporary file
     zip_path = _DUCKDB_LIB_DIR_PATH / "libduckdb.zip"
 
@@ -144,7 +155,15 @@ def download_and_extract_duckdb():
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
         zip_ref.extractall(_DUCKDB_LIB_DIR)
 
-    assert _DUCKDB_SHARED_LIB_PATH.exists()
+    # For nightly builds, extract the nested zip containing the actual library
+    if nested_lib_zip:
+        nested_zip_path = _DUCKDB_LIB_DIR_PATH / nested_lib_zip
+        if nested_zip_path.exists():
+            print(f"Extracting nested library zip: {nested_lib_zip}")
+            with zipfile.ZipFile(nested_zip_path, 'r') as nested_ref:
+                nested_ref.extractall(_DUCKDB_LIB_DIR)
+
+    assert _DUCKDB_SHARED_LIB_PATH.exists(), f"Library not found at {_DUCKDB_SHARED_LIB_PATH}. Directory contents: {list(_DUCKDB_LIB_DIR_PATH.iterdir())}"
 
     print(f"Downloaded & extracted successfully: {zip_path=}")
 

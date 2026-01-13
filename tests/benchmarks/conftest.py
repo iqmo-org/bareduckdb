@@ -60,6 +60,9 @@ def pytest_generate_tests(metafunc):
 def pytest_configure(config):
     """Set up library info and output file once at session start."""
 
+    # Generate test data files before any tests run (including before xdist workers)
+    setup_data()
+
     # TODO: Think about allowing parallel tasks - maybe file locking
     global _output_file
 
@@ -198,11 +201,6 @@ def pytest_runtest_call(item):
 
 
 @pytest.fixture
-def ensure_parquet_files():
-    setup_data()
-
-
-@pytest.fixture
 def registered_tables(conn, request):
     if not hasattr(request.node, "callspec"):
         return {}
@@ -236,7 +234,7 @@ def registered_tables(conn, request):
 
 
 @pytest.fixture
-def conn_with_like_data(request, ensure_parquet_files):
+def conn_with_like_data(request):
     use_duckdb = request.config.getoption("--use-duckdb")
 
     if use_duckdb:

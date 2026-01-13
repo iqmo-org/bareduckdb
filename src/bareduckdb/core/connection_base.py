@@ -56,9 +56,15 @@ class ConnectionBase:
         *,
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
         default_statistics: "Literal['numeric'] | bool | None" = "numeric",
+        # Default initialization configuration options:
         # https://arrow.apache.org/docs/format/Versioning.html#post-1-0-0-format-versions
         # The idea here is to align the arrow output with Polars native types... but Pandas doesn't yet have a built-in mapper for string-views
-        init_sql: str | None = "set arrow_output_version='1.5';set produce_arrow_string_view=True;",
+        # Removing insertion order is an optional optimization - speeds up load times.
+        init_sql: str | None = """
+            SET arrow_output_version='1.5';
+            SET produce_arrow_string_view=True;
+            SET preserve_insertion_order=False;
+        """,
     ) -> None:
         """
         Create a minimal DuckDB connection.
@@ -69,7 +75,7 @@ class ConnectionBase:
             read_only: Whether to open database in read-only mode
             arrow_table_collector: Arrow collection mode ("arrow" or "stream")
             default_statistics: Default statistics mode for register() when statistics=None
-            init_sql: SQL to run when creating the connection
+            init_sql: SQL to run when creating the connection - often for setting database options
         """
 
         with ConnectionBase._DUCKDB_INIT_LOCK:  # duckdb connection init is not thread-safe

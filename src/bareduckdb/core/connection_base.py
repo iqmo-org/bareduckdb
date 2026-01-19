@@ -59,6 +59,7 @@ class ConnectionBase:
         # https://arrow.apache.org/docs/format/Versioning.html#post-1-0-0-format-versions
         # The idea here is to align the arrow output with Polars native types... but Pandas doesn't yet have a built-in mapper for string-views
         init_sql: str | None = "set arrow_output_version='1.5';set produce_arrow_string_view=True;",
+        _from_impl: Any = None,
     ) -> None:
         """
         Create a minimal DuckDB connection.
@@ -70,29 +71,44 @@ class ConnectionBase:
             arrow_table_collector: Arrow collection mode ("arrow" or "stream")
             default_statistics: Default statistics mode for register() when statistics=None
             init_sql: SQL to run when creating the connection
+            _from_impl: Internal parameter for creating cursor with shared database
         """
 
-        with ConnectionBase._DUCKDB_INIT_LOCK:  # duckdb connection init is not thread-safe
-            self._impl: Any = ConnectionImpl(
+        if _from_impl is not None:
+            # Creating a cursor - use the provided ConnectionImpl directly
+            self._impl = _from_impl
+            self._lock = threading.Lock()
+            self._registered_objects: dict[str, Any] = {}
+            self._database_path: str | None = _from_impl.database_path
+            self.arrow_table_collector = arrow_table_collector
+            self._default_statistics = default_statistics
+
+            if init_sql:
+                self._call(init_sql, output_type="arrow_capsule")
+            logger.debug("Created cursor connection sharing database: %s", self._database_path)
+        else:
+            # Normal connection creation
+            with ConnectionBase._DUCKDB_INIT_LOCK:  # duckdb connection init is not thread-safe
+                self._impl: Any = ConnectionImpl(
+                    database,
+                    config=config,
+                    read_only=read_only,
+                )  # type: ignore[assignment]  # Cython module
+
+            self._lock = threading.Lock()
+            self._registered_objects: dict[str, Any] = {}
+            self._database_path: str | None = database
+            self.arrow_table_collector = arrow_table_collector
+            self._default_statistics = default_statistics
+
+            if init_sql:
+                self._call(init_sql, output_type="arrow_capsule")
+            logger.debug(
+                "Created connection: database=%s, config=%s, read_only=%s",
                 database,
-                config=config,
-                read_only=read_only,
-            )  # type: ignore[assignment]  # Cython module
-
-        self._lock = threading.Lock()
-        self._registered_objects: dict[str, Any] = {}
-        self._database_path: str | None = database
-        self.arrow_table_collector = arrow_table_collector
-        self._default_statistics = default_statistics
-
-        if init_sql:
-            self._call(init_sql, output_type="arrow_capsule")
-        logger.debug(
-            "Created connection: database=%s, config=%s, read_only=%s",
-            database,
-            config,
-            read_only,
-        )
+                config,
+                read_only,
+            )
 
     def _register_arrow(
         self,

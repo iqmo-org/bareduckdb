@@ -104,6 +104,10 @@ cdef extern from "duckdb/common/arrow/arrow.hpp":
         pass
 
 cdef extern from "cpp_helpers.hpp" namespace "bareduckdb":
+    cdef cppclass DatabaseHandle:
+        duckdb_database db
+        DatabaseHandle(duckdb_database) except +
+
     DuckDBConnection* get_cpp_connection(duckdb_connection c_conn) nogil
 
     # PhysicalArrowCollector
@@ -192,7 +196,7 @@ cdef extern from "cpp_helpers.hpp" namespace "bareduckdb":
 
 # Python class
 cdef class ConnectionImpl:
-    cdef duckdb_database _db
+    cdef shared_ptr[DatabaseHandle] _db_handle
     cdef duckdb_connection _conn
     cdef DuckDBConnection* _cpp_conn
     cdef str _database_path

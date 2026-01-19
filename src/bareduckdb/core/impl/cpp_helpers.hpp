@@ -45,1224 +45,1478 @@
 #include "duckdb/catalog/catalog.hpp"
 #include <Python.h>
 
-namespace bareduckdb {
+namespace bareduckdb
+{
 
-// Import all DuckDB types into this namespace
-using namespace ::duckdb;
+    using namespace ::duckdb;
 
-inline duckdb::Connection* get_cpp_connection(duckdb_connection c_conn) {
-    if (!c_conn) {
-        throw std::runtime_error("Null connection pointer");
+    // RAII wrapper database lifetime when sharing between cursors
+    struct DatabaseHandle
+    {
+        duckdb_database db;
+
+        explicit DatabaseHandle(duckdb_database db_handle) : db(db_handle) {}
+
+        // Closes the database after last reference
+        ~DatabaseHandle()
+        {
+            if (db)
+            {
+                duckdb_close(&db);
+            }
+        }
+
+        // Prevent copying - use shared_ptr for shared ownership
+        DatabaseHandle(const DatabaseHandle &) = delete;
+        DatabaseHandle &operator=(const DatabaseHandle &) = delete;
+
+        // Allow moving
+        DatabaseHandle(DatabaseHandle &&other) noexcept : db(other.db)
+        {
+            other.db = nullptr;
+        }
+        DatabaseHandle &operator=(DatabaseHandle &&other) noexcept
+        {
+            if (this != &other)
+            {
+                if (db)
+                {
+                    duckdb_close(&db);
+                }
+                db = other.db;
+                other.db = nullptr;
+            }
+            return *this;
+        }
+    };
+
+    inline duckdb::Connection *get_cpp_connection(duckdb_connection c_conn)
+    {
+        if (!c_conn)
+        {
+            throw std::runtime_error("Null connection pointer");
+        }
+
+        auto wrapper = reinterpret_cast<void **>(c_conn);
+        auto cpp_conn = reinterpret_cast<duckdb::Connection *>(*wrapper);
+
+        if (!cpp_conn)
+        {
+            throw std::runtime_error("Failed to extract C++ connection");
+        }
+
+        return cpp_conn;
     }
 
-    auto wrapper = reinterpret_cast<void**>(c_conn);
-    auto cpp_conn = reinterpret_cast<duckdb::Connection*>(*wrapper);
+    // Execute query WITHOUT PhysicalArrowCollector
+    extern "C" duckdb::QueryResult *execute_without_arrow_collector(
+        duckdb_connection c_conn,
+        const char *query,
+        bool allow_stream_result)
+    {
 
-    if (!cpp_conn) {
-        throw std::runtime_error("Failed to extract C++ connection");
-    }
+        try
+        {
+            auto conn = get_cpp_connection(c_conn);
+            if (!conn)
+            {
+                return nullptr;
+            }
 
-    return cpp_conn;
-}
-
-// Execute query WITHOUT PhysicalArrowCollector
-extern "C" duckdb::QueryResult* execute_without_arrow_collector(
-    duckdb_connection c_conn,
-    const char *query,
-    bool allow_stream_result
-) {
-
-    try {
-        auto conn = get_cpp_connection(c_conn);
-        if (!conn) {
-            return nullptr;
-        }
-
-        auto context = conn->context;
-        if (!context) {
-            return nullptr;
-        }
-
-        duckdb::unique_ptr<duckdb::QueryResult> result = context->Query(query, allow_stream_result);
-
-        // Return raw pointer - caller takes ownership
-        return result.release();
-
-    } catch (...) {
-        return nullptr;
-    }
-}
-
-// Execute with PhysicalArrowCollector
-extern "C" duckdb::QueryResult* execute_with_arrow_collector(
-    duckdb_connection c_conn,
-    const char *query,
-    uint64_t batch_size,
-    bool allow_stream_result
-) {
-
-    try {
-        auto conn = get_cpp_connection(c_conn);
-        if (!conn) {
-            return nullptr;
-        }
-
-        auto context = conn->context;
-        if (!context) {
-            return nullptr;
-        }
-
-        auto &config = duckdb::ClientConfig::GetConfig(*context);
-
-        auto original = config.get_result_collector;
-
-        try {
-            config.get_result_collector = [batch_size](
-                duckdb::ClientContext &ctx,
-                duckdb::PreparedStatementData &data
-            ) -> duckdb::PhysicalOperator& {
-                return duckdb::PhysicalArrowCollector::Create(ctx, data, batch_size);
-            };
+            auto context = conn->context;
+            if (!context)
+            {
+                return nullptr;
+            }
 
             duckdb::unique_ptr<duckdb::QueryResult> result = context->Query(query, allow_stream_result);
 
-            config.get_result_collector = original;
-
+            // Return raw pointer - caller takes ownership
             return result.release();
+        }
+        catch (...)
+        {
+            return nullptr;
+        }
+    }
 
-        } catch (...) {
-            // Restore collector on error
-            config.get_result_collector = original;
-            // Return nullptr on error - the QueryResult will contain error info
+    // Execute with PhysicalArrowCollector
+    extern "C" duckdb::QueryResult *execute_with_arrow_collector(
+        duckdb_connection c_conn,
+        const char *query,
+        uint64_t batch_size,
+        bool allow_stream_result)
+    {
+
+        try
+        {
+            auto conn = get_cpp_connection(c_conn);
+            if (!conn)
+            {
+                return nullptr;
+            }
+
+            auto context = conn->context;
+            if (!context)
+            {
+                return nullptr;
+            }
+
+            auto &config = duckdb::ClientConfig::GetConfig(*context);
+
+            auto original = config.get_result_collector;
+
+            try
+            {
+                config.get_result_collector = [batch_size](
+                                                  duckdb::ClientContext &ctx,
+                                                  duckdb::PreparedStatementData &data) -> duckdb::PhysicalOperator &
+                {
+                    return duckdb::PhysicalArrowCollector::Create(ctx, data, batch_size);
+                };
+
+                duckdb::unique_ptr<duckdb::QueryResult> result = context->Query(query, allow_stream_result);
+
+                config.get_result_collector = original;
+
+                return result.release();
+            }
+            catch (...)
+            {
+                config.get_result_collector = original;
+                return nullptr;
+            }
+        }
+        catch (...)
+        {
+            // nullptr on any error
+            return nullptr;
+        }
+    }
+
+    extern "C" duckdb::ArrowQueryResult *cast_to_arrow_result(duckdb::QueryResult *result)
+    {
+        if (!result)
+        {
             return nullptr;
         }
 
-    } catch (...) {
-        // Return nullptr on any error
-        return nullptr;
-    }
-}
-
-// Cast QueryResult to ArrowQueryResult
-extern "C" duckdb::ArrowQueryResult* cast_to_arrow_result(duckdb::QueryResult *result) {
-    if (!result) {
-        return nullptr;
+        return dynamic_cast<duckdb::ArrowQueryResult *>(result);
     }
 
-    return dynamic_cast<duckdb::ArrowQueryResult*>(result);
-}
-
-// Check if QueryResult has an error
-extern "C" bool result_has_error(duckdb::QueryResult *result) {
-    return result && result->HasError();
-}
-
-// Get error message from QueryResult
-extern "C" const char* result_get_error(duckdb::QueryResult *result) {
-    if (!result) {
-        return "Null result pointer";
+    // Check if QueryResult has an error
+    extern "C" bool result_has_error(duckdb::QueryResult *result)
+    {
+        return result && result->HasError();
     }
 
-    if (!result->HasError()) {
-        return nullptr;
+    // Get error message from QueryResult
+    extern "C" const char *result_get_error(duckdb::QueryResult *result)
+    {
+        if (!result)
+        {
+            return "Null result pointer";
+        }
+
+        if (!result->HasError())
+        {
+            return nullptr;
+        }
+
+        // Return pointer to error string (valid as long as result exists)
+        return result->GetError().c_str();
     }
 
-    // Return pointer to error string (valid as long as result exists)
-    return result->GetError().c_str();
-}
-
-// Destroy QueryResult
-extern "C" void destroy_query_result(duckdb::QueryResult *result) {
-    delete result;
-}
-
-// Get number of Arrow arrays from ArrowQueryResult
-extern "C" size_t arrow_result_num_arrays(duckdb::ArrowQueryResult *arrow_result) {
-    if (!arrow_result) {
-        return 0;
-    }
-    return arrow_result->Arrays().size();
-}
-
-// Consume and transfers ownership from the ArrowQueryResult to the caller
-extern "C" void* arrow_result_consume_arrays(duckdb::ArrowQueryResult *arrow_result) {
-    if (!arrow_result) {
-        return nullptr;
+    // Destroy QueryResult
+    extern "C" void destroy_query_result(duckdb::QueryResult *result)
+    {
+        delete result;
     }
 
-    try {
-        auto arrays = arrow_result->ConsumeArrays();
-
-        auto* arrays_ptr = new duckdb::vector<duckdb::unique_ptr<duckdb::ArrowArrayWrapper>>(std::move(arrays));
-        return reinterpret_cast<void*>(arrays_ptr);
-    } catch (...) {
-        return nullptr;
-    }
-}
-
-extern "C" size_t consumed_arrays_size(void* arrays_ptr) {
-    if (!arrays_ptr) {
-        return 0;
-    }
-    auto* vec = reinterpret_cast<duckdb::vector<duckdb::unique_ptr<duckdb::ArrowArrayWrapper>>*>(arrays_ptr);
-    return vec->size();
-}
-
-// Export array and schema at index from consumed arrays vector
-// Returns true on success, false on failure
-extern "C" bool consumed_arrays_export(
-    void* arrays_ptr,
-    void* arrow_result_ptr,  // For getting schema info
-    size_t index,
-    ArrowArray *out_array,
-    ArrowSchema *out_schema
-) {
-    if (!arrays_ptr || !arrow_result_ptr || !out_array || !out_schema) {
-        return false;
+    // Get number of Arrow arrays from ArrowQueryResult
+    extern "C" size_t arrow_result_num_arrays(duckdb::ArrowQueryResult *arrow_result)
+    {
+        if (!arrow_result)
+        {
+            return 0;
+        }
+        return arrow_result->Arrays().size();
     }
 
-    auto* vec = reinterpret_cast<duckdb::vector<duckdb::unique_ptr<duckdb::ArrowArrayWrapper>>*>(arrays_ptr);
-    auto* arrow_result = reinterpret_cast<duckdb::ArrowQueryResult*>(arrow_result_ptr);
+    // Consume and transfers ownership from the ArrowQueryResult to the caller
+    extern "C" void *arrow_result_consume_arrays(duckdb::ArrowQueryResult *arrow_result)
+    {
+        if (!arrow_result)
+        {
+            return nullptr;
+        }
 
-    if (index >= vec->size()) {
-        return false;
+        try
+        {
+            auto arrays = arrow_result->ConsumeArrays();
+
+            auto *arrays_ptr = new duckdb::vector<duckdb::unique_ptr<duckdb::ArrowArrayWrapper>>(std::move(arrays));
+            return reinterpret_cast<void *>(arrays_ptr);
+        }
+        catch (...)
+        {
+            return nullptr;
+        }
     }
 
-    try {
-        // Transfer ownership of ArrowArray
-        *out_array = (*vec)[index]->arrow_array;
-        (*vec)[index]->arrow_array.release = nullptr;
-
-        // Export schema-pass names by reference
-        duckdb::ArrowConverter::ToArrowSchema(
-            out_schema,
-            arrow_result->types,
-            arrow_result->names,
-            arrow_result->client_properties
-        );
-
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
-// Export schema once / reuse
-// Returns true on success, false on failure
-extern "C" bool export_arrow_result_schema(
-    void* arrow_result_ptr,
-    ArrowSchema *out_schema
-) {
-    if (!arrow_result_ptr || !out_schema) {
-        return false;
+    extern "C" size_t consumed_arrays_size(void *arrays_ptr)
+    {
+        if (!arrays_ptr)
+        {
+            return 0;
+        }
+        auto *vec = reinterpret_cast<duckdb::vector<duckdb::unique_ptr<duckdb::ArrowArrayWrapper>> *>(arrays_ptr);
+        return vec->size();
     }
 
-    try {
-        auto* arrow_result = reinterpret_cast<duckdb::ArrowQueryResult*>(arrow_result_ptr);
-
-        duckdb::ArrowConverter::ToArrowSchema(
-            out_schema,
-            arrow_result->types,
-            arrow_result->names,
-            arrow_result->client_properties
-        );
-
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
-// Free the consumed arrays vector
-extern "C" void consumed_arrays_free(void* arrays_ptr) {
-    if (arrays_ptr) {
-        auto* vec = reinterpret_cast<duckdb::vector<duckdb::unique_ptr<duckdb::ArrowArrayWrapper>>*>(arrays_ptr);
-        delete vec;
-    }
-}
-
-struct StreamingArrowState {
-    QueryResultChunkScanState scan_state;
-    QueryResult* result;
-
-    StreamingArrowState(QueryResult* res)
-        : scan_state(*res), result(res) {}
-};
-
-extern "C" void* init_streaming_arrow_state(duckdb::QueryResult* result) {
-    if (!result) {
-        return nullptr;
-    }
-    try {
-        return new StreamingArrowState(result);
-    } catch (...) {
-        return nullptr;
-    }
-}
-
-extern "C" bool fetch_arrow_chunk(
-    void* state_ptr,
-    uint64_t rows_per_batch,
-    ArrowArray* out_array,
-    ArrowSchema* out_schema
-) {
-    if (!state_ptr || !out_array || !out_schema) {
-        return false;
-    }
-
-    auto* state = reinterpret_cast<StreamingArrowState*>(state_ptr);
-
-    try {
-        ArrowArray data;
-        uint64_t count;
-
-        count = ArrowUtil::FetchChunk(
-            state->scan_state,
-            state->result->client_properties,
-            rows_per_batch,
-            &data,
-            ArrowTypeExtensionData::GetExtensionTypes(
-                *state->result->client_properties.client_context,
-                state->result->types
-            )
-        );
-
-        if (count == 0) {
+    // Export array and schema at index from consumed arrays vector
+    // Returns true on success, false on failure
+    extern "C" bool consumed_arrays_export(
+        void *arrays_ptr,
+        void *arrow_result_ptr, // For getting schema info
+        size_t index,
+        ArrowArray *out_array,
+        ArrowSchema *out_schema)
+    {
+        if (!arrays_ptr || !arrow_result_ptr || !out_array || !out_schema)
+        {
             return false;
         }
 
-        *out_array = data;
+        auto *vec = reinterpret_cast<duckdb::vector<duckdb::unique_ptr<duckdb::ArrowArrayWrapper>> *>(arrays_ptr);
+        auto *arrow_result = reinterpret_cast<duckdb::ArrowQueryResult *>(arrow_result_ptr);
 
-        ArrowConverter::ToArrowSchema(
-            out_schema,
-            state->result->types,
-            state->result->names,
-            state->result->client_properties
-        );
-
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
-extern "C" bool export_streaming_arrow_schema(void* state_ptr, ArrowSchema* out_schema) {
-    if (!state_ptr || !out_schema) {
-        return false;
-    }
-
-    try {
-        auto* state = reinterpret_cast<StreamingArrowState*>(state_ptr);
-        auto& result = *state->result;
-
-        duckdb::ArrowConverter::ToArrowSchema(
-            out_schema,
-            result.types,
-            result.names,
-            result.client_properties
-        );
-
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
-extern "C" void free_streaming_arrow_state(void* state_ptr) {
-    if (state_ptr) {
-        delete reinterpret_cast<StreamingArrowState*>(state_ptr);
-    }
-}
-
-struct ArrowArrayStreamWrapper {
-    uint64_t creating_query_number = 0;
-    duckdb::vector<duckdb::unique_ptr<ArrowArrayWrapper>> arrays;
-    idx_t current_idx = 0;
-    ArrowSchema schema;
-    bool schema_exported = false;
-    duckdb::unique_ptr<ArrowQueryResult> owned_result;
-
-    static int GetSchema(ArrowArrayStream *stream, ArrowSchema *out) {
-        if (!stream || !out) {
-            return -1;
-        }
-        auto wrapper = reinterpret_cast<ArrowArrayStreamWrapper*>(stream->private_data);
-        if (!wrapper) {
-            return -1;
+        if (index >= vec->size())
+        {
+            return false;
         }
 
-        // Transfer ownership
-        *out = wrapper->schema;
-        wrapper->schema.release = nullptr;
-        wrapper->schema_exported = true;
-        return 0;
-    }
+        try
+        {
+            // Transfer ownership of ArrowArray
+            *out_array = (*vec)[index]->arrow_array;
+            (*vec)[index]->arrow_array.release = nullptr;
 
-    static int GetNext(ArrowArrayStream *stream, ArrowArray *out) {
-        if (!stream || !out) {
-            return -1;
+            // Export schema-pass names by reference
+            duckdb::ArrowConverter::ToArrowSchema(
+                out_schema,
+                arrow_result->types,
+                arrow_result->names,
+                arrow_result->client_properties);
+
+            return true;
         }
-        auto wrapper = reinterpret_cast<ArrowArrayStreamWrapper*>(stream->private_data);
-        if (!wrapper) {
-            return -1;
-        }
-
-        if (wrapper->current_idx >= wrapper->arrays.size()) {
-            // Signal end of stream
-            out->release = nullptr;
-            return 0;
-        }
-
-        // Transfer ownership
-        auto &array_wrapper = wrapper->arrays[wrapper->current_idx++];
-        *out = array_wrapper->arrow_array;
-        array_wrapper->arrow_array.release = nullptr;
-        return 0;
-    }
-
-    static void Release(ArrowArrayStream *stream) {
-        if (!stream || !stream->release) {
-            return;
-        }
-        stream->release = nullptr;
-        delete reinterpret_cast<ArrowArrayStreamWrapper*>(stream->private_data);
-    }
-
-    static const char* GetLastError(ArrowArrayStream *stream) {
-        return nullptr;
-    }
-};
-
-// Create ArrowArrayStream from ArrowQueryResult via PhysicalArrowCollector path
-// Returns heap-allocated ArrowArrayStream pointer
-// Returns nullptr on error
-extern "C" void* create_arrow_array_stream_from_arrow_result(
-    ArrowQueryResult* arrow_result
-) {
-    if (!arrow_result) {
-        return nullptr;
-    }
-
-    try {
-        auto* stream = new ArrowArrayStream();
-
-        auto* wrapper = new ArrowArrayStreamWrapper();
-        wrapper->owned_result.reset(arrow_result);
-
-        wrapper->arrays = wrapper->owned_result->ConsumeArrays();
-
-        ArrowConverter::ToArrowSchema(
-            &wrapper->schema,
-            wrapper->owned_result->types,
-            wrapper->owned_result->names,
-            wrapper->owned_result->client_properties
-        );
-
-        stream->private_data = wrapper;
-        stream->get_schema = ArrowArrayStreamWrapper::GetSchema;
-        stream->get_next = ArrowArrayStreamWrapper::GetNext;
-        stream->release = ArrowArrayStreamWrapper::Release;
-        stream->get_last_error = ArrowArrayStreamWrapper::GetLastError;
-
-        return stream;
-    } catch (...) {
-        return nullptr;
-    }
-}
-
-// Streaming ArrowArrayStream Wrapper using QueryResultChunkScanState
-struct StreamingArrowArrayStreamWrapper {
-    uint64_t creating_query_number = 0;  // for deadlock detection, when consumed recursively
-    QueryResultChunkScanState scan_state;
-    QueryResult* result;
-    uint64_t rows_per_batch;
-    ArrowSchema schema;
-    bool schema_exported = false;
-    string last_error;
-
-    StreamingArrowArrayStreamWrapper(QueryResult* res, uint64_t batch_size)
-        : scan_state(*res), result(res), rows_per_batch(batch_size) {
-        // Store the query number for deadlock detection
-        if (res->client_properties.client_context) {
-            auto* ctx = res->client_properties.client_context.get();
-            creating_query_number = ctx->db->GetDatabaseManager().ActiveQueryNumber();
-        } else {
-            creating_query_number = 0;
+        catch (...)
+        {
+            return false;
         }
     }
 
-    static int GetSchema(ArrowArrayStream *stream, ArrowSchema *out) {
-        if (!stream || !out) {
-            return -1;
-        }
-        auto wrapper = reinterpret_cast<StreamingArrowArrayStreamWrapper*>(stream->private_data);
-        if (!wrapper) {
-            return -1;
+    // Export schema once / reuse
+    // Returns true on success, false on failure
+    extern "C" bool export_arrow_result_schema(
+        void *arrow_result_ptr,
+        ArrowSchema *out_schema)
+    {
+        if (!arrow_result_ptr || !out_schema)
+        {
+            return false;
         }
 
-        try {
-            if (wrapper->schema_exported) {
-                ArrowConverter::ToArrowSchema(
-                    out,
-                    wrapper->result->types,
-                    wrapper->result->names,
-                    wrapper->result->client_properties
-                );
-            } else {
-                *out = wrapper->schema;
-                wrapper->schema.release = nullptr;
-                wrapper->schema_exported = true;
-            }
-            return 0;
-        } catch (const std::exception& e) {
-            wrapper->last_error = e.what();
-            return -1;
-        } catch (...) {
-            wrapper->last_error = "Unknown error in GetSchema";
-            return -1;
+        try
+        {
+            auto *arrow_result = reinterpret_cast<duckdb::ArrowQueryResult *>(arrow_result_ptr);
+
+            duckdb::ArrowConverter::ToArrowSchema(
+                out_schema,
+                arrow_result->types,
+                arrow_result->names,
+                arrow_result->client_properties);
+
+            return true;
+        }
+        catch (...)
+        {
+            return false;
         }
     }
 
-    static int GetNext(ArrowArrayStream *stream, ArrowArray *out) {
-        if (!stream || !out) {
-            return -1;
+    // Free the consumed arrays vector
+    extern "C" void consumed_arrays_free(void *arrays_ptr)
+    {
+        if (arrays_ptr)
+        {
+            auto *vec = reinterpret_cast<duckdb::vector<duckdb::unique_ptr<duckdb::ArrowArrayWrapper>> *>(arrays_ptr);
+            delete vec;
         }
-        auto wrapper = reinterpret_cast<StreamingArrowArrayStreamWrapper*>(stream->private_data);
-        if (!wrapper) {
-            return -1;
+    }
+
+    struct StreamingArrowState
+    {
+        QueryResultChunkScanState scan_state;
+        QueryResult *result;
+
+        StreamingArrowState(QueryResult *res)
+            : scan_state(*res), result(res) {}
+    };
+
+    extern "C" void *init_streaming_arrow_state(duckdb::QueryResult *result)
+    {
+        if (!result)
+        {
+            return nullptr;
+        }
+        try
+        {
+            return new StreamingArrowState(result);
+        }
+        catch (...)
+        {
+            return nullptr;
+        }
+    }
+
+    extern "C" bool fetch_arrow_chunk(
+        void *state_ptr,
+        uint64_t rows_per_batch,
+        ArrowArray *out_array,
+        ArrowSchema *out_schema)
+    {
+        if (!state_ptr || !out_array || !out_schema)
+        {
+            return false;
         }
 
-        // DEADLOCK DETECTION: Check if we're being called from a different query than the one that created us
-        if (wrapper->creating_query_number != 0 && wrapper->result->client_properties.client_context) {
-            auto* ctx = wrapper->result->client_properties.client_context.get();
-            uint64_t current_query_number = ctx->db->GetDatabaseManager().ActiveQueryNumber();
+        auto *state = reinterpret_cast<StreamingArrowState *>(state_ptr);
 
-            if (wrapper->creating_query_number != current_query_number) {
-                wrapper->last_error =
-                    "Deadlock detected: Cannot read from streaming Arrow reader during a different query.\n";
-                return -1;
-            }
-        }
-
-        try {
+        try
+        {
             ArrowArray data;
-            uint64_t count = ArrowUtil::FetchChunk(
-                wrapper->scan_state,
-                wrapper->result->client_properties,
-                wrapper->rows_per_batch,
+            uint64_t count;
+
+            count = ArrowUtil::FetchChunk(
+                state->scan_state,
+                state->result->client_properties,
+                rows_per_batch,
                 &data,
                 ArrowTypeExtensionData::GetExtensionTypes(
-                    *wrapper->result->client_properties.client_context,
-                    wrapper->result->types
-                )
-            );
+                    *state->result->client_properties.client_context,
+                    state->result->types));
 
-            if (count == 0) {
+            if (count == 0)
+            {
+                return false;
+            }
+
+            *out_array = data;
+
+            ArrowConverter::ToArrowSchema(
+                out_schema,
+                state->result->types,
+                state->result->names,
+                state->result->client_properties);
+
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    extern "C" bool export_streaming_arrow_schema(void *state_ptr, ArrowSchema *out_schema)
+    {
+        if (!state_ptr || !out_schema)
+        {
+            return false;
+        }
+
+        try
+        {
+            auto *state = reinterpret_cast<StreamingArrowState *>(state_ptr);
+            auto &result = *state->result;
+
+            duckdb::ArrowConverter::ToArrowSchema(
+                out_schema,
+                result.types,
+                result.names,
+                result.client_properties);
+
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    extern "C" void free_streaming_arrow_state(void *state_ptr)
+    {
+        if (state_ptr)
+        {
+            delete reinterpret_cast<StreamingArrowState *>(state_ptr);
+        }
+    }
+
+    struct ArrowArrayStreamWrapper
+    {
+        uint64_t creating_query_number = 0;
+        duckdb::vector<duckdb::unique_ptr<ArrowArrayWrapper>> arrays;
+        idx_t current_idx = 0;
+        ArrowSchema schema;
+        bool schema_exported = false;
+        duckdb::unique_ptr<ArrowQueryResult> owned_result;
+
+        static int GetSchema(ArrowArrayStream *stream, ArrowSchema *out)
+        {
+            if (!stream || !out)
+            {
+                return -1;
+            }
+            auto wrapper = reinterpret_cast<ArrowArrayStreamWrapper *>(stream->private_data);
+            if (!wrapper)
+            {
+                return -1;
+            }
+
+            // Transfer ownership
+            *out = wrapper->schema;
+            wrapper->schema.release = nullptr;
+            wrapper->schema_exported = true;
+            return 0;
+        }
+
+        static int GetNext(ArrowArrayStream *stream, ArrowArray *out)
+        {
+            if (!stream || !out)
+            {
+                return -1;
+            }
+            auto wrapper = reinterpret_cast<ArrowArrayStreamWrapper *>(stream->private_data);
+            if (!wrapper)
+            {
+                return -1;
+            }
+
+            if (wrapper->current_idx >= wrapper->arrays.size())
+            {
                 // Signal end of stream
                 out->release = nullptr;
                 return 0;
             }
 
-            *out = data;
-            return 0;
-        } catch (const std::exception& e) {
-            wrapper->last_error = e.what();
-            return -1;
-        } catch (...) {
-            wrapper->last_error = "Unknown error in GetNext";
-            return -1;
-        }
-    }
-
-    static void Release(ArrowArrayStream *stream) {
-        if (!stream || !stream->release) {
-            return;
-        }
-        stream->release = nullptr;
-        delete reinterpret_cast<StreamingArrowArrayStreamWrapper*>(stream->private_data);
-    }
-
-    static const char* GetLastError(ArrowArrayStream *stream) {
-        if (!stream) {
-            return nullptr;
-        }
-        auto wrapper = reinterpret_cast<StreamingArrowArrayStreamWrapper*>(stream->private_data);
-        if (!wrapper || wrapper->last_error.empty()) {
-            return nullptr;
-        }
-        return wrapper->last_error.c_str();
-    }
-};
-
-// Create streaming ArrowArrayStream from QueryResult
-// Returns heap-allocated ArrowArrayStream pointer
-// Returns nullptr on error
-extern "C" void* create_streaming_arrow_array_stream(
-    QueryResult* result,
-    uint64_t rows_per_batch
-) {
-    if (!result) {
-        return nullptr;
-    }
-
-    try {
-        auto* stream = new ArrowArrayStream();
-
-        auto* wrapper = new StreamingArrowArrayStreamWrapper(result, rows_per_batch);
-
-        ArrowConverter::ToArrowSchema(
-            &wrapper->schema,
-            result->types,
-            result->names,
-            result->client_properties
-        );
-
-        stream->private_data = wrapper;
-        stream->get_schema = StreamingArrowArrayStreamWrapper::GetSchema;
-        stream->get_next = StreamingArrowArrayStreamWrapper::GetNext;
-        stream->release = StreamingArrowArrayStreamWrapper::Release;
-        stream->get_last_error = StreamingArrowArrayStreamWrapper::GetLastError;
-
-        return stream;
-    } catch (...) {
-        return nullptr;
-    }
-}
-
-struct ErrorStreamWrapper {
-    std::string error_message;
-    ArrowSchemaWrapper cached_schema;
-    bool schema_cached = false;
-
-    explicit ErrorStreamWrapper(const std::string& msg, const ArrowSchema& schema)
-        : error_message(msg) {
-        cached_schema.arrow_schema = schema;
-        cached_schema.arrow_schema.release = nullptr;  // Don't free, we're borrowing
-        schema_cached = true;
-    }
-
-    static int error_get_schema(ArrowArrayStream* stream, ArrowSchema* out) {
-        auto* wrapper = static_cast<ErrorStreamWrapper*>(stream->private_data);
-        if (wrapper->schema_cached) {
-            *out = wrapper->cached_schema.arrow_schema;
-            out->release = nullptr;  // Don't let caller free it
+            // Transfer ownership
+            auto &array_wrapper = wrapper->arrays[wrapper->current_idx++];
+            *out = array_wrapper->arrow_array;
+            array_wrapper->arrow_array.release = nullptr;
             return 0;
         }
-        return -1;
+
+        static void Release(ArrowArrayStream *stream)
+        {
+            if (!stream || !stream->release)
+            {
+                return;
+            }
+            stream->release = nullptr;
+            delete reinterpret_cast<ArrowArrayStreamWrapper *>(stream->private_data);
+        }
+
+        static const char *GetLastError(ArrowArrayStream *stream)
+        {
+            return nullptr;
+        }
+    };
+
+    // Create ArrowArrayStream from ArrowQueryResult via PhysicalArrowCollector path
+    // Returns heap-allocated ArrowArrayStream pointer
+    // Returns nullptr on error
+    extern "C" void *create_arrow_array_stream_from_arrow_result(
+        ArrowQueryResult *arrow_result)
+    {
+        if (!arrow_result)
+        {
+            return nullptr;
+        }
+
+        try
+        {
+            auto *stream = new ArrowArrayStream();
+
+            auto *wrapper = new ArrowArrayStreamWrapper();
+            wrapper->owned_result.reset(arrow_result);
+
+            wrapper->arrays = wrapper->owned_result->ConsumeArrays();
+
+            ArrowConverter::ToArrowSchema(
+                &wrapper->schema,
+                wrapper->owned_result->types,
+                wrapper->owned_result->names,
+                wrapper->owned_result->client_properties);
+
+            stream->private_data = wrapper;
+            stream->get_schema = ArrowArrayStreamWrapper::GetSchema;
+            stream->get_next = ArrowArrayStreamWrapper::GetNext;
+            stream->release = ArrowArrayStreamWrapper::Release;
+            stream->get_last_error = ArrowArrayStreamWrapper::GetLastError;
+
+            return stream;
+        }
+        catch (...)
+        {
+            return nullptr;
+        }
     }
 
-    static int error_get_next(ArrowArrayStream* stream, ArrowArray* out) {
-        out->release = nullptr;  // Signal end-of-stream
-        return -1;
+    // Streaming ArrowArrayStream Wrapper using QueryResultChunkScanState
+    struct StreamingArrowArrayStreamWrapper
+    {
+        uint64_t creating_query_number = 0; // for deadlock detection, when consumed recursively
+        QueryResultChunkScanState scan_state;
+        QueryResult *result;
+        uint64_t rows_per_batch;
+        ArrowSchema schema;
+        bool schema_exported = false;
+        string last_error;
+
+        StreamingArrowArrayStreamWrapper(QueryResult *res, uint64_t batch_size)
+            : scan_state(*res), result(res), rows_per_batch(batch_size)
+        {
+            // Store the query number for deadlock detection
+            if (res->client_properties.client_context)
+            {
+                auto *ctx = res->client_properties.client_context.get();
+                creating_query_number = ctx->db->GetDatabaseManager().ActiveQueryNumber();
+            }
+            else
+            {
+                creating_query_number = 0;
+            }
+        }
+
+        static int GetSchema(ArrowArrayStream *stream, ArrowSchema *out)
+        {
+            if (!stream || !out)
+            {
+                return -1;
+            }
+            auto wrapper = reinterpret_cast<StreamingArrowArrayStreamWrapper *>(stream->private_data);
+            if (!wrapper)
+            {
+                return -1;
+            }
+
+            try
+            {
+                if (wrapper->schema_exported)
+                {
+                    ArrowConverter::ToArrowSchema(
+                        out,
+                        wrapper->result->types,
+                        wrapper->result->names,
+                        wrapper->result->client_properties);
+                }
+                else
+                {
+                    *out = wrapper->schema;
+                    wrapper->schema.release = nullptr;
+                    wrapper->schema_exported = true;
+                }
+                return 0;
+            }
+            catch (const std::exception &e)
+            {
+                wrapper->last_error = e.what();
+                return -1;
+            }
+            catch (...)
+            {
+                wrapper->last_error = "Unknown error in GetSchema";
+                return -1;
+            }
+        }
+
+        static int GetNext(ArrowArrayStream *stream, ArrowArray *out)
+        {
+            if (!stream || !out)
+            {
+                return -1;
+            }
+            auto wrapper = reinterpret_cast<StreamingArrowArrayStreamWrapper *>(stream->private_data);
+            if (!wrapper)
+            {
+                return -1;
+            }
+
+            // DEADLOCK DETECTION: Check if we're being called from a different query than the one that created us
+            if (wrapper->creating_query_number != 0 && wrapper->result->client_properties.client_context)
+            {
+                auto *ctx = wrapper->result->client_properties.client_context.get();
+                uint64_t current_query_number = ctx->db->GetDatabaseManager().ActiveQueryNumber();
+
+                if (wrapper->creating_query_number != current_query_number)
+                {
+                    wrapper->last_error =
+                        "Deadlock detected: Cannot read from streaming Arrow reader during a different query.\n";
+                    return -1;
+                }
+            }
+
+            try
+            {
+                ArrowArray data;
+                uint64_t count = ArrowUtil::FetchChunk(
+                    wrapper->scan_state,
+                    wrapper->result->client_properties,
+                    wrapper->rows_per_batch,
+                    &data,
+                    ArrowTypeExtensionData::GetExtensionTypes(
+                        *wrapper->result->client_properties.client_context,
+                        wrapper->result->types));
+
+                if (count == 0)
+                {
+                    // Signal end of stream
+                    out->release = nullptr;
+                    return 0;
+                }
+
+                *out = data;
+                return 0;
+            }
+            catch (const std::exception &e)
+            {
+                wrapper->last_error = e.what();
+                return -1;
+            }
+            catch (...)
+            {
+                wrapper->last_error = "Unknown error in GetNext";
+                return -1;
+            }
+        }
+
+        static void Release(ArrowArrayStream *stream)
+        {
+            if (!stream || !stream->release)
+            {
+                return;
+            }
+            stream->release = nullptr;
+            delete reinterpret_cast<StreamingArrowArrayStreamWrapper *>(stream->private_data);
+        }
+
+        static const char *GetLastError(ArrowArrayStream *stream)
+        {
+            if (!stream)
+            {
+                return nullptr;
+            }
+            auto wrapper = reinterpret_cast<StreamingArrowArrayStreamWrapper *>(stream->private_data);
+            if (!wrapper || wrapper->last_error.empty())
+            {
+                return nullptr;
+            }
+            return wrapper->last_error.c_str();
+        }
+    };
+
+    // Create streaming ArrowArrayStream from QueryResult
+    // Returns heap-allocated ArrowArrayStream pointer
+    // Returns nullptr on error
+    extern "C" void *create_streaming_arrow_array_stream(
+        QueryResult *result,
+        uint64_t rows_per_batch)
+    {
+        if (!result)
+        {
+            return nullptr;
+        }
+
+        try
+        {
+            auto *stream = new ArrowArrayStream();
+
+            auto *wrapper = new StreamingArrowArrayStreamWrapper(result, rows_per_batch);
+
+            ArrowConverter::ToArrowSchema(
+                &wrapper->schema,
+                result->types,
+                result->names,
+                result->client_properties);
+
+            stream->private_data = wrapper;
+            stream->get_schema = StreamingArrowArrayStreamWrapper::GetSchema;
+            stream->get_next = StreamingArrowArrayStreamWrapper::GetNext;
+            stream->release = StreamingArrowArrayStreamWrapper::Release;
+            stream->get_last_error = StreamingArrowArrayStreamWrapper::GetLastError;
+
+            return stream;
+        }
+        catch (...)
+        {
+            return nullptr;
+        }
     }
 
-    static const char* error_get_last_error(ArrowArrayStream* stream) {
-        auto* wrapper = static_cast<ErrorStreamWrapper*>(stream->private_data);
-        return wrapper->error_message.c_str();
-    }
+    struct ErrorStreamWrapper
+    {
+        std::string error_message;
+        ArrowSchemaWrapper cached_schema;
+        bool schema_cached = false;
 
-    static void error_release(ArrowArrayStream* stream) {
-        auto* wrapper = static_cast<ErrorStreamWrapper*>(stream->private_data);
-        delete wrapper;
-        stream->release = nullptr;
-    }
-};
+        explicit ErrorStreamWrapper(const std::string &msg, const ArrowSchema &schema)
+            : error_message(msg)
+        {
+            cached_schema.arrow_schema = schema;
+            cached_schema.arrow_schema.release = nullptr; // Don't free, we're borrowing
+            schema_cached = true;
+        }
 
-// Single-use stream wrapper - Wraps an ArrowArrayStream to detect and prevent reuse
-// Experimental idea - add some safety to prevent reuse of capsules / readers that have
-// been exhausted
-struct SingleUseStreamWrapper {
-    ArrowArrayStream* underlying_stream;
-    bool consumed = false;
-    bool started = false;
-    std::string error_message;
-    std::mutex mutex;  // EXPERIMENTAL Bugfix: Serialize access to prevent concurrent get_next() calls
-    uint64_t creating_query_number;  // Deadlock detection
-
-    static bool use_mutex() {
-        static bool enabled = []() {
-            const char* env = std::getenv("BAREDUCKDB_STREAM_MUTEX");
-            return !(env && std::string(env) == "0");
-        }();
-        return enabled;
-    }
-
-    static int wrapped_get_schema(ArrowArrayStream* stream, ArrowSchema* out) {
-        auto* wrapper = static_cast<SingleUseStreamWrapper*>(stream->private_data);
-
-        // TODO: Decide if needed... this was during debugging
-        if (!wrapper->underlying_stream || !wrapper->underlying_stream->get_schema) {
-            wrapper->error_message =
-                "Arrow stream is invalid. Capsule may have been garbage collected";
+        static int error_get_schema(ArrowArrayStream *stream, ArrowSchema *out)
+        {
+            auto *wrapper = static_cast<ErrorStreamWrapper *>(stream->private_data);
+            if (wrapper->schema_cached)
+            {
+                *out = wrapper->cached_schema.arrow_schema;
+                out->release = nullptr; // Don't let caller free it
+                return 0;
+            }
             return -1;
         }
 
-        return wrapper->underlying_stream->get_schema(wrapper->underlying_stream, out);
-    }
-
-    static int wrapped_get_next(ArrowArrayStream* stream, ArrowArray* out) {
-        auto* wrapper = static_cast<SingleUseStreamWrapper*>(stream->private_data);
-
-        // EXPERIMENTAL: Lock to serialize access from DuckDB's parallel threads
-        // This reduces race conditions when arrow_reader() triggers lazy execution
-        std::unique_lock<std::mutex> lock(wrapper->mutex, std::defer_lock);
-        if (use_mutex()) {
-            lock.lock();
-        }
-
-        // DEFENSIVE CHECK: Validate stream pointer before dereferencing
-        // This can happen if the PyCapsule was garbage collected while still in use
-        if (!wrapper->underlying_stream || !wrapper->underlying_stream->get_next) {
-            wrapper->error_message =
-                "Arrow stream is invalid. Capsule may have been garbage collected";
+        static int error_get_next(ArrowArrayStream *stream, ArrowArray *out)
+        {
+            out->release = nullptr; // Signal end-of-stream
             return -1;
         }
 
-        int result = wrapper->underlying_stream->get_next(wrapper->underlying_stream, out);
-
-        return result;
-    }
-
-    static const char* wrapped_get_last_error(ArrowArrayStream* stream) {
-        auto* wrapper = static_cast<SingleUseStreamWrapper*>(stream->private_data);
-        std::unique_lock<std::mutex> lock(wrapper->mutex, std::defer_lock);
-        if (use_mutex()) {
-            lock.lock();
-        }
-        if (!wrapper->error_message.empty()) {
+        static const char *error_get_last_error(ArrowArrayStream *stream)
+        {
+            auto *wrapper = static_cast<ErrorStreamWrapper *>(stream->private_data);
             return wrapper->error_message.c_str();
         }
-        return wrapper->underlying_stream->get_last_error(wrapper->underlying_stream);
-    }
 
-    static void wrapped_release(ArrowArrayStream* stream) {
-        auto* wrapper = static_cast<SingleUseStreamWrapper*>(stream->private_data);
+        static void error_release(ArrowArrayStream *stream)
+        {
+            auto *wrapper = static_cast<ErrorStreamWrapper *>(stream->private_data);
+            delete wrapper;
+            stream->release = nullptr;
+        }
+    };
 
-        if (wrapper->underlying_stream && wrapper->underlying_stream->release) {
-            auto release_fn = wrapper->underlying_stream->release;
-            auto* underlying = wrapper->underlying_stream;
+    // Single-use stream wrapper - Wraps an ArrowArrayStream to detect and prevent reuse
+    // Experimental idea - add some safety to prevent reuse of capsules / readers that have
+    // been exhausted
+    struct SingleUseStreamWrapper
+    {
+        ArrowArrayStream *underlying_stream;
+        bool consumed = false;
+        bool started = false;
+        std::string error_message;
+        std::mutex mutex;               // EXPERIMENTAL Bugfix: Serialize access to prevent concurrent get_next() calls
+        uint64_t creating_query_number; // Deadlock detection
 
-            wrapper->underlying_stream = nullptr;
-
-            release_fn(underlying);
+        static bool use_mutex()
+        {
+            static bool enabled = []()
+            {
+                const char *env = std::getenv("BAREDUCKDB_STREAM_MUTEX");
+                return !(env && std::string(env) == "0");
+            }();
+            return enabled;
         }
 
-        delete wrapper;
-        stream->release = nullptr;
-    }
-};
+        static int wrapped_get_schema(ArrowArrayStream *stream, ArrowSchema *out)
+        {
+            auto *wrapper = static_cast<SingleUseStreamWrapper *>(stream->private_data);
 
-// Store ArrowArrayStream* directly
-namespace RawStreamCallbacks {
-    // Note: These functions are reserved for future raw stream support
-    // Currently unused but kept for potential stream registration feature
-    [[maybe_unused]] static void GetSchema(uintptr_t factory_ptr, ArrowSchema &schema) {
-        auto* stream = reinterpret_cast<ArrowArrayStream*>(factory_ptr);
-        int result = stream->get_schema(stream, &schema);
-        if (result != 0) {
-            throw std::runtime_error("Failed to get schema from raw arrow stream");
+            // TODO: Decide if needed... this was during debugging
+            if (!wrapper->underlying_stream || !wrapper->underlying_stream->get_schema)
+            {
+                wrapper->error_message =
+                    "Arrow stream is invalid. Capsule may have been garbage collected";
+                return -1;
+            }
+
+            return wrapper->underlying_stream->get_schema(wrapper->underlying_stream, out);
+        }
+
+        static int wrapped_get_next(ArrowArrayStream *stream, ArrowArray *out)
+        {
+            auto *wrapper = static_cast<SingleUseStreamWrapper *>(stream->private_data);
+
+            // EXPERIMENTAL: Lock to serialize access from DuckDB's parallel threads
+            // This reduces race conditions when arrow_reader() triggers lazy execution
+            std::unique_lock<std::mutex> lock(wrapper->mutex, std::defer_lock);
+            if (use_mutex())
+            {
+                lock.lock();
+            }
+
+            // DEFENSIVE CHECK: Validate stream pointer before dereferencing
+            // This can happen if the PyCapsule was garbage collected while still in use
+            if (!wrapper->underlying_stream || !wrapper->underlying_stream->get_next)
+            {
+                wrapper->error_message =
+                    "Arrow stream is invalid. Capsule may have been garbage collected";
+                return -1;
+            }
+
+            int result = wrapper->underlying_stream->get_next(wrapper->underlying_stream, out);
+
+            return result;
+        }
+
+        static const char *wrapped_get_last_error(ArrowArrayStream *stream)
+        {
+            auto *wrapper = static_cast<SingleUseStreamWrapper *>(stream->private_data);
+            std::unique_lock<std::mutex> lock(wrapper->mutex, std::defer_lock);
+            if (use_mutex())
+            {
+                lock.lock();
+            }
+            if (!wrapper->error_message.empty())
+            {
+                return wrapper->error_message.c_str();
+            }
+            return wrapper->underlying_stream->get_last_error(wrapper->underlying_stream);
+        }
+
+        static void wrapped_release(ArrowArrayStream *stream)
+        {
+            auto *wrapper = static_cast<SingleUseStreamWrapper *>(stream->private_data);
+
+            if (wrapper->underlying_stream && wrapper->underlying_stream->release)
+            {
+                auto release_fn = wrapper->underlying_stream->release;
+                auto *underlying = wrapper->underlying_stream;
+
+                wrapper->underlying_stream = nullptr;
+
+                release_fn(underlying);
+            }
+
+            delete wrapper;
+            stream->release = nullptr;
+        }
+    };
+
+    // Store ArrowArrayStream* directly
+    namespace RawStreamCallbacks
+    {
+        // Note: These functions are reserved for future raw stream support
+        // Currently unused but kept for potential stream registration feature
+        [[maybe_unused]] static void GetSchema(uintptr_t factory_ptr, ArrowSchema &schema)
+        {
+            auto *stream = reinterpret_cast<ArrowArrayStream *>(factory_ptr);
+            int result = stream->get_schema(stream, &schema);
+            if (result != 0)
+            {
+                throw std::runtime_error("Failed to get schema from raw arrow stream");
+            }
+        }
+
+        [[maybe_unused]] static duckdb::unique_ptr<duckdb::ArrowArrayStreamWrapper> Produce(uintptr_t factory_ptr, ArrowStreamParameters &params)
+        {
+            auto *stream = reinterpret_cast<ArrowArrayStream *>(factory_ptr);
+            auto wrapper = duckdb::make_uniq<duckdb::ArrowArrayStreamWrapper>();
+            wrapper->arrow_array_stream = *stream;
+            stream->release = nullptr;
+            return wrapper;
         }
     }
 
-    [[maybe_unused]] static duckdb::unique_ptr<duckdb::ArrowArrayStreamWrapper> Produce(uintptr_t factory_ptr, ArrowStreamParameters &params) {
-        auto* stream = reinterpret_cast<ArrowArrayStream*>(factory_ptr);
-        auto wrapper = duckdb::make_uniq<duckdb::ArrowArrayStreamWrapper>();
-        wrapper->arrow_array_stream = *stream;
-        stream->release = nullptr;
-        return wrapper;
-    }
-}
+    struct CapsuleArrowStreamFactory
+    {
+        duckdb::ArrowArrayStreamWrapper stream;
+        ArrowSchemaWrapper cached_schema;
+        int64_t cardinality;
+        std::atomic<bool> produced{false};
+        uint64_t creating_query_number; // Deadlock Detection
 
-struct CapsuleArrowStreamFactory {
-    duckdb::ArrowArrayStreamWrapper stream;
-    ArrowSchemaWrapper cached_schema;
-    int64_t cardinality;
-    std::atomic<bool> produced{false};
-    uint64_t creating_query_number;  // Deadlock Detection
+        explicit CapsuleArrowStreamFactory(ArrowArrayStream *source_stream, int64_t cardinality_p = -1, uint64_t query_num = 0)
+            : cardinality(cardinality_p), creating_query_number(query_num)
+        {
+            stream.arrow_array_stream = *source_stream;
+            source_stream->release = nullptr;
 
-    explicit CapsuleArrowStreamFactory(ArrowArrayStream* source_stream, int64_t cardinality_p = -1, uint64_t query_num = 0)
-        : cardinality(cardinality_p), creating_query_number(query_num) {
-        stream.arrow_array_stream = *source_stream;
-        source_stream->release = nullptr;
-
-        int result = stream.arrow_array_stream.get_schema(&stream.arrow_array_stream, &cached_schema.arrow_schema);
-        if (result != 0) {
-            throw std::runtime_error("Failed to get schema from capsule stream");
+            int result = stream.arrow_array_stream.get_schema(&stream.arrow_array_stream, &cached_schema.arrow_schema);
+            if (result != 0)
+            {
+                throw std::runtime_error("Failed to get schema from capsule stream");
+            }
         }
-    }
 
-    static void GetSchema(uintptr_t factory_ptr, ArrowSchema &schema) {
-        auto* factory = reinterpret_cast<CapsuleArrowStreamFactory*>(factory_ptr);
-        schema = factory->cached_schema.arrow_schema;
-        schema.release = nullptr;
-    }
+        static void GetSchema(uintptr_t factory_ptr, ArrowSchema &schema)
+        {
+            auto *factory = reinterpret_cast<CapsuleArrowStreamFactory *>(factory_ptr);
+            schema = factory->cached_schema.arrow_schema;
+            schema.release = nullptr;
+        }
 
-    static duckdb::unique_ptr<duckdb::ArrowArrayStreamWrapper> Produce(uintptr_t factory_ptr, ArrowStreamParameters &params) {
-        auto* factory = reinterpret_cast<CapsuleArrowStreamFactory*>(factory_ptr);
+        static duckdb::unique_ptr<duckdb::ArrowArrayStreamWrapper> Produce(uintptr_t factory_ptr, ArrowStreamParameters &params)
+        {
+            auto *factory = reinterpret_cast<CapsuleArrowStreamFactory *>(factory_ptr);
 
-        bool expected = false;
-        if (!factory->produced.compare_exchange_strong(expected, true)) {
-            auto error_wrapper_ptr = new ErrorStreamWrapper(
-                "Arrow stream has already been consumed",
-                factory->cached_schema.arrow_schema
-            );
+            bool expected = false;
+            if (!factory->produced.compare_exchange_strong(expected, true))
+            {
+                auto error_wrapper_ptr = new ErrorStreamWrapper(
+                    "Arrow stream has already been consumed",
+                    factory->cached_schema.arrow_schema);
+
+                auto wrapper = duckdb::make_uniq<duckdb::ArrowArrayStreamWrapper>();
+                wrapper->arrow_array_stream.get_schema = ErrorStreamWrapper::error_get_schema;
+                wrapper->arrow_array_stream.get_next = ErrorStreamWrapper::error_get_next;
+                wrapper->arrow_array_stream.get_last_error = ErrorStreamWrapper::error_get_last_error;
+                wrapper->arrow_array_stream.release = ErrorStreamWrapper::error_release;
+                wrapper->arrow_array_stream.private_data = error_wrapper_ptr;
+
+                return wrapper;
+            }
 
             auto wrapper = duckdb::make_uniq<duckdb::ArrowArrayStreamWrapper>();
-            wrapper->arrow_array_stream.get_schema = ErrorStreamWrapper::error_get_schema;
-            wrapper->arrow_array_stream.get_next = ErrorStreamWrapper::error_get_next;
-            wrapper->arrow_array_stream.get_last_error = ErrorStreamWrapper::error_get_last_error;
-            wrapper->arrow_array_stream.release = ErrorStreamWrapper::error_release;
-            wrapper->arrow_array_stream.private_data = error_wrapper_ptr;
+            wrapper->arrow_array_stream = factory->stream.arrow_array_stream;
+
+            factory->stream.arrow_array_stream.release = nullptr;
 
             return wrapper;
         }
 
-        auto wrapper = duckdb::make_uniq<duckdb::ArrowArrayStreamWrapper>();
-        wrapper->arrow_array_stream = factory->stream.arrow_array_stream;
-
-        factory->stream.arrow_array_stream.release = nullptr;
-
-        return wrapper;
-    }
-
-    static int64_t GetCardinality(uintptr_t factory_ptr) {
-        auto* factory = reinterpret_cast<CapsuleArrowStreamFactory*>(factory_ptr);
-        return factory->cardinality;
-    }
-
-    static uint64_t GetCreatingQueryNumber(uintptr_t factory_ptr) {
-        auto* factory = reinterpret_cast<CapsuleArrowStreamFactory*>(factory_ptr);
-        return factory ? factory->creating_query_number : 0;
-    }
-};
-
-struct FactoryDependencyItem : public DependencyItem {
-    void* factory_ptr;
-
-    explicit FactoryDependencyItem(void* ptr) : factory_ptr(ptr) {}
-
-    ~FactoryDependencyItem() override {
-        if (factory_ptr) {
-            delete static_cast<CapsuleArrowStreamFactory*>(factory_ptr);
-        }
-    }
-};
-
-extern "C" void register_capsule_stream(
-    duckdb_connection c_conn,
-    void* stream_capsule_ptr,
-    const char* view_name,
-    int64_t cardinality,
-    bool replace
-) {
-    try {
-        auto conn = get_cpp_connection(c_conn);
-        if (!conn) {
-            throw std::runtime_error("Invalid connection");
-        }
-
-        auto context = conn->context;
-        std::string view_name_str(view_name);
-
-        if (replace) {
-            try {
-                std::string drop_sql = "DROP VIEW IF EXISTS " + KeywordHelper::WriteQuoted(view_name_str, '"');
-                context->Query(drop_sql, false);
-            } catch (...) {}
-        }
-
-        auto* stream_capsule = reinterpret_cast<PyObject*>(stream_capsule_ptr);
-
-        if (!PyCapsule_CheckExact(stream_capsule)) {
-            throw std::runtime_error("Expected PyCapsule containing ArrowArrayStream");
-        }
-
-        auto* original_stream = static_cast<ArrowArrayStream*>(PyCapsule_GetPointer(stream_capsule, "arrow_array_stream"));
-        if (!original_stream) {
-            throw std::runtime_error("Invalid stream capsule - null pointer");
-        }
-
-        // Verify stream hasn't been released
-        if (!original_stream->release) {
-            throw std::runtime_error(
-                "Arrow stream has already been released/consumed"
-            );
-        }
-
-        // Safety check - get schema to validate stream is accessible
-        if (original_stream->get_schema) {
-            ArrowSchema test_schema;
-            int schema_result = original_stream->get_schema(original_stream, &test_schema);
-            if (schema_result != 0) {
-                const char* error_msg = original_stream->get_last_error ? original_stream->get_last_error(original_stream) : "Unknown error";
-                throw std::runtime_error(
-                    std::string("Arrow stream schema validation failed: ") + error_msg + ". "
-                    "The stream may have been consumed or is in an invalid state. "
-                );
-            }
-            if (test_schema.release) {
-                test_schema.release(&test_schema);
-            }
-        }
-
-        auto table_function = duckdb::make_uniq<TableFunctionRef>();
-        duckdb::vector<duckdb::unique_ptr<ParsedExpression>> children;
-        const char* scan_function;
-        void* factory_to_release = nullptr;
-
-        // Always wrap in SingleUseStreamWrapper to prevent reuse and segfaults
-        // even for use_raw_stream=True, because RawStreamCallbacks::Produce consumes the stream
+        static int64_t GetCardinality(uintptr_t factory_ptr)
         {
-            auto* wrapper_ptr = new SingleUseStreamWrapper();
-            wrapper_ptr->underlying_stream = original_stream;
+            auto *factory = reinterpret_cast<CapsuleArrowStreamFactory *>(factory_ptr);
+            return factory->cardinality;
+        }
 
-            // Deadlock Detection: extract creating_query_number from underlying stream
-            uint64_t extracted_query_number = 0;
-            if (original_stream->private_data) {
-                if (original_stream->get_next == StreamingArrowArrayStreamWrapper::GetNext) {
-                    auto* streaming_wrapper = reinterpret_cast<StreamingArrowArrayStreamWrapper*>(original_stream->private_data);
-                    extracted_query_number = streaming_wrapper->creating_query_number;
+        static uint64_t GetCreatingQueryNumber(uintptr_t factory_ptr)
+        {
+            auto *factory = reinterpret_cast<CapsuleArrowStreamFactory *>(factory_ptr);
+            return factory ? factory->creating_query_number : 0;
+        }
+    };
+
+    struct FactoryDependencyItem : public DependencyItem
+    {
+        void *factory_ptr;
+
+        explicit FactoryDependencyItem(void *ptr) : factory_ptr(ptr) {}
+
+        ~FactoryDependencyItem() override
+        {
+            if (factory_ptr)
+            {
+                delete static_cast<CapsuleArrowStreamFactory *>(factory_ptr);
+            }
+        }
+    };
+
+    extern "C" void register_capsule_stream(
+        duckdb_connection c_conn,
+        void *stream_capsule_ptr,
+        const char *view_name,
+        int64_t cardinality,
+        bool replace)
+    {
+        try
+        {
+            auto conn = get_cpp_connection(c_conn);
+            if (!conn)
+            {
+                throw std::runtime_error("Invalid connection");
+            }
+
+            auto context = conn->context;
+            std::string view_name_str(view_name);
+
+            if (replace)
+            {
+                try
+                {
+                    std::string drop_sql = "DROP VIEW IF EXISTS " + KeywordHelper::WriteQuoted(view_name_str, '"');
+                    context->Query(drop_sql, false);
+                }
+                catch (...)
+                {
                 }
             }
-            wrapper_ptr->creating_query_number = extracted_query_number;
 
-            auto* wrapped_stream = new ArrowArrayStream();
-            wrapped_stream->get_schema = SingleUseStreamWrapper::wrapped_get_schema;
-            wrapped_stream->get_next = SingleUseStreamWrapper::wrapped_get_next;
-            wrapped_stream->get_last_error = SingleUseStreamWrapper::wrapped_get_last_error;
-            wrapped_stream->release = SingleUseStreamWrapper::wrapped_release;
-            wrapped_stream->private_data = wrapper_ptr;
+            auto *stream_capsule = reinterpret_cast<PyObject *>(stream_capsule_ptr);
 
-            auto capsule_factory = duckdb::make_uniq<CapsuleArrowStreamFactory>(wrapped_stream, cardinality, wrapper_ptr->creating_query_number);
+            if (!PyCapsule_CheckExact(stream_capsule))
+            {
+                throw std::runtime_error("Expected PyCapsule containing ArrowArrayStream");
+            }
 
-            children.push_back(duckdb::make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(capsule_factory.get()))));
-            children.push_back(duckdb::make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&CapsuleArrowStreamFactory::Produce))));
-            children.push_back(duckdb::make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&CapsuleArrowStreamFactory::GetSchema))));
+            auto *original_stream = static_cast<ArrowArrayStream *>(PyCapsule_GetPointer(stream_capsule, "arrow_array_stream"));
+            if (!original_stream)
+            {
+                throw std::runtime_error("Invalid stream capsule - null pointer");
+            }
 
-            scan_function = "arrow_scan_dumb";
+            // Verify stream hasn't been released
+            if (!original_stream->release)
+            {
+                throw std::runtime_error(
+                    "Arrow stream has already been released/consumed");
+            }
 
-            factory_to_release = capsule_factory.release();
+            // Safety check - get schema to validate stream is accessible
+            if (original_stream->get_schema)
+            {
+                ArrowSchema test_schema;
+                int schema_result = original_stream->get_schema(original_stream, &test_schema);
+                if (schema_result != 0)
+                {
+                    const char *error_msg = original_stream->get_last_error ? original_stream->get_last_error(original_stream) : "Unknown error";
+                    throw std::runtime_error(
+                        std::string("Arrow stream schema validation failed: ") + error_msg + ". "
+                                                                                             "The stream may have been consumed or is in an invalid state. ");
+                }
+                if (test_schema.release)
+                {
+                    test_schema.release(&test_schema);
+                }
+            }
+
+            auto table_function = duckdb::make_uniq<TableFunctionRef>();
+            duckdb::vector<duckdb::unique_ptr<ParsedExpression>> children;
+            const char *scan_function;
+            void *factory_to_release = nullptr;
+
+            // Always wrap in SingleUseStreamWrapper to prevent reuse and segfaults
+            // even for use_raw_stream=True, because RawStreamCallbacks::Produce consumes the stream
+            {
+                auto *wrapper_ptr = new SingleUseStreamWrapper();
+                wrapper_ptr->underlying_stream = original_stream;
+
+                // Deadlock Detection: extract creating_query_number from underlying stream
+                uint64_t extracted_query_number = 0;
+                if (original_stream->private_data)
+                {
+                    if (original_stream->get_next == StreamingArrowArrayStreamWrapper::GetNext)
+                    {
+                        auto *streaming_wrapper = reinterpret_cast<StreamingArrowArrayStreamWrapper *>(original_stream->private_data);
+                        extracted_query_number = streaming_wrapper->creating_query_number;
+                    }
+                }
+                wrapper_ptr->creating_query_number = extracted_query_number;
+
+                auto *wrapped_stream = new ArrowArrayStream();
+                wrapped_stream->get_schema = SingleUseStreamWrapper::wrapped_get_schema;
+                wrapped_stream->get_next = SingleUseStreamWrapper::wrapped_get_next;
+                wrapped_stream->get_last_error = SingleUseStreamWrapper::wrapped_get_last_error;
+                wrapped_stream->release = SingleUseStreamWrapper::wrapped_release;
+                wrapped_stream->private_data = wrapper_ptr;
+
+                auto capsule_factory = duckdb::make_uniq<CapsuleArrowStreamFactory>(wrapped_stream, cardinality, wrapper_ptr->creating_query_number);
+
+                children.push_back(duckdb::make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(capsule_factory.get()))));
+                children.push_back(duckdb::make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&CapsuleArrowStreamFactory::Produce))));
+                children.push_back(duckdb::make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&CapsuleArrowStreamFactory::GetSchema))));
+
+                scan_function = "arrow_scan_dumb";
+
+                factory_to_release = capsule_factory.release();
+            }
+
+            table_function->function = duckdb::make_uniq<FunctionExpression>(scan_function, std::move(children));
+
+            auto external_dependency = duckdb::make_shared_ptr<ExternalDependency>();
+
+            if (factory_to_release)
+            {
+                auto factory_dep = duckdb::make_shared_ptr<FactoryDependencyItem>(factory_to_release);
+                external_dependency->AddDependency("arrow_factory", factory_dep);
+            }
+
+            table_function->external_dependency = std::move(external_dependency);
+
+            auto view_relation = duckdb::make_shared_ptr<ViewRelation>(context, std::move(table_function), view_name_str);
+            view_relation->CreateView(view_name_str, replace, true);
         }
-
-        table_function->function = duckdb::make_uniq<FunctionExpression>(scan_function, std::move(children));
-
-        auto external_dependency = duckdb::make_shared_ptr<ExternalDependency>();
-
-        if (factory_to_release) {
-            auto factory_dep = duckdb::make_shared_ptr<FactoryDependencyItem>(factory_to_release);
-            external_dependency->AddDependency("arrow_factory", factory_dep);
+        catch (const std::exception &e)
+        {
+            PyErr_SetString(PyExc_RuntimeError, e.what());
         }
-
-        table_function->external_dependency = std::move(external_dependency);
-
-        auto view_relation = duckdb::make_shared_ptr<ViewRelation>(context, std::move(table_function), view_name_str);
-        view_relation->CreateView(view_name_str, replace, true);
-
-    } catch (const std::exception &e) {
-        PyErr_SetString(PyExc_RuntimeError, e.what());
-    } catch (...) {
-        PyErr_SetString(PyExc_RuntimeError, "Unknown error in register_capsule_stream");
+        catch (...)
+        {
+            PyErr_SetString(PyExc_RuntimeError, "Unknown error in register_capsule_stream");
+        }
     }
-}
 
-extern "C" void unregister_python_object(
-    duckdb_connection c_conn,
-    const char* view_name
-) {
-    try {
-        auto conn = get_cpp_connection(c_conn);
-        if (!conn) {
-            throw std::runtime_error("Invalid connection");
+    extern "C" void unregister_python_object(
+        duckdb_connection c_conn,
+        const char *view_name)
+    {
+        try
+        {
+            auto conn = get_cpp_connection(c_conn);
+            if (!conn)
+            {
+                throw std::runtime_error("Invalid connection");
+            }
+
+            auto context = conn->context;
+            std::string view_name_str(view_name);
+
+            std::string drop_sql = "DROP VIEW " + KeywordHelper::WriteQuoted(view_name_str, '"');
+            context->Query(drop_sql, false);
         }
-
-        auto context = conn->context;
-        std::string view_name_str(view_name);
-
-        std::string drop_sql = "DROP VIEW " + KeywordHelper::WriteQuoted(view_name_str, '"');
-        context->Query(drop_sql, false);
-
-    } catch (const std::exception &e) {
-        PyErr_SetString(PyExc_RuntimeError, e.what());
-    } catch (...) {
-        PyErr_SetString(PyExc_RuntimeError, "Unknown error in unregister_python_object");
+        catch (const std::exception &e)
+        {
+            PyErr_SetString(PyExc_RuntimeError, e.what());
+        }
+        catch (...)
+        {
+            PyErr_SetString(PyExc_RuntimeError, "Unknown error in unregister_python_object");
+        }
     }
-}
 
-// Execute prepared statement with parameters
-extern "C" duckdb::QueryResult* execute_prepared_statement(
-    duckdb_connection c_conn,
-    const char* query,
-    void* params_map_ptr,  // std::map<string, BoundParameterData>*
-    bool allow_stream_result,
-    bool use_arrow_collector,
-    uint64_t batch_size
-) {
-    try {
-        auto conn = get_cpp_connection(c_conn);
-        if (!conn) {
-            return new duckdb::MaterializedQueryResult(
-                duckdb::ErrorData("Invalid connection pointer")
-            );
-        }
-
-        auto context = conn->context;
-        if (!context) {
-            return new duckdb::MaterializedQueryResult(
-                duckdb::ErrorData("Invalid client context")
-            );
-        }
-
-        duckdb::unique_ptr<duckdb::PreparedStatement> stmt = conn->Prepare(query);
-        if (!stmt || !stmt->success) {
-            if (stmt && !stmt->success) {
-                // PreparedStatement exists but failed - extract the error
-                return new duckdb::MaterializedQueryResult(stmt->GetErrorObject());
-            } else {
-                // stmt is null - create generic error
+    // Execute prepared statement with parameters
+    extern "C" duckdb::QueryResult *execute_prepared_statement(
+        duckdb_connection c_conn,
+        const char *query,
+        void *params_map_ptr, // std::map<string, BoundParameterData>*
+        bool allow_stream_result,
+        bool use_arrow_collector,
+        uint64_t batch_size)
+    {
+        try
+        {
+            auto conn = get_cpp_connection(c_conn);
+            if (!conn)
+            {
                 return new duckdb::MaterializedQueryResult(
-                    duckdb::ErrorData("Prepare failed: statement is null")
-                );
+                    duckdb::ErrorData("Invalid connection pointer"));
+            }
+
+            auto context = conn->context;
+            if (!context)
+            {
+                return new duckdb::MaterializedQueryResult(
+                    duckdb::ErrorData("Invalid client context"));
+            }
+
+            duckdb::unique_ptr<duckdb::PreparedStatement> stmt = conn->Prepare(query);
+            if (!stmt || !stmt->success)
+            {
+                if (stmt && !stmt->success)
+                {
+                    // PreparedStatement exists but failed - extract the error
+                    return new duckdb::MaterializedQueryResult(stmt->GetErrorObject());
+                }
+                else
+                {
+                    // stmt is null - create generic error
+                    return new duckdb::MaterializedQueryResult(
+                        duckdb::ErrorData("Prepare failed: statement is null"));
+                }
+            }
+
+            auto *params_map = reinterpret_cast<std::map<std::string, duckdb::BoundParameterData> *>(params_map_ptr);
+            duckdb::case_insensitive_map_t<duckdb::BoundParameterData> duckdb_param_map;
+
+            for (const auto &[key, value] : *params_map)
+            {
+                duckdb_param_map[key] = value;
+            }
+
+            auto &config = duckdb::ClientConfig::GetConfig(*context);
+            auto original = config.get_result_collector;
+
+            if (use_arrow_collector)
+            {
+                config.get_result_collector = [batch_size](
+                                                  duckdb::ClientContext &ctx,
+                                                  duckdb::PreparedStatementData &data) -> duckdb::PhysicalOperator &
+                {
+                    return duckdb::PhysicalArrowCollector::Create(ctx, data, batch_size);
+                };
+            }
+
+            try
+            {
+                duckdb::unique_ptr<duckdb::QueryResult> result = stmt->Execute(duckdb_param_map, allow_stream_result);
+
+                config.get_result_collector = original;
+
+                return result.release();
+            }
+            catch (const std::exception &e)
+            {
+                config.get_result_collector = original;
+                return new duckdb::MaterializedQueryResult(
+                    duckdb::ErrorData(std::string("Execute failed: ") + e.what()));
+            }
+            catch (...)
+            {
+                config.get_result_collector = original;
+                return new duckdb::MaterializedQueryResult(
+                    duckdb::ErrorData("Execute failed: unknown exception"));
+            }
+        }
+        catch (const std::exception &e)
+        {
+            return new duckdb::MaterializedQueryResult(
+                duckdb::ErrorData(std::string("Prepared statement execution failed: ") + e.what()));
+        }
+        catch (...)
+        {
+            return new duckdb::MaterializedQueryResult(
+                duckdb::ErrorData("Prepared statement execution failed: unknown exception"));
+        }
+    }
+
+    inline duckdb::LogicalType *create_sqlnull_logical_type()
+    {
+        return new duckdb::LogicalType(duckdb::LogicalTypeId::SQLNULL);
+    }
+
+    inline void destroy_logical_type(duckdb::LogicalType *type)
+    {
+        delete type;
+    }
+
+    struct FunctionCallInfo
+    {
+        std::string name;
+        std::vector<std::string> args;
+        std::vector<std::pair<std::string, std::string>> kwargs;
+        std::string original_text;
+    };
+
+    struct ParseResultInfo
+    {
+        std::string statement_type;
+        std::vector<std::string> table_refs;
+        std::vector<FunctionCallInfo> function_calls;
+        bool error = false;
+        std::string error_message;
+    };
+
+    // Forward decls
+    void walk_table_ref(TableRef *ref, ParseResultInfo &result);
+    void walk_query_node(QueryNode *node, ParseResultInfo &result);
+    void walk_select_statement(SelectStatement *stmt, ParseResultInfo &result);
+    void walk_cte_map(const CommonTableExpressionMap &cte_map, ParseResultInfo &result);
+
+    // Extract function call info
+    inline void extract_function_call(ParsedExpression *expr, ParseResultInfo &result)
+    {
+        if (!expr || expr->GetExpressionClass() != ExpressionClass::FUNCTION)
+            return;
+
+        auto &func = expr->Cast<FunctionExpression>();
+        FunctionCallInfo info;
+        info.name = func.function_name;
+        info.original_text = func.ToString();
+
+        for (auto &child : func.children)
+        {
+            std::string alias = child->GetAlias();
+            std::string value_str = child->ToString();
+
+            if (!alias.empty())
+            {
+                info.kwargs.push_back({alias, value_str});
+            }
+            else
+            {
+                info.args.push_back(value_str);
             }
         }
 
-        auto* params_map = reinterpret_cast<std::map<std::string, duckdb::BoundParameterData>*>(params_map_ptr);
-        duckdb::case_insensitive_map_t<duckdb::BoundParameterData> duckdb_param_map;
-
-        for (const auto& [key, value] : *params_map) {
-            duckdb_param_map[key] = value;
-        }
-
-        auto &config = duckdb::ClientConfig::GetConfig(*context);
-        auto original = config.get_result_collector;
-
-        if (use_arrow_collector) {
-            config.get_result_collector = [batch_size](
-                duckdb::ClientContext &ctx,
-                duckdb::PreparedStatementData &data
-            ) -> duckdb::PhysicalOperator& {
-                return duckdb::PhysicalArrowCollector::Create(ctx, data, batch_size);
-            };
-        }
-
-        try {
-            duckdb::unique_ptr<duckdb::QueryResult> result = stmt->Execute(duckdb_param_map, allow_stream_result);
-
-            config.get_result_collector = original;
-
-            return result.release();
-
-        } catch (const std::exception& e) {
-            config.get_result_collector = original;
-            return new duckdb::MaterializedQueryResult(
-                duckdb::ErrorData(std::string("Execute failed: ") + e.what())
-            );
-        } catch (...) {
-            config.get_result_collector = original;
-            return new duckdb::MaterializedQueryResult(
-                duckdb::ErrorData("Execute failed: unknown exception")
-            );
-        }
-
-    } catch (const std::exception& e) {
-        return new duckdb::MaterializedQueryResult(
-            duckdb::ErrorData(std::string("Prepared statement execution failed: ") + e.what())
-        );
-    } catch (...) {
-        return new duckdb::MaterializedQueryResult(
-            duckdb::ErrorData("Prepared statement execution failed: unknown exception")
-        );
+        result.function_calls.push_back(std::move(info));
     }
-}
 
-inline duckdb::LogicalType* create_sqlnull_logical_type() {
-    return new duckdb::LogicalType(duckdb::LogicalTypeId::SQLNULL);
-}
-
-inline void destroy_logical_type(duckdb::LogicalType* type) {
-    delete type;
-}
-
-struct FunctionCallInfo {
-    std::string name;
-    std::vector<std::string> args;
-    std::vector<std::pair<std::string, std::string>> kwargs;
-    std::string original_text;
-};
-
-struct ParseResultInfo {
-    std::string statement_type;
-    std::vector<std::string> table_refs;
-    std::vector<FunctionCallInfo> function_calls;
-    bool error = false;
-    std::string error_message;
-};
-
-// Forward decls
-void walk_table_ref(TableRef* ref, ParseResultInfo& result);
-void walk_query_node(QueryNode* node, ParseResultInfo& result);
-void walk_select_statement(SelectStatement* stmt, ParseResultInfo& result);
-void walk_cte_map(const CommonTableExpressionMap& cte_map, ParseResultInfo& result);
-
-// Extract function call info
-inline void extract_function_call(ParsedExpression* expr, ParseResultInfo& result) {
-    if (!expr || expr->GetExpressionClass() != ExpressionClass::FUNCTION) return;
-
-    auto& func = expr->Cast<FunctionExpression>();
-    FunctionCallInfo info;
-    info.name = func.function_name;
-    info.original_text = func.ToString();
-
-    for (auto& child : func.children) {
-        std::string alias = child->GetAlias();
-        std::string value_str = child->ToString();
-
-        if (!alias.empty()) {
-            info.kwargs.push_back({alias, value_str});
-        } else {
-            info.args.push_back(value_str);
+    inline void walk_cte_map(const CommonTableExpressionMap &cte_map, ParseResultInfo &result)
+    {
+        for (auto &cte : cte_map.map)
+        {
+            if (cte.second && cte.second->query)
+            {
+                walk_select_statement(cte.second->query.get(), result);
+            }
         }
     }
 
-    result.function_calls.push_back(std::move(info));
-}
+    inline void walk_table_ref(TableRef *ref, ParseResultInfo &result)
+    {
+        if (!ref)
+            return;
 
-inline void walk_cte_map(const CommonTableExpressionMap& cte_map, ParseResultInfo& result) {
-    for (auto& cte : cte_map.map) {
-        if (cte.second && cte.second->query) {
-            walk_select_statement(cte.second->query.get(), result);
-        }
-    }
-}
-
-inline void walk_table_ref(TableRef* ref, ParseResultInfo& result) {
-    if (!ref) return;
-
-    switch (ref->type) {
-        case TableReferenceType::BASE_TABLE: {
-            auto& base = ref->Cast<BaseTableRef>();
-            if (!base.table_name.empty()) {
+        switch (ref->type)
+        {
+        case TableReferenceType::BASE_TABLE:
+        {
+            auto &base = ref->Cast<BaseTableRef>();
+            if (!base.table_name.empty())
+            {
                 result.table_refs.push_back(base.table_name);
             }
             break;
         }
-        case TableReferenceType::TABLE_FUNCTION: {
-            auto& func_ref = ref->Cast<TableFunctionRef>();
-            if (func_ref.function) {
+        case TableReferenceType::TABLE_FUNCTION:
+        {
+            auto &func_ref = ref->Cast<TableFunctionRef>();
+            if (func_ref.function)
+            {
                 extract_function_call(func_ref.function.get(), result);
             }
-            if (func_ref.subquery) {
+            if (func_ref.subquery)
+            {
                 walk_select_statement(func_ref.subquery.get(), result);
             }
             break;
         }
-        case TableReferenceType::JOIN: {
-            auto& join = ref->Cast<JoinRef>();
+        case TableReferenceType::JOIN:
+        {
+            auto &join = ref->Cast<JoinRef>();
             walk_table_ref(join.left.get(), result);
             walk_table_ref(join.right.get(), result);
             break;
         }
-        case TableReferenceType::SUBQUERY: {
-            auto& subquery = ref->Cast<SubqueryRef>();
-            if (subquery.subquery) {
+        case TableReferenceType::SUBQUERY:
+        {
+            auto &subquery = ref->Cast<SubqueryRef>();
+            if (subquery.subquery)
+            {
                 walk_select_statement(subquery.subquery.get(), result);
             }
             break;
         }
         default:
             break;
+        }
     }
-}
 
-inline void walk_query_node(QueryNode* node, ParseResultInfo& result) {
-    if (!node) return;
+    inline void walk_query_node(QueryNode *node, ParseResultInfo &result)
+    {
+        if (!node)
+            return;
 
-    switch (node->type) {
-        case QueryNodeType::SELECT_NODE: {
-            auto& select = node->Cast<SelectNode>();
+        switch (node->type)
+        {
+        case QueryNodeType::SELECT_NODE:
+        {
+            auto &select = node->Cast<SelectNode>();
             walk_table_ref(select.from_table.get(), result);
             break;
         }
-        case QueryNodeType::SET_OPERATION_NODE: {
-            auto& set_op = node->Cast<SetOperationNode>();
+        case QueryNodeType::SET_OPERATION_NODE:
+        {
+            auto &set_op = node->Cast<SetOperationNode>();
             walk_query_node(set_op.left.get(), result);
             walk_query_node(set_op.right.get(), result);
             break;
         }
         default:
             break;
+        }
+
+        walk_cte_map(node->cte_map, result);
     }
 
-    walk_cte_map(node->cte_map, result);
-}
+    inline void walk_select_statement(SelectStatement *stmt, ParseResultInfo &result)
+    {
+        if (!stmt || !stmt->node)
+            return;
+        walk_query_node(stmt->node.get(), result);
+    }
 
-inline void walk_select_statement(SelectStatement* stmt, ParseResultInfo& result) {
-    if (!stmt || !stmt->node) return;
-    walk_query_node(stmt->node.get(), result);
-}
+    inline void walk_statement(SQLStatement *stmt, ParseResultInfo &result)
+    {
+        if (!stmt)
+            return;
 
-inline void walk_statement(SQLStatement* stmt, ParseResultInfo& result) {
-    if (!stmt) return;
-
-    switch (stmt->type) {
-        case StatementType::SELECT_STATEMENT: {
-            auto& select = stmt->Cast<SelectStatement>();
+        switch (stmt->type)
+        {
+        case StatementType::SELECT_STATEMENT:
+        {
+            auto &select = stmt->Cast<SelectStatement>();
             walk_select_statement(&select, result);
             result.statement_type = "SELECT";
             break;
         }
-        case StatementType::INSERT_STATEMENT: {
-            auto& insert = stmt->Cast<InsertStatement>();
-            if (insert.select_statement) {
+        case StatementType::INSERT_STATEMENT:
+        {
+            auto &insert = stmt->Cast<InsertStatement>();
+            if (insert.select_statement)
+            {
                 walk_select_statement(insert.select_statement.get(), result);
             }
-            if (insert.table_ref) {
+            if (insert.table_ref)
+            {
                 walk_table_ref(insert.table_ref.get(), result);
             }
             walk_cte_map(insert.cte_map, result);
             result.statement_type = "INSERT";
             break;
         }
-        case StatementType::UPDATE_STATEMENT: {
-            auto& update = stmt->Cast<UpdateStatement>();
-            if (update.table) {
+        case StatementType::UPDATE_STATEMENT:
+        {
+            auto &update = stmt->Cast<UpdateStatement>();
+            if (update.table)
+            {
                 walk_table_ref(update.table.get(), result);
             }
-            if (update.from_table) {
+            if (update.from_table)
+            {
                 walk_table_ref(update.from_table.get(), result);
             }
             walk_cte_map(update.cte_map, result);
             result.statement_type = "UPDATE";
             break;
         }
-        case StatementType::DELETE_STATEMENT: {
-            auto& del = stmt->Cast<DeleteStatement>();
-            if (del.table) {
+        case StatementType::DELETE_STATEMENT:
+        {
+            auto &del = stmt->Cast<DeleteStatement>();
+            if (del.table)
+            {
                 walk_table_ref(del.table.get(), result);
             }
-            for (auto& using_ref : del.using_clauses) {
+            for (auto &using_ref : del.using_clauses)
+            {
                 walk_table_ref(using_ref.get(), result);
             }
             walk_cte_map(del.cte_map, result);
             result.statement_type = "DELETE";
             break;
         }
-        case StatementType::CREATE_STATEMENT: {
-            auto& create = stmt->Cast<CreateStatement>();
-            if (create.info->type == CatalogType::TABLE_ENTRY) {
-                auto& table_info = create.info->Cast<CreateTableInfo>();
-                if (table_info.query) {
+        case StatementType::CREATE_STATEMENT:
+        {
+            auto &create = stmt->Cast<CreateStatement>();
+            if (create.info->type == CatalogType::TABLE_ENTRY)
+            {
+                auto &table_info = create.info->Cast<CreateTableInfo>();
+                if (table_info.query)
+                {
                     walk_select_statement(table_info.query.get(), result);
                     result.statement_type = "CREATE_TABLE_AS";
-                } else {
+                }
+                else
+                {
                     result.statement_type = "CREATE_TABLE";
                 }
-            } else if (create.info->type == CatalogType::VIEW_ENTRY) {
-                auto& view_info = create.info->Cast<CreateViewInfo>();
-                if (view_info.query) {
+            }
+            else if (create.info->type == CatalogType::VIEW_ENTRY)
+            {
+                auto &view_info = create.info->Cast<CreateViewInfo>();
+                if (view_info.query)
+                {
                     walk_select_statement(view_info.query.get(), result);
                 }
                 result.statement_type = "CREATE_VIEW";
-            } else {
+            }
+            else
+            {
                 result.statement_type = "CREATE";
             }
             break;
@@ -1270,34 +1524,39 @@ inline void walk_statement(SQLStatement* stmt, ParseResultInfo& result) {
         default:
             result.statement_type = StatementTypeToString(stmt->type);
             break;
+        }
     }
-}
 
-inline ParseResultInfo parse_sql_extract_refs(const char* sql_query) {
-    ParseResultInfo result;
+    inline ParseResultInfo parse_sql_extract_refs(const char *sql_query)
+    {
+        ParseResultInfo result;
 
-    try {
-        Parser parser;
-        parser.ParseQuery(sql_query);
+        try
+        {
+            Parser parser;
+            parser.ParseQuery(sql_query);
 
-        if (parser.statements.empty()) {
+            if (parser.statements.empty())
+            {
+                result.error = true;
+                result.error_message = "No statements found";
+                return result;
+            }
+
+            walk_statement(parser.statements[0].get(), result);
+        }
+        catch (const std::exception &e)
+        {
             result.error = true;
-            result.error_message = "No statements found";
-            return result;
+            result.error_message = e.what();
+        }
+        catch (...)
+        {
+            result.error = true;
+            result.error_message = "Unknown parsing error";
         }
 
-        walk_statement(parser.statements[0].get(), result);
-
-    } catch (const std::exception& e) {
-        result.error = true;
-        result.error_message = e.what();
-    } catch (...) {
-        result.error = true;
-        result.error_message = "Unknown parsing error";
+        return result;
     }
-
-    return result;
-}
-
 
 } // namespace bareduckdb

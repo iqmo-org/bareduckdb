@@ -50,14 +50,14 @@ namespace bareduckdb
 
     using namespace ::duckdb;
 
-    // RAII wrapper database lifetime when sharing between cursors
+    // RAII wrapper for database lifetime when sharing between cursors
     struct DatabaseHandle
     {
         duckdb_database db;
 
         explicit DatabaseHandle(duckdb_database db_handle) : db(db_handle) {}
 
-        // Closes the database after last reference
+        // Closes the database when last reference is dropped
         ~DatabaseHandle()
         {
             if (db)
@@ -66,28 +66,9 @@ namespace bareduckdb
             }
         }
 
-        // Prevent copying - use shared_ptr for shared ownership
+        // Prevent copying - shared_ptr handles shared ownership
         DatabaseHandle(const DatabaseHandle &) = delete;
         DatabaseHandle &operator=(const DatabaseHandle &) = delete;
-
-        // Allow moving
-        DatabaseHandle(DatabaseHandle &&other) noexcept : db(other.db)
-        {
-            other.db = nullptr;
-        }
-        DatabaseHandle &operator=(DatabaseHandle &&other) noexcept
-        {
-            if (this != &other)
-            {
-                if (db)
-                {
-                    duckdb_close(&db);
-                }
-                db = other.db;
-                other.db = nullptr;
-            }
-            return *this;
-        }
     };
 
     inline duckdb::Connection *get_cpp_connection(duckdb_connection c_conn)

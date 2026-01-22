@@ -5,6 +5,7 @@ import gc
 
 def test_cursor_shares_secrets():
     conn = bareduckdb.connect()
+    conn.install_extension("httpfs")
     conn.execute('CREATE SECRET my_secret (TYPE S3, KEY_ID "test", SECRET "test123")')
     cursor = conn.cursor()
     result = cursor.execute('SELECT name FROM duckdb_secrets()').arrow_table()
@@ -43,6 +44,7 @@ def test_cursor_independent_query_state():
 
 def test_cursor_survives_parent_close():
     conn = bareduckdb.connect()
+    conn.install_extension("httpfs")
     conn.execute('CREATE SECRET test (TYPE S3, KEY_ID "key", SECRET "secret")')
     cursor = conn.cursor()
     conn.close()
@@ -53,6 +55,7 @@ def test_cursor_survives_parent_close():
 def test_cursor_survives_parent_gc():
     def create_cursor_only():
         parent = bareduckdb.connect()
+        parent.install_extension("httpfs")
         parent.execute('CREATE SECRET test (TYPE S3, KEY_ID "key", SECRET "secret")')
         parent.execute('CREATE TABLE data (id INT)')
         parent.execute('INSERT INTO data VALUES (1), (2), (3)')
@@ -97,6 +100,7 @@ def test_multiple_cursors():
 
 def test_cursor_from_cursor():
     conn = bareduckdb.connect()
+    conn.install_extension("httpfs")
     conn.execute('CREATE SECRET test (TYPE S3, KEY_ID "key", SECRET "secret")')
     cursor1 = conn.cursor()
     cursor2 = cursor1.cursor()

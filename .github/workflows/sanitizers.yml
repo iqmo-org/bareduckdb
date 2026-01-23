@@ -98,19 +98,25 @@ jobs:
               echo '/tmp/core.%e.%p' > /proc/sys/kernel/core_pattern 2>/dev/null || echo 'Note: Could not set core_pattern (read-only in container), continuing anyway'
 
               # Combine all TSAN suppression files (CPython, NumPy, etc.)
+              # Note: We disable deadlock detection during build to avoid the 128-lock limit
+              # We also redirect TSAN reports to a file to prevent UV from treating them as build errors
+              # Both will be re-enabled later for actual test execution
               if [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
                 if [ -d /work/tsan_suppressions ]; then
                   echo 'Combining TSAN suppression files...'
                   cat /work/tsan_suppressions/*.txt > /tmp/combined_suppressions.txt
-                  export TSAN_OPTIONS=\"halt_on_error=1:suppressions=/tmp/combined_suppressions.txt\"
+                  export TSAN_OPTIONS=\"halt_on_error=1:detect_deadlocks=0:log_path=/tmp/tsan_build.log:suppressions=/tmp/combined_suppressions.txt\"
+                  echo \"TSAN_OPTIONS set to: \$TSAN_OPTIONS\"
                   echo \"Loaded suppressions from:\"
                   ls -la /work/tsan_suppressions/
                 else
                   echo 'Warning: No suppression files found, using default TSAN options'
-                  export TSAN_OPTIONS=\"halt_on_error=1\"
+                  export TSAN_OPTIONS=\"halt_on_error=1:detect_deadlocks=0:log_path=/tmp/tsan_build.log\"
+                  echo \"TSAN_OPTIONS set to: \$TSAN_OPTIONS\"
                 fi
               else
-                export ${{ matrix.sanitizer-env }}
+                # For ASAN, disable leak detection initially to allow build/install
+                export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=0'
               fi
 
               # Use debug mode for better sanitizer compatibility
@@ -144,40 +150,26 @@ jobs:
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --upgrade pip
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages \"setuptools>=64\" \"setuptools-scm>=8\" wheel cython \"packaging>=24.2\" pyarrow
 
-              echo 'Installing bareduckdb'
-              echo 'Current directory:'
-              pwd
-              echo 'Files in current directory:'
-              ls -la .
-              echo 'Checking for setup.py in current directory:'
-              if [ -f setup.py ]; then
-                echo 'setup.py EXISTS'
-                ls -l setup.py
+              echo 'Cleaning any previous builds to ensure sanitizer flags are used'
+              rm -rf build/ src/bareduckdb/core/impl/*.so .venv
+
+              echo 'Installing bareduckdb and dependencies with uv sync'
+              # For TSAN, force UV to use Python 3.14t which has TSAN symbols exported
+              if [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
+                echo 'Using Python 3.14t for TSAN compatibility'
+                uv sync --no-dev --no-cache --python /work/.pyenv/versions/3.14.1t/bin/python3.14 -v
               else
-                echo 'ERROR: setup.py NOT FOUND'
-                echo 'Searching for setup.py:'
-                find / -name setup.py 2>/dev/null | head -5
+                uv sync --no-dev --no-cache -v
               fi
 
-              # Temporarily disable sanitizer checks during build and dependency installation
-              # PyArrow creates singleton objects during import that ASAN reports as leaks
-              if [ '${{ matrix.sanitizer }}' = 'ASAN' ]; then
-                echo 'Disabling leak detection during installation (PyArrow singletons)'
-                export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=0'
-              elif [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
-                echo 'Disabling race detection during build'
-                export TSAN_OPTIONS='halt_on_error=0:detect_deadlocks=0'
+              # Verify import works
+              if ! python -c 'import bareduckdb; print(\"bareduckdb version:\", bareduckdb.__version__)'; then
+                echo 'ERROR: bareduckdb failed to install or import'
+                exit 1
               fi
-
-              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages -e . --no-build-isolation -v
-
-              echo 'Installing test dependencies'
-              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages pytest pytest-asyncio pytest-cov pytest-forked \
-                pytest-randomly pytest-run-parallel pytest-timeout pytest-xdist
 
               echo 'Installing nightly pandas and latest pyarrow'
-              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --pre --upgrade --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple --no-build pandas>=3.0 pyarrow
-              # uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages pyarrow
+              uv pip install --pre --upgrade --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple --no-build pandas>=3.0 pyarrow
 
               # Re-enable sanitizer checks before running tests
               if [ '${{ matrix.sanitizer }}' = 'ASAN' ]; then
@@ -185,31 +177,32 @@ jobs:
 
                 # Create LSAN suppression file for known library false positives
                 # Note: leak: suppressions are for LeakSanitizer (LSAN), not ASAN
-                # Using printf instead of heredoc to avoid YAML indentation issues
-                printf '%s\\n' \\
-                  'leak:arrow::duration' \\
-                  'leak:arrow::time32' \\
-                  'leak:arrow::time64' \\
-                  'leak:arrow::date32' \\
-                  'leak:arrow::date64' \\
-                  'leak:arrow::timestamp' \\
-                  'leak:arrow::month_day_nano_interval' \\
-                  'leak:arrow::compute::ScalarFunction' \\
-                  'leak:arrow::compute::KernelSignature' \\
-                  'leak:arrow::compute::literal' \\
-                  'leak:arrow::compute::Initialize' \\
-                  'leak:arrow::compute::internal::RegisterScalar' \\
-                  'leak:libarrow_compute' \\
-                  'leak:logging_memory_pool' \\
-                  'leak:NpyString_new_allocator' \\
-                  'leak:PyUFunc_FromFuncAndDataAndSignatureAndIdentity' \\
-                  'leak:PyArrayIdentityHash_New' \\
-                  'leak:_datetime_dtype_metadata_clone' \\
-                  'leak:npy_alloc_cache_dim' \\
-                  'leak:PyDataMem_UserNEW' \\
-                  'leak:PyThread_allocate_lock' \\
-                  'leak:create_stdio' \\
-                  'leak:init_sys_streams' > /tmp/lsan_suppressions.txt
+                # Using multiple echo commands to avoid YAML/bash quoting complexity
+                {
+                  echo 'leak:arrow::duration'
+                  echo 'leak:arrow::time32'
+                  echo 'leak:arrow::time64'
+                  echo 'leak:arrow::date32'
+                  echo 'leak:arrow::date64'
+                  echo 'leak:arrow::timestamp'
+                  echo 'leak:arrow::month_day_nano_interval'
+                  echo 'leak:arrow::compute::ScalarFunction'
+                  echo 'leak:arrow::compute::KernelSignature'
+                  echo 'leak:arrow::compute::literal'
+                  echo 'leak:arrow::compute::Initialize'
+                  echo 'leak:arrow::compute::internal::RegisterScalar'
+                  echo 'leak:libarrow_compute'
+                  echo 'leak:logging_memory_pool'
+                  echo 'leak:NpyString_new_allocator'
+                  echo 'leak:PyUFunc_FromFuncAndDataAndSignatureAndIdentity'
+                  echo 'leak:PyArrayIdentityHash_New'
+                  echo 'leak:_datetime_dtype_metadata_clone'
+                  echo 'leak:npy_alloc_cache_dim'
+                  echo 'leak:PyDataMem_UserNEW'
+                  echo 'leak:PyThread_allocate_lock'
+                  echo 'leak:create_stdio'
+                  echo 'leak:init_sys_streams'
+                } > /tmp/lsan_suppressions.txt
 
                 # ASAN_OPTIONS without suppressions (leak suppressions go in LSAN_OPTIONS)
                 export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_string_checks=1:detect_invalid_pointer_pairs=2:symbolize=1:fast_unwind_on_malloc=0'
@@ -217,7 +210,7 @@ jobs:
                 echo "ASAN_OPTIONS: \$ASAN_OPTIONS"
                 echo "LSAN_OPTIONS: \$LSAN_OPTIONS"
               elif [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
-                echo 'Re-enabling deadlock detection for test execution'
+                echo 'Re-enabling halt_on_error and deadlock detection for test execution'
                 # Combine CPython suppressions with bareduckdb suppressions
                 if [ -f /workspace/.sanitizer-thread-suppressions.txt ]; then
                   if [ -f /tmp/combined_suppressions.txt ]; then
@@ -226,10 +219,12 @@ jobs:
                     cp /workspace/.sanitizer-thread-suppressions.txt /tmp/combined_suppressions.txt
                   fi
                   export TSAN_OPTIONS='halt_on_error=1:detect_deadlocks=1:suppressions=/tmp/combined_suppressions.txt'
-                  echo "Loaded bareduckdb TSAN suppressions"
+                  echo \"Loaded bareduckdb TSAN suppressions\"
+                  echo \"TSAN_OPTIONS: \$TSAN_OPTIONS\"
                 else
                   export TSAN_OPTIONS='halt_on_error=1:detect_deadlocks=1'
-                  echo "Warning: No bareduckdb suppressions file found"
+                  echo \"Warning: No bareduckdb suppressions file found\"
+                  echo \"TSAN_OPTIONS: \$TSAN_OPTIONS\"
                 fi
               fi
 

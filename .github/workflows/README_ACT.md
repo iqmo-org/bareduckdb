@@ -36,3 +36,14 @@ To run just the core tests without nightly builds:
 - -n : dry run
 - -v : verbose
 - --reuse
+
+## This Project
+### Benchmarks
+`../act/bin/act -W .github/workflows/benchmarks.yml  -P  ubuntu-latest=catthehacker/ubuntu:act-24.04 --reuse`
+
+### ASAN
+`../act/bin/act -W .github/workflows/sanitizers.yml --matrix sanitizer:ASAN -P ubuntu-latest=catthehacker/ubuntu:act-24.04 --reuse`
+
+### TSAN
+`../act/bin/act -W .github/workflows/sanitizers.yml --matrix sanitizer:TSAN -P ubuntu-latest=catthehacker/ubuntu:act-24.04 --reuse`
+

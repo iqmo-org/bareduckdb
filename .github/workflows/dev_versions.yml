@@ -94,7 +94,7 @@ jobs:
         if: matrix.python-version != '3.14t'  # polars doesn't support 3.14t yet
         run: |
           uv pip install polars
-          uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream --ignore=tests/comparison -v -n auto
+          uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream --ignore=tests/comparison --ignore=tests/benchmarks -v -n auto
 
       - name: Run parallel thread safety tests
         shell: bash
@@ -104,7 +104,7 @@ jobs:
           THREADS=$((THREADS < 1 ? 1 : THREADS))  # Ensure at least 1 thread
           echo "NPROC: $NPROC"
           echo "THREADS: $THREADS"
-          uv run --no-sync pytest tests/ -n 0 --parallel-threads=$THREADS --iterations=10 --tb=short -v -m "not asyncio" --ignore=tests/experimental --ignore=tests/comparison --ignore=tests/downstream --cov=bareduckdb --cov-append
+          uv run --no-sync pytest tests/ -n 0 --parallel-threads=$THREADS --iterations=10 --tb=short -v -m "not asyncio" --ignore=tests/experimental --ignore=tests/comparison --ignore=tests/downstream --ignore=tests/benchmarks --cov=bareduckdb --cov-append
 
       - name: Test PyArrow is Optional
         if: matrix.python-version != '3.14t'
@@ -175,7 +175,7 @@ jobs:
       - name: Run core tests against Nightlys
         shell: bash
         run: |
-          uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream --ignore=tests/comparison -v --cov=bareduckdb --cov-append -n auto
+          uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream --ignore=tests/comparison --ignore=tests/benchmarks -v --cov=bareduckdb --cov-append -n auto
 
       - name: Generate coverage report
         if: always()

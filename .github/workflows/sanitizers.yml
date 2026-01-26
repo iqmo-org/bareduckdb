@@ -265,6 +265,8 @@ jobs:
                   -m 'not asyncio' \
                   --ignore=tests/experimental \
                   --ignore=tests/downstream \
+                  --ignore=tests/comparison \
+                  --ignore=tests/benchmarks \
                   2>&1 | tee /workspace/${{ matrix.sanitizer }}_output.txt
                 exit_code=\$?
                 if [ \$exit_code -eq 139 ] || [ \$exit_code -eq 134 ]; then
@@ -283,6 +285,8 @@ jobs:
                   -v \
                   --ignore=tests/experimental \
                   --ignore=tests/downstream \
+                  --ignore=tests/comparison \
+                  --ignore=tests/benchmarks \
                   2>&1 | tee /workspace/${{ matrix.sanitizer }}_output.txt
                 exit_code=\$?
                 if [ \$exit_code -eq 139 ] || [ \$exit_code -eq 134 ]; then

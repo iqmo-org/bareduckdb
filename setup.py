@@ -21,7 +21,7 @@ os.environ["CYTHON_FORCE_REGEN"] = "1"  # Slower but safer when moving submodule
 LINK_MODE = os.getenv("BAREDUCKDB_LINK_MODE", "dynamic")  # Dynamic linking against prebuilt .so
 OPTIMIZATION_LEVEL = os.getenv("BAREDUCKDB_OPTIMIZATION", "balanced")
 
-LATEST_DUCKDB_VERSION = "v1.4.3"
+LATEST_DUCKDB_VERSION = "v1.4.4"
 
 # The non-free-threaded builds will target this version. 
 # The following two fields should match

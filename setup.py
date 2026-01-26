@@ -6,6 +6,7 @@ import sys
 import glob
 import urllib.request
 import zipfile
+import time
 from pathlib import Path
 
 from Cython.Build import cythonize
@@ -20,7 +21,7 @@ os.environ["CYTHON_FORCE_REGEN"] = "1"  # Slower but safer when moving submodule
 LINK_MODE = os.getenv("BAREDUCKDB_LINK_MODE", "dynamic")  # Dynamic linking against prebuilt .so
 OPTIMIZATION_LEVEL = os.getenv("BAREDUCKDB_OPTIMIZATION", "balanced")
 
-LATEST_DUCKDB_VERSION = "v1.4.3"
+LATEST_DUCKDB_VERSION = "v1.4.4"
 
 # The non-free-threaded builds will target this version. 
 # The following two fields should match
@@ -140,10 +141,16 @@ def download_and_extract_duckdb():
     # Download to temporary file
     zip_path = _DUCKDB_LIB_DIR_PATH / "libduckdb.zip"
 
-    urllib.request.urlretrieve(url, zip_path)
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(_DUCKDB_LIB_DIR)
-
+    try:
+        urllib.request.urlretrieve(url, zip_path)
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(_DUCKDB_LIB_DIR)
+    except Exception as e:
+        print(f"Failed to download, retrying once: {e}")
+        time.sleep(2)
+        urllib.request.urlretrieve(url, zip_path)
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(_DUCKDB_LIB_DIR)
     assert _DUCKDB_SHARED_LIB_PATH.exists()
 
     print(f"Downloaded & extracted successfully: {zip_path=}")

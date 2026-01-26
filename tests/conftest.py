@@ -25,6 +25,15 @@ _test_counter = 0
 _test_counter_lock = threading.Lock()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def install_httpfs_extension():
+    try:
+        conn = Connection()
+        conn.install_extension("httpfs")
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Failed to install httpfs extension: {e}")
+
 @pytest.fixture
 def unique_table_name(request):
     return f"test_{uuid.uuid4().hex[:8]}"

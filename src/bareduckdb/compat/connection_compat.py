@@ -27,6 +27,7 @@ class Connection(ConnectionAPI):
         default_statistics: "Literal['numeric'] | bool | None" = "numeric",
         udtf_functions: Optional[dict] = None,
         enable_replacement_scan: bool = False,
+        _from_impl: Any = None,
     ) -> None:
         """
         Create a DuckDB-compatible connection.
@@ -42,6 +43,7 @@ class Connection(ConnectionAPI):
                 - True: Compute statistics for all columns
             udtf_functions: Dict of UDTF name -> function for template expansion
             enable_replacement_scan: Enable automatic discovery from scope
+            _from_impl: Internal parameter for creating cursor with shared database
         """
         super().__init__(
             database=database,
@@ -51,9 +53,14 @@ class Connection(ConnectionAPI):
             udtf_functions=udtf_functions,
             output_type=output_type,
             enable_replacement_scan=enable_replacement_scan,
+            _from_impl=_from_impl,
         )
 
-        logger.debug("Created Connection (compat): database=%s", database)
+        logger.debug(
+            "Created %s (compat): database=%s",
+            "cursor Connection" if _from_impl else "Connection",
+            database,
+        )
 
     # DB-API 2.0 fetch methods
     def fetchall(self) -> Sequence[Sequence[Any]]:
@@ -116,10 +123,21 @@ class Connection(ConnectionAPI):
 
     def cursor(self) -> Connection:
         """
-        DB-API 2.0: Creates a cursor, a completely connection to the same database.
-        """
+        DB-API 2.0: Creates a cursor that shares the same database instance.
 
-        cursor_conn = Connection(database=self._database_path)
+        The cursor will see secrets, extensions, and configuration from the
+        parent connection, while maintaining independent query state.
+        """
+        # Create a new ConnectionImpl sharing the same database
+        cursor_impl = self._impl.create_cursor()
+
+        # Wrap it in a Connection object
+        # Note: Connection uses output_type, not arrow_table_collector
+        cursor_conn = Connection(
+            _from_impl=cursor_impl,
+            output_type=self._default_output_type,
+            default_statistics=self._default_statistics,
+        )
         return cursor_conn
 
     def begin(self) -> None:
@@ -144,7 +162,57 @@ class Connection(ConnectionAPI):
     def close(self) -> None:
         super().close()
 
-    def load_extension(self, name: str, force_install: bool = False) -> None:
+    def install_extension(
+        self,
+        extension: str,
+        *,
+        force_install: bool = False,
+        repository: Optional[str] = None,
+        repository_url: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> None:
+        """
+        Install a DuckDB extension by name.
+
+        """
+
+        logger.info("Loading extension %s", extension)
+        # Validate inputs
+        if repository is not None and repository_url is not None:
+            raise ValueError("Both 'repository' and 'repository_url' are set which is not allowed, please pick one or the other")
+
+        if repository is not None and not repository:
+            raise ValueError("The provided 'repository' can not be empty!")
+
+        if repository_url is not None and not repository_url:
+            raise ValueError("The provided 'repository_url' can not be empty!")
+
+        if version is not None and not version:
+            raise ValueError("The provided 'version' can not be empty!")
+
+        # Build the INSTALL statement
+        sql_parts = ["INSTALL", extension]
+
+        # Add FROM clause if repository or repository_url is specified
+        if repository is not None:
+            sql_parts.extend(["FROM", repository])
+        elif repository_url is not None:
+            sql_parts.extend(["FROM", f"'{repository_url}'"])
+
+        # Add VERSION clause if specified
+        if version is not None:
+            sql_parts.extend(["VERSION", f"'{version}'"])
+
+        sql = " ".join(sql_parts)
+
+        # Execute with FORCE INSTALL if requested
+        if force_install:
+            sql = sql.replace("INSTALL", "FORCE INSTALL", 1)
+
+        logger.debug("Installing extension: %s", sql)
+        self.execute(sql)
+
+    def load_pypi_extension(self, name: str, force_install: bool = False) -> None:
         """
         Load a PyPI-distributed DuckDB extension.
 
@@ -162,6 +230,18 @@ class Connection(ConnectionAPI):
 
         # import_extension needs access to the raw DuckDB connection
         import_extension(name, force_install=force_install, con=self)  # pyright: ignore[reportPrivateUsage]
+
+    def load_extension(self, extension: str) -> None:
+        """
+        Load an installed DuckDB extension.
+
+        Note:
+            - Extension must be installed first using install_extension()
+            - This loads the extension into the current connection
+        """
+        sql = f"LOAD {extension}"
+        logger.info("Loading extension: %s", sql)
+        self.execute(sql)
 
     def __enter__(self) -> Connection:
         return self

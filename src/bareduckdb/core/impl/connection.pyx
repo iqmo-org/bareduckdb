@@ -43,6 +43,7 @@ cdef class ConnectionImpl:
         cdef char* error_message = NULL
         cdef bytes config_name_bytes
         cdef bytes config_value_bytes
+        cdef duckdb_database raw_db
 
         # Named memory databases (:memory:name) should also be treated as in-memory
         # Pass NULL to duckdb_open for any path starting with ":memory:"
@@ -78,23 +79,28 @@ cdef class ConnectionImpl:
                     if state != DuckDBSuccess:
                         raise RuntimeError(f"Failed to set config option: {key}={value}")
 
-            state = duckdb_open_ext(db_path, &self._db, ddb_config, &error_message)
+            # Open the database
+            state = duckdb_open_ext(db_path, &raw_db, ddb_config, &error_message)
             if state != DuckDBSuccess:
                 error_str = error_message.decode("utf-8") if error_message else "Unknown error"
                 raise RuntimeError(f"Failed to open database: {error_str}")
+
+            # Wrap in DatabaseHandle and shared_ptr for reference counting
+            self._db_handle = shared_ptr[DatabaseHandle](new DatabaseHandle(raw_db))
         finally:
             duckdb_destroy_config(&ddb_config)
 
-        state = duckdb_connect(self._db, &self._conn)
+        # Create connection from the shared database handle
+        state = duckdb_connect(self._db_handle.get().db, &self._conn)
         if state != DuckDBSuccess:
-            duckdb_close(&self._db)
+            # shared_ptr will automatically close database when it goes out of scope
             raise RuntimeError("Failed to create connection")
 
         self._cpp_conn = get_cpp_connection(self._conn)
         if self._cpp_conn == NULL:
             # Clean up on error
             duckdb_disconnect(&self._conn)
-            duckdb_close(&self._db)
+            # shared_ptr will automatically close database when it goes out of scope
             raise RuntimeError("Failed to get C++ connection")
 
     def call_impl(
@@ -126,7 +132,9 @@ cdef class ConnectionImpl:
         """Close the database connection."""
         if not self._closed:
             duckdb_disconnect(&self._conn)
-            duckdb_close(&self._db)
+            # Drop our reference to the database
+            # The shared_ptr will automatically close the database when the last reference is dropped
+            self._db_handle.reset()
             self._closed = True
 
     def __dealloc__(self):
@@ -139,12 +147,50 @@ cdef class ConnectionImpl:
             raise RuntimeError("C++ connection not initialized")
         return self._cpp_conn
 
+    @property
+    def database_path(self):
+        """Get the database path for this connection."""
+        return self._database_path
+
     def __repr__(self):
         """String representation."""
         if self._closed:
             return "<Connection(closed)>"
         else:
             return f"<Connection({self._database_path!r})>"
+
+    def create_cursor(self):
+        """
+        Create a new connection that shares the same database instance.
+
+        This allows the cursor to see secrets, extensions, and configuration
+        from the parent connection, while maintaining independent query state.
+
+        Returns:
+            ConnectionImpl: New connection sharing the same database
+        """
+        if self._closed:
+            raise RuntimeError("Cannot create cursor from closed connection")
+
+        cdef duckdb_state state
+        cdef ConnectionImpl cursor_impl = ConnectionImpl.__new__(ConnectionImpl)
+
+        # Share the database handle via shared_ptr (refcount++)
+        cursor_impl._db_handle = self._db_handle
+        cursor_impl._database_path = self._database_path
+        cursor_impl._closed = False
+
+        # Create a new connection for independent query execution
+        state = duckdb_connect(cursor_impl._db_handle.get().db, &cursor_impl._conn)
+        if state != DuckDBSuccess:
+            raise RuntimeError("Failed to create cursor connection")
+
+        cursor_impl._cpp_conn = get_cpp_connection(cursor_impl._conn)
+        if cursor_impl._cpp_conn == NULL:
+            duckdb_disconnect(&cursor_impl._conn)
+            raise RuntimeError("Failed to get C++ connection for cursor")
+
+        return cursor_impl
 
     def register_capsule(self, str name, object stream_capsule, int64_t cardinality=-1, bool replace=True):
         """

@@ -146,7 +146,7 @@ def download_and_extract_duckdb():
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(_DUCKDB_LIB_DIR)
     except Exception as e:
-        print(f"Failed to download, retrying once: {e}")
+        print(f"Failed to download from {url}, retrying once: {e}", url)
         time.sleep(2)
         urllib.request.urlretrieve(url, zip_path)
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:

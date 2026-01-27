@@ -141,14 +141,22 @@ def download_and_extract_duckdb():
     # Download to temporary file
     zip_path = _DUCKDB_LIB_DIR_PATH / "libduckdb.zip"
 
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
     try:
-        urllib.request.urlretrieve(url, zip_path)
+        # Add User-Agent header to avoid Cloudflare 403 errors
+        req = urllib.request.Request(url, headers={'User-Agent': ua})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            with open(zip_path, 'wb') as f:
+                f.write(response.read())
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(_DUCKDB_LIB_DIR)
     except Exception as e:
-        print(f"Failed to download, retrying once: {e}")
+        print(f"Failed to download from {url}, retrying once: {e}")
         time.sleep(2)
-        urllib.request.urlretrieve(url, zip_path)
+        req = urllib.request.Request(url, headers={'User-Agent': ua})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            with open(zip_path, 'wb') as f:
+                f.write(response.read())
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(_DUCKDB_LIB_DIR)
     assert _DUCKDB_SHARED_LIB_PATH.exists()

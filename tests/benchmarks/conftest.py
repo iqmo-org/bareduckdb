@@ -147,7 +147,10 @@ def pytest_runtest_call(item):
 
     if hasattr(item, "callspec") and item.callspec:
         params = item.callspec.params
-        if "registration_mode" in params:
+        if "collector_mode" in params:
+            mode_suffix = "-stream" if params["collector_mode"] == "stream" else ""
+            mode = f"arrow{mode_suffix}"
+        elif "registration_mode" in params:
             mode = params["registration_mode"]
         elif params.get("sql_path"):
             mode = "parquet"
@@ -258,17 +261,21 @@ def conn(request):
     """Basic connection fixture."""
     use_duckdb = request.config.getoption("--use-duckdb")
 
+    collector_mode = "arrow"
+    if hasattr(request.node, "callspec") and request.node.callspec:
+        params = request.node.callspec.params
+        if "collector_mode" in params:
+            collector_mode = params["collector_mode"]
+
     if use_duckdb:
         import duckdb
-
         connection = duckdb.connect()
+        _ = connection.execute("select * from range(10)").fetch_arrow_table()
     else:
-        import bareduckdb
-
-        connection = bareduckdb.connect()
-
-    # Warm the connection
-    _ = connection.execute("select * from range(10)").fetch_arrow_table()
+        from bareduckdb.core.connection_api import ConnectionAPI
+        connection = ConnectionAPI(arrow_table_collector=collector_mode)
+        connection.execute("select * from range(10)", output_type="arrow_table")
+        _ = connection.arrow_table()
 
     yield connection
     connection.close()

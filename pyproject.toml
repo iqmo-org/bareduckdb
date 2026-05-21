@@ -139,6 +139,7 @@ environments = [ # no need to resolve packages beyond these platforms with uv...
 #    "python_version >= '3.13' and sys_platform == 'darwin' and platform_machine == 'arm64'",
 #    "python_version >= '3.13' and sys_platform == 'linux' and platform_machine == 'x86_64'",
 #]
+exclude-newer = "2 weeks"
 
 prerelease = "if-necessary-or-explicit"
 
@@ -153,7 +154,7 @@ dev = [
     "pre-commit-uv>=4.2.0",
     "pyarrow>=22.0",
     "pyarrow-stubs", # out of date, but good enough
-    "pytest>=8.4.2",
+    "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=6.0.0",
     "pytest-forked>=1.6.0",

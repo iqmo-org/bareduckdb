@@ -425,8 +425,6 @@ class ParallelBuildExt(build_ext):
         self.add_duckdb_version()
 
     def add_duckdb_version(self):
-        # editable: write to source dir, regular: write to build dir
-        # Note: This also serves as a sanity check on the build
         source_version_file = os.path.join('src', 'bareduckdb', '_version.py')
 
         build_py = self.get_finalized_command('build_py')
@@ -434,10 +432,8 @@ class ParallelBuildExt(build_ext):
         build_version_file = os.path.join(build_lib, 'bareduckdb', '_version.py')
 
         if os.path.exists(build_version_file):
-            version_file = build_version_file
             sys_path_dir = os.path.abspath(build_lib)
         elif os.path.exists(source_version_file):
-            version_file = source_version_file
             sys_path_dir = os.path.abspath('src')
         else:
             raise ValueError("Unable to update _version file")
@@ -464,13 +460,14 @@ class ParallelBuildExt(build_ext):
         if not duckdb_version:
             duckdb_version = LATEST_DUCKDB_VERSION.lstrip('v')
 
-        with open(version_file, 'r') as f:
-            content = f.read()
-            if '__duckdb_version__' in content:
-                return
-
-        with open(version_file, 'a') as f:
-            f.write(f'\n__duckdb_version__ = "{duckdb_version}"\n')
+        for path in (build_version_file, source_version_file):
+            if not os.path.exists(path):
+                continue
+            with open(path, 'r') as f:
+                if '__duckdb_version__' in f.read():
+                    continue
+            with open(path, 'a') as f:
+                f.write(f'\n__duckdb_version__ = "{duckdb_version}"\n')
 
     def copy_extensions_to_source(self):
         """Copy extensions to source directory"""

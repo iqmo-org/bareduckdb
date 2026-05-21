@@ -21,7 +21,7 @@ os.environ["CYTHON_FORCE_REGEN"] = "1"  # Slower but safer when moving submodule
 LINK_MODE = os.getenv("BAREDUCKDB_LINK_MODE", "dynamic")  # Dynamic linking against prebuilt .so
 OPTIMIZATION_LEVEL = os.getenv("BAREDUCKDB_OPTIMIZATION", "balanced")
 
-LATEST_DUCKDB_VERSION = "v1.4.4"
+LATEST_DUCKDB_VERSION = "v1.5.3"
 
 # The non-free-threaded builds will target this version. 
 # The following two fields should match
@@ -445,6 +445,7 @@ class ParallelBuildExt(build_ext):
         duckdb_version = None
         import sys
         old_path = sys.path.copy()
+        sys.path.insert(0, os.path.abspath('src'))
         sys.path.insert(0, sys_path_dir)
 
         try:

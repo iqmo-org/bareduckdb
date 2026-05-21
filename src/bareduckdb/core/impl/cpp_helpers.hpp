@@ -151,7 +151,7 @@ namespace bareduckdb
             {
                 config.get_result_collector = [batch_size](
                                                   duckdb::ClientContext &ctx,
-                                                  duckdb::PreparedStatementData &data) -> duckdb::PhysicalOperator &
+                                                  duckdb::PreparedStatementData &data) -> duckdb::unique_ptr<duckdb::PhysicalOperator>
                 {
                     return duckdb::PhysicalArrowCollector::Create(ctx, data, batch_size);
                 };
@@ -1216,7 +1216,7 @@ namespace bareduckdb
             {
                 config.get_result_collector = [batch_size](
                                                   duckdb::ClientContext &ctx,
-                                                  duckdb::PreparedStatementData &data) -> duckdb::PhysicalOperator &
+                                                  duckdb::PreparedStatementData &data) -> duckdb::unique_ptr<duckdb::PhysicalOperator>
                 {
                     return duckdb::PhysicalArrowCollector::Create(ctx, data, batch_size);
                 };
@@ -1394,8 +1394,9 @@ namespace bareduckdb
         case QueryNodeType::SET_OPERATION_NODE:
         {
             auto &set_op = node->Cast<SetOperationNode>();
-            walk_query_node(set_op.left.get(), result);
-            walk_query_node(set_op.right.get(), result);
+            for (auto &child : set_op.children) {
+                walk_query_node(child.get(), result);
+            }
             break;
         }
         default:

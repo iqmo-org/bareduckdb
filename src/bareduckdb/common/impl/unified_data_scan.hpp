@@ -663,7 +663,7 @@ static unique_ptr<FunctionData> HolderScanBind(
 
     auto& data = *res;
     stream_factory_get_schema(reinterpret_cast<ArrowArrayStream*>(stream_factory_ptr), data.schema_root.arrow_schema);
-    ArrowTableFunction::PopulateArrowTableSchema(DBConfig::GetConfig(context), data.arrow_table,
+    ArrowTableFunction::PopulateArrowTableSchema(context, data.arrow_table,
                                                   data.schema_root.arrow_schema);
     names = data.arrow_table.GetNames();
     return_types = data.arrow_table.GetTypes();

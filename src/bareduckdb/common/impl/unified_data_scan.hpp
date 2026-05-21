@@ -122,6 +122,11 @@ inline HolderFilterValue ConvertValue(const Value& val, FilterBuilder& builder) 
             info.value_type = 4;
             info.str_val = builder.store_string(val.GetValue<std::string>());
             break;
+        case LogicalTypeId::DECIMAL:
+            // Decimal: serialize to its canonical string form
+            info.value_type = 5;
+            info.str_val = builder.store_string(val.ToString());
+            break;
         case LogicalTypeId::DATE:
             info.value_type = 2;
             info.int_val = val.GetValue<duckdb::date_t>().days;
@@ -397,10 +402,14 @@ struct HolderFactory {
                 HolderColumnFilter cfi = {};
                 cfi.col_idx = original_col_idx;
 
-                HolderFilterInfo* converted = ConvertFilter(filter_ptr.get(), builder);
-                cfi.filter = *converted;
-
-                filter_infos.push_back(cfi);
+                // If a single filter fails to convert, drop just that filter
+                try {
+                    HolderFilterInfo* converted = ConvertFilter(filter_ptr.get(), builder);
+                    cfi.filter = *converted;
+                    filter_infos.push_back(cfi);
+                } catch (const std::exception&) {
+                    continue;
+                }
             }
 
             produce_params.num_filters = filter_infos.size();

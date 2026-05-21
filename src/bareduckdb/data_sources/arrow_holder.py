@@ -88,6 +88,8 @@ class _FilterType:
     OPTIONAL_FILTER = 6
     IN_FILTER = 7
     DYNAMIC_FILTER = 8
+    EXPRESSION_FILTER = 9
+    BLOOM_FILTER = 10
 
 
 class _ComparisonType:
@@ -231,10 +233,13 @@ def _translate_single_filter(
             raise _UnsupportedFilterError(f"IN filter has unsupported values for {column_name}")
         return field.isin(converted_values)
 
-    elif filter_type == _FilterType.DYNAMIC_FILTER:
-        return ds.scalar(True)
-
-    elif filter_type == _FilterType.OPTIONAL_FILTER:
+    elif filter_type in (
+        _FilterType.DYNAMIC_FILTER,
+        _FilterType.OPTIONAL_FILTER,
+        _FilterType.EXPRESSION_FILTER,
+        _FilterType.BLOOM_FILTER,
+    ):
+        # No-op pushdown: DuckDB applies the filter
         return ds.scalar(True)
 
     else:

@@ -105,6 +105,7 @@ DEF VALUE_BOOL = 1
 DEF VALUE_INT = 2
 DEF VALUE_FLOAT = 3
 DEF VALUE_STRING = 4
+DEF VALUE_DECIMAL = 5
 
 
 cdef object _convert_filter_value(HolderFilterValue* val):
@@ -120,6 +121,11 @@ cdef object _convert_filter_value(HolderFilterValue* val):
     elif val.value_type == VALUE_STRING:
         if val.str_val != NULL:
             return val.str_val.decode("utf-8")
+        return None
+    elif val.value_type == VALUE_DECIMAL:
+        if val.str_val != NULL:
+            from decimal import Decimal
+            return Decimal(val.str_val.decode("utf-8"))
         return None
     return None
 

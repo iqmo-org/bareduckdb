@@ -157,6 +157,8 @@ class _FilterType:
     OPTIONAL_FILTER = 6
     IN_FILTER = 7
     DYNAMIC_FILTER = 8
+    EXPRESSION_FILTER = 9
+    BLOOM_FILTER = 10
 
 
 # Comparison type constants (match DuckDB ExpressionType enum)
@@ -260,10 +262,13 @@ def _translate_single_filter(
             return col.is_in(typed_series.implode())
         return col.is_in(values)
 
-    elif filter_type == _FilterType.DYNAMIC_FILTER:
-        return pl.lit(True)
-
-    elif filter_type == _FilterType.OPTIONAL_FILTER:
+    elif filter_type in (
+        _FilterType.DYNAMIC_FILTER,
+        _FilterType.OPTIONAL_FILTER,
+        _FilterType.EXPRESSION_FILTER,
+        _FilterType.BLOOM_FILTER,
+    ):
+        # No-op pushdown: DuckDB applies the filter
         return pl.lit(True)
 
     else:

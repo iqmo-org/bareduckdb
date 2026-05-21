@@ -50,9 +50,12 @@ using duckdb::vector;
 
 class FilterBuilder {
 public:
+    // Single HolderFilterInfo allocations: a std::deque guarantees that pointers
+    // to existing elements stay valid across subsequent push_back calls.
     std::deque<HolderFilterInfo> filters;
-    std::deque<HolderFilterInfo> child_arrays_storage;
-    std::deque<HolderFilterValue> value_arrays_storage;
+
+    std::deque<std::vector<HolderFilterInfo>> child_arrays_storage;
+    std::deque<std::vector<HolderFilterValue>> value_arrays_storage;
     std::deque<std::string> strings;
 
     HolderFilterInfo* allocate() {
@@ -62,21 +65,17 @@ public:
     }
 
     HolderFilterInfo* allocate_children(size_t n) {
-        size_t start = child_arrays_storage.size();
-        for (size_t i = 0; i < n; i++) {
-            child_arrays_storage.push_back({});
-            std::memset(&child_arrays_storage.back(), 0, sizeof(HolderFilterInfo));
-        }
-        return &child_arrays_storage[start];
+        child_arrays_storage.emplace_back(n);
+        auto& vec = child_arrays_storage.back();
+        std::memset(vec.data(), 0, n * sizeof(HolderFilterInfo));
+        return vec.data();
     }
 
     HolderFilterValue* allocate_values(size_t n) {
-        size_t start = value_arrays_storage.size();
-        for (size_t i = 0; i < n; i++) {
-            value_arrays_storage.push_back({});
-            std::memset(&value_arrays_storage.back(), 0, sizeof(HolderFilterValue));
-        }
-        return &value_arrays_storage[start];
+        value_arrays_storage.emplace_back(n);
+        auto& vec = value_arrays_storage.back();
+        std::memset(vec.data(), 0, n * sizeof(HolderFilterValue));
+        return vec.data();
     }
 
     const char* store_string(const std::string& s) {

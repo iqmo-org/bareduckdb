@@ -313,6 +313,10 @@ def _apply_comparison(
             # Everything is <= NaN
             return ds.scalar(True)
 
+    # DuckDB sorts NaN as the greatest value, so for non-NaN scalar X: NaN > X and
+    # NaN >= X are TRUE. pyarrow follows IEEE 754 (every NaN comparison is false)
+    float_col = pa.types.is_floating(column_type)
+
     if comparison == _ComparisonType.EQUAL:
         return field == converted_value
     elif comparison == _ComparisonType.NOT_EQUAL:
@@ -322,8 +326,12 @@ def _apply_comparison(
     elif comparison == _ComparisonType.LESS_THAN_OR_EQUAL:
         return field <= converted_value
     elif comparison == _ComparisonType.GREATER_THAN:
+        if float_col:
+            return (field > converted_value) | pc.is_nan(ds.field(column_name))
         return field > converted_value
     elif comparison == _ComparisonType.GREATER_THAN_OR_EQUAL:
+        if float_col:
+            return (field >= converted_value) | pc.is_nan(ds.field(column_name))
         return field >= converted_value
     else:
         return ds.scalar(True)

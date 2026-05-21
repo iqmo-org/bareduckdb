@@ -64,7 +64,7 @@ class PolarsHolder(DataHolder):
 
         # Apply filters using Polars expressions
         if filters:
-            filter_expr = _translate_filters_to_polars(filters, self._column_names)
+            filter_expr = _translate_filters_to_polars(filters, self._column_names, dict(self._df.schema))
             if filter_expr is not None:
                 df = df.filter(filter_expr)
 
@@ -119,7 +119,7 @@ class PolarsLazyHolder(DataHolder):
 
         # Apply filters to lazy plan
         if filters:
-            filter_expr = _translate_filters_to_polars(filters, self._column_names)
+            filter_expr = _translate_filters_to_polars(filters, self._column_names, dict(self._schema_dict))
             if filter_expr is not None:
                 lf = lf.filter(filter_expr)
                 filters_pushed = True
@@ -172,6 +172,7 @@ class _ComparisonType:
 def _translate_filters_to_polars(
     filters: dict[int, dict[str, Any]],
     column_names: list[str],
+    schema: dict[str, pl.DataType] | None = None,
 ) -> pl.Expr | None:
     """Translate DuckDB filters to Polars expression."""
     if not filters:
@@ -184,8 +185,9 @@ def _translate_filters_to_polars(
             continue
 
         column_name = column_names[col_idx]
+        column_dtype = schema.get(column_name) if schema is not None else None
         try:
-            expr = _translate_single_filter(filter_info, column_name)
+            expr = _translate_single_filter(filter_info, column_name, column_dtype)
             if result is None:
                 result = expr
             else:
@@ -200,6 +202,7 @@ def _translate_filters_to_polars(
 def _translate_single_filter(
     filter_info: dict[str, Any],
     column_name: str,
+    column_dtype: pl.DataType | None = None,
 ) -> pl.Expr:
     """Translate a single filter to Polars expression."""
     filter_type = filter_info["type"]
@@ -225,18 +228,18 @@ def _translate_single_filter(
         children = filter_info.get("children", [])
         if not children:
             return pl.lit(True)
-        result = _translate_single_filter(children[0], column_name)
+        result = _translate_single_filter(children[0], column_name, column_dtype)
         for child in children[1:]:
-            result = result & _translate_single_filter(child, column_name)
+            result = result & _translate_single_filter(child, column_name, column_dtype)
         return result
 
     elif filter_type == _FilterType.CONJUNCTION_OR:
         children = filter_info.get("children", [])
         if not children:
             return pl.lit(False)
-        result = _translate_single_filter(children[0], column_name)
+        result = _translate_single_filter(children[0], column_name, column_dtype)
         for child in children[1:]:
-            result = result | _translate_single_filter(child, column_name)
+            result = result | _translate_single_filter(child, column_name, column_dtype)
         return result
 
     elif filter_type == _FilterType.STRUCT_EXTRACT:
@@ -251,6 +254,10 @@ def _translate_single_filter(
         values = filter_info.get("values", [])
         if not values:
             return pl.lit(False)
+        # Mirrors duckdb-python 1852dfd PolarsBackend::IsIn.
+        if column_dtype is not None and isinstance(column_dtype, pl.Decimal):
+            typed_series = pl.Series(values=values, dtype=column_dtype)
+            return col.is_in(typed_series.implode())
         return col.is_in(values)
 
     elif filter_type == _FilterType.DYNAMIC_FILTER:

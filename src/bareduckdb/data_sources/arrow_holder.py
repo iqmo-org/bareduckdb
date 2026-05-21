@@ -88,6 +88,8 @@ class _FilterType:
     OPTIONAL_FILTER = 6
     IN_FILTER = 7
     DYNAMIC_FILTER = 8
+    EXPRESSION_FILTER = 9
+    BLOOM_FILTER = 10
 
 
 class _ComparisonType:
@@ -231,10 +233,13 @@ def _translate_single_filter(
             raise _UnsupportedFilterError(f"IN filter has unsupported values for {column_name}")
         return field.isin(converted_values)
 
-    elif filter_type == _FilterType.DYNAMIC_FILTER:
-        return ds.scalar(True)
-
-    elif filter_type == _FilterType.OPTIONAL_FILTER:
+    elif filter_type in (
+        _FilterType.DYNAMIC_FILTER,
+        _FilterType.OPTIONAL_FILTER,
+        _FilterType.EXPRESSION_FILTER,
+        _FilterType.BLOOM_FILTER,
+    ):
+        # No-op pushdown: DuckDB applies the filter
         return ds.scalar(True)
 
     else:
@@ -313,6 +318,10 @@ def _apply_comparison(
             # Everything is <= NaN
             return ds.scalar(True)
 
+    # DuckDB sorts NaN as the greatest value, so for non-NaN scalar X: NaN > X and
+    # NaN >= X are TRUE. pyarrow follows IEEE 754 (every NaN comparison is false)
+    float_col = pa.types.is_floating(column_type)
+
     if comparison == _ComparisonType.EQUAL:
         return field == converted_value
     elif comparison == _ComparisonType.NOT_EQUAL:
@@ -322,8 +331,12 @@ def _apply_comparison(
     elif comparison == _ComparisonType.LESS_THAN_OR_EQUAL:
         return field <= converted_value
     elif comparison == _ComparisonType.GREATER_THAN:
+        if float_col:
+            return (field > converted_value) | pc.is_nan(ds.field(column_name))
         return field > converted_value
     elif comparison == _ComparisonType.GREATER_THAN_OR_EQUAL:
+        if float_col:
+            return (field >= converted_value) | pc.is_nan(ds.field(column_name))
         return field >= converted_value
     else:
         return ds.scalar(True)

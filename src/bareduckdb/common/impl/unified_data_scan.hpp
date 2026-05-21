@@ -23,6 +23,7 @@
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/filter/struct_filter.hpp"
 #include "duckdb/planner/filter/in_filter.hpp"
+#include "duckdb/planner/filter/optional_filter.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/storage/statistics/string_stats.hpp"
@@ -49,9 +50,12 @@ using duckdb::vector;
 
 class FilterBuilder {
 public:
+    // Single HolderFilterInfo allocations: a std::deque guarantees that pointers
+    // to existing elements stay valid across subsequent push_back calls.
     std::deque<HolderFilterInfo> filters;
-    std::deque<HolderFilterInfo> child_arrays_storage;
-    std::deque<HolderFilterValue> value_arrays_storage;
+
+    std::deque<std::vector<HolderFilterInfo>> child_arrays_storage;
+    std::deque<std::vector<HolderFilterValue>> value_arrays_storage;
     std::deque<std::string> strings;
 
     HolderFilterInfo* allocate() {
@@ -61,21 +65,17 @@ public:
     }
 
     HolderFilterInfo* allocate_children(size_t n) {
-        size_t start = child_arrays_storage.size();
-        for (size_t i = 0; i < n; i++) {
-            child_arrays_storage.push_back({});
-            std::memset(&child_arrays_storage.back(), 0, sizeof(HolderFilterInfo));
-        }
-        return &child_arrays_storage[start];
+        child_arrays_storage.emplace_back(n);
+        auto& vec = child_arrays_storage.back();
+        std::memset(vec.data(), 0, n * sizeof(HolderFilterInfo));
+        return vec.data();
     }
 
     HolderFilterValue* allocate_values(size_t n) {
-        size_t start = value_arrays_storage.size();
-        for (size_t i = 0; i < n; i++) {
-            value_arrays_storage.push_back({});
-            std::memset(&value_arrays_storage.back(), 0, sizeof(HolderFilterValue));
-        }
-        return &value_arrays_storage[start];
+        value_arrays_storage.emplace_back(n);
+        auto& vec = value_arrays_storage.back();
+        std::memset(vec.data(), 0, n * sizeof(HolderFilterValue));
+        return vec.data();
     }
 
     const char* store_string(const std::string& s) {
@@ -122,6 +122,11 @@ inline HolderFilterValue ConvertValue(const Value& val, FilterBuilder& builder) 
             info.value_type = 4;
             info.str_val = builder.store_string(val.GetValue<std::string>());
             break;
+        case LogicalTypeId::DECIMAL:
+            // Decimal: serialize to its canonical string form
+            info.value_type = 5;
+            info.str_val = builder.store_string(val.ToString());
+            break;
         case LogicalTypeId::DATE:
             info.value_type = 2;
             info.int_val = val.GetValue<duckdb::date_t>().days;
@@ -139,6 +144,13 @@ inline HolderFilterValue ConvertValue(const Value& val, FilterBuilder& builder) 
 }
 
 inline HolderFilterInfo* ConvertFilter(const TableFilter* filter, FilterBuilder& builder) {
+    if (filter->filter_type == TableFilterType::OPTIONAL_FILTER) {
+        auto* opt_filter = static_cast<const duckdb::OptionalFilter*>(filter);
+        if (opt_filter->child_filter) {
+            return ConvertFilter(opt_filter->child_filter.get(), builder);
+        }
+    }
+
     HolderFilterInfo* info = builder.allocate();
     info->filter_type = static_cast<int>(filter->filter_type);
 
@@ -319,7 +331,9 @@ struct HolderFactory {
 
         if (ps.null_count == 0) {
             stats.Set(duckdb::StatsInfo::CANNOT_HAVE_NULL_VALUES);
+            stats.Set(duckdb::StatsInfo::CAN_HAVE_VALID_VALUES);
         } else if (ps.null_count == ps.num_rows) {
+            stats.Set(duckdb::StatsInfo::CAN_HAVE_NULL_VALUES);
             stats.Set(duckdb::StatsInfo::CANNOT_HAVE_VALID_VALUES);
         } else {
             stats.Set(duckdb::StatsInfo::CAN_HAVE_NULL_AND_VALID_VALUES);
@@ -388,10 +402,14 @@ struct HolderFactory {
                 HolderColumnFilter cfi = {};
                 cfi.col_idx = original_col_idx;
 
-                HolderFilterInfo* converted = ConvertFilter(filter_ptr.get(), builder);
-                cfi.filter = *converted;
-
-                filter_infos.push_back(cfi);
+                // If a single filter fails to convert, drop just that filter
+                try {
+                    HolderFilterInfo* converted = ConvertFilter(filter_ptr.get(), builder);
+                    cfi.filter = *converted;
+                    filter_infos.push_back(cfi);
+                } catch (const std::exception&) {
+                    continue;
+                }
             }
 
             produce_params.num_filters = filter_infos.size();
@@ -663,7 +681,7 @@ static unique_ptr<FunctionData> HolderScanBind(
 
     auto& data = *res;
     stream_factory_get_schema(reinterpret_cast<ArrowArrayStream*>(stream_factory_ptr), data.schema_root.arrow_schema);
-    ArrowTableFunction::PopulateArrowTableSchema(DBConfig::GetConfig(context), data.arrow_table,
+    ArrowTableFunction::PopulateArrowTableSchema(context, data.arrow_table,
                                                   data.schema_root.arrow_schema);
     names = data.arrow_table.GetNames();
     return_types = data.arrow_table.GetTypes();

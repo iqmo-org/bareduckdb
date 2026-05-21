@@ -23,6 +23,7 @@
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/filter/struct_filter.hpp"
 #include "duckdb/planner/filter/in_filter.hpp"
+#include "duckdb/planner/filter/optional_filter.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/storage/statistics/string_stats.hpp"
@@ -139,6 +140,13 @@ inline HolderFilterValue ConvertValue(const Value& val, FilterBuilder& builder) 
 }
 
 inline HolderFilterInfo* ConvertFilter(const TableFilter* filter, FilterBuilder& builder) {
+    if (filter->filter_type == TableFilterType::OPTIONAL_FILTER) {
+        auto* opt_filter = static_cast<const duckdb::OptionalFilter*>(filter);
+        if (opt_filter->child_filter) {
+            return ConvertFilter(opt_filter->child_filter.get(), builder);
+        }
+    }
+
     HolderFilterInfo* info = builder.allocate();
     info->filter_type = static_cast<int>(filter->filter_type);
 
@@ -319,7 +327,9 @@ struct HolderFactory {
 
         if (ps.null_count == 0) {
             stats.Set(duckdb::StatsInfo::CANNOT_HAVE_NULL_VALUES);
+            stats.Set(duckdb::StatsInfo::CAN_HAVE_VALID_VALUES);
         } else if (ps.null_count == ps.num_rows) {
+            stats.Set(duckdb::StatsInfo::CAN_HAVE_NULL_VALUES);
             stats.Set(duckdb::StatsInfo::CANNOT_HAVE_VALID_VALUES);
         } else {
             stats.Set(duckdb::StatsInfo::CAN_HAVE_NULL_AND_VALID_VALUES);

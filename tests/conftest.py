@@ -26,25 +26,22 @@ _test_counter_lock = threading.Lock()
 
 
 @pytest.fixture(scope="session", autouse=True)
-def install_httpfs_extension(tmp_path_factory):
-    """Install httpfs extension once before all tests to avoid parallel installation race conditions.
-
-    Uses filelock to ensure only one worker installs the extension when running with pytest-xdist.
+def install_test_extensions(tmp_path_factory):
+    """Avoid install race by pre-installing
     """
     from filelock import FileLock
 
-    # Get a shared temp directory that persists across workers
-    lock_file = tmp_path_factory.getbasetemp().parent / "httpfs_install.lock"
+    lock_file = tmp_path_factory.getbasetemp().parent / "extensions_install.lock"
 
     with FileLock(str(lock_file)):
-        try:
-            conn = Connection()
-            logger.info("Installing httpfs extension (with file lock)")
-            conn.install_extension("httpfs")
-            conn.close()
-            logger.info("Successfully installed httpfs extension")
-        except Exception as e:
-            logger.warning(f"Failed to install httpfs extension: {e}")
+        for ext_name in ("httpfs", "json"):
+            try:
+                conn = Connection()
+                logger.info("Installing %s extension (with file lock)", ext_name)
+                conn.install_extension(ext_name)
+                conn.close()
+            except Exception as e:
+                logger.warning("Failed to install %s extension: %s", ext_name, e)
 
 @pytest.fixture
 def unique_table_name(request):

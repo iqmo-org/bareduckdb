@@ -39,7 +39,7 @@ pip install bareduckdb
 
 ### From Source
 ```bash
-git clone --recurse-submodules https://github.com/paultiq/bareduckdb.git
+git clone --recurse-submodules https://github.com/iqmo-org/bareduckdb.git
 cd bareduckdb
 uv sync -v # or: pip install -e .
 ```

@@ -20,6 +20,7 @@ os.environ["CYTHON_FORCE_REGEN"] = "1"  # Slower but safer when moving submodule
 
 LINK_MODE = os.getenv("BAREDUCKDB_LINK_MODE", "dynamic")  # Dynamic linking against prebuilt .so
 OPTIMIZATION_LEVEL = os.getenv("BAREDUCKDB_OPTIMIZATION", "balanced")
+EXPERIMENTAL = os.getenv("BAREDUCKDB_EXPERIMENTAL", "auto")  # Experimental features (holder_scan): auto | 1 | 0
 
 LATEST_DUCKDB_VERSION = "v1.5.5"
 
@@ -29,15 +30,27 @@ PY_LIMITED_API_VERSION = 0x030c0000  # Python 3.12+
 STABLE_PYTHON_VERSION = "cp312"
 
 _IS_MACOS = sys.platform == "darwin"
-_LIB_EXT = "dylib" if _IS_MACOS else "so"
+_IS_WINDOWS = sys.platform == "win32"
+_IS_MSVC = _IS_WINDOWS  # build with MSVC same as duckdb
+
+if _IS_MACOS:
+    _LIB_EXT = "dylib"
+    _SHARED_LIB_NAME = f"libduckdb.{_LIB_EXT}"
+elif _IS_WINDOWS:
+    _LIB_EXT = "dll"
+    _SHARED_LIB_NAME = "duckdb.dll"
+else:
+    _LIB_EXT = "so"
+    _SHARED_LIB_NAME = f"libduckdb.{_LIB_EXT}"
 
 _DUCKDB_LIB_DIR_NAME = f"duckdb_lib_{LATEST_DUCKDB_VERSION}"
 _DUCKDB_LIB_DIR_PATH = Path(os.path.dirname(__file__))  / _DUCKDB_LIB_DIR_NAME
 
-_DUCKDB_SHARED_LIB_PATH = _DUCKDB_LIB_DIR_PATH / f"libduckdb.{_LIB_EXT}"
+_DUCKDB_SHARED_LIB_PATH = _DUCKDB_LIB_DIR_PATH / _SHARED_LIB_NAME
 
 _DUCKDB_SHARED_LIB = str(_DUCKDB_SHARED_LIB_PATH)
 _DUCKDB_STATIC_LIB = str(_DUCKDB_LIB_DIR_PATH / "libduckdb_static.a")
+_DUCKDB_IMPORT_LIB_PATH = _DUCKDB_LIB_DIR_PATH / "duckdb.lib"
 
 _DUCKDB_LIB_DIR = str(_DUCKDB_LIB_DIR_PATH)
 
@@ -47,6 +60,10 @@ _DUCKDB_INCLUDE = str(_DUCKDB_INCLUDE_PATH)
 
 
 def setup_compiler_cache():
+    if _IS_WINDOWS:
+        print("Windows: skipping ccache/sccache CC/CXX override (using MSVC)")
+        return None
+
     if shutil.which("sccache"):
         compiler_launcher = "sccache"
     elif shutil.which("ccache"):
@@ -78,6 +95,10 @@ def check_gcc_version(*, compiler_launcher, min_major=14, min_minor=0):
     # Skip GCC version check on macOS - we use AppleClang to match DuckDB
     if _IS_MACOS:
         print("macOS: Skipping GCC version check (using AppleClang to match DuckDB)")
+        return
+
+    if _IS_WINDOWS:
+        print("Windows: Skipping GCC version check (using MSVC to match DuckDB)")
         return
 
     cxx = os.environ.get("CXX", "g++")
@@ -133,6 +154,8 @@ def download_and_extract_duckdb():
         url = f"https://install.duckdb.org/{LATEST_DUCKDB_VERSION}/libduckdb-osx-universal.zip"
     elif sys.platform == "linux":
         url = f"https://install.duckdb.org/{LATEST_DUCKDB_VERSION}/libduckdb-linux-amd64.zip"
+    elif _IS_WINDOWS:
+        url = f"https://install.duckdb.org/{LATEST_DUCKDB_VERSION}/libduckdb-windows-amd64.zip"
     else:
         raise RuntimeError(f"Unsupported platform: {sys.platform}")
 
@@ -181,7 +204,7 @@ def copy_library_to_package():
     package_libs_dir = Path(os.path.dirname(__file__)) / "src" / "bareduckdb" / "_libs"
     package_libs_dir.mkdir(exist_ok=True)
 
-    target_lib = package_libs_dir / f"libduckdb.{_LIB_EXT}"
+    target_lib = package_libs_dir / _SHARED_LIB_NAME
     shutil.copy2(_DUCKDB_SHARED_LIB, target_lib)
 
     return package_libs_dir
@@ -189,7 +212,11 @@ def copy_library_to_package():
 
 package_libs_dir = copy_library_to_package()
 
-if LINK_MODE == "static":
+if _IS_WINDOWS:
+    extra_objects = []
+    libraries = ["duckdb"]
+    base_link_args = []
+elif LINK_MODE == "static":
     # Static linking with prebuilt libduckdb_static.a (GCC 12)
     # This avoids GCC 14 ABI incompatibility with prebuilt .so
     # Use --whole-archive to ensure all symbols are included
@@ -230,14 +257,9 @@ else:
     print(f"Building with {USE_LIMITED_API=}: stable ABI for {STABLE_PYTHON_VERSION=}")
 
 if OPTIMIZATION_LEVEL == "debug":
-    # Use -O1 for ASAN - provides better bug detection than -O0
-    # -fno-optimize-sibling-calls: preserves stack frames for better ASAN traces
-    compile_args = ["-std=c++17", "-O1", "-g", "-Wall", "-fno-optimize-sibling-calls"]
-    link_args = base_link_args.copy()
     define_macros = [("CYTHON_USE_MODULE_STATE", "1")]
     # Don't use Py_LIMITED_API in debug mode
-    # if USE_LIMITED_API:
-    #     define_macros.append(("Py_LIMITED_API", f"{PY_LIMITED_API_VERSION:#x}"))
+    _use_limited_api_this_build = False
     cython_directives = {
         "language_level": 3,
         "embedsignature": True,
@@ -245,15 +267,11 @@ if OPTIMIZATION_LEVEL == "debug":
         "linetrace": True,
     }
 elif OPTIMIZATION_LEVEL == "aggressive":
-    # Aggressive is intended solely for performance experiments
-    compile_args = ["-std=c++17", "-O3", "-Wall", "-flto=auto", "-fvisibility=hidden", "-DNDEBUG"] # "-march=native",
-    link_args = base_link_args + ["-flto=auto"]
     define_macros = [
         ("CYTHON_USE_MODULE_STATE", "1"),
         ("NDEBUG", "1"),
     ]
-    if USE_LIMITED_API:
-        define_macros.append(("Py_LIMITED_API", f"{PY_LIMITED_API_VERSION:#x}"))
+    _use_limited_api_this_build = USE_LIMITED_API
     cython_directives = {
         "language_level": 3,
         "boundscheck": False,
@@ -266,11 +284,8 @@ elif OPTIMIZATION_LEVEL == "aggressive":
         "linetrace": False,
     }
 else:  # default
-    compile_args = ["-std=c++17", "-O3", "-Wall", "-flto=auto"]
-    link_args = base_link_args + ["-flto=auto"]
     define_macros = [("CYTHON_USE_MODULE_STATE", "1")]
-    if USE_LIMITED_API:
-        define_macros.append(("Py_LIMITED_API", f"{PY_LIMITED_API_VERSION:#x}"))
+    _use_limited_api_this_build = USE_LIMITED_API
     cython_directives = {
         "language_level": 3,
         "boundscheck": False,
@@ -281,6 +296,30 @@ else:  # default
         "profile": False,
         "linetrace": False,
     }
+
+if _use_limited_api_this_build:
+    define_macros.append(("Py_LIMITED_API", f"{PY_LIMITED_API_VERSION:#x}"))
+
+# Compiler-specific flags
+if _IS_MSVC:
+    _msvc_common = ["/std:c++17", "/EHsc", "/bigobj"]
+    if OPTIMIZATION_LEVEL == "debug":
+        compile_args = _msvc_common + ["/Od", "/Zi"]
+        link_args = list(base_link_args)
+    else: 
+        compile_args = _msvc_common + ["/O2", "/GL"]
+        link_args = base_link_args + ["/LTCG"]
+else:
+    if OPTIMIZATION_LEVEL == "debug":
+        compile_args = ["-std=c++17", "-O1", "-g", "-Wall", "-fno-optimize-sibling-calls"]
+        link_args = base_link_args.copy()
+    elif OPTIMIZATION_LEVEL == "aggressive":
+        # for performance experiments
+        compile_args = ["-std=c++17", "-O3", "-Wall", "-flto=auto", "-fvisibility=hidden", "-DNDEBUG"]  # "-march=native",
+        link_args = base_link_args + ["-flto=auto"]
+    else:
+        compile_args = ["-std=c++17", "-O3", "-Wall", "-flto=auto"]
+        link_args = base_link_args + ["-flto=auto"]
 
 # Some tweaks to support TSAN/ASAN sanitizers, so they take precedence over our defaults
 env_cflags = os.getenv("CFLAGS", "").split()
@@ -310,7 +349,8 @@ def get_args(name, sources) -> dict[str, Any]:
         "include_dirs": ["src/bareduckdb/core/impl", _DUCKDB_INCLUDE],
         "extra_objects": extra_objects,
         "libraries": libraries,
-        "library_dirs": [str(package_libs_dir)],
+
+        "library_dirs": [str(package_libs_dir)] + ([_DUCKDB_LIB_DIR] if _IS_WINDOWS else []),
         "runtime_library_dirs": [],
         "extra_compile_args": compile_args,
         "extra_link_args": link_args,
@@ -352,7 +392,19 @@ core_extensions = [
 
 holder_scan_extensions = []
 holder_scan_pyx = Path("src/bareduckdb/common/impl/holder_scan.pyx")
-if holder_scan_pyx.exists():
+if EXPERIMENTAL == "1":
+    build_experimental = True
+elif EXPERIMENTAL == "auto":
+    build_experimental = not _IS_WINDOWS
+else:
+    build_experimental = False
+
+if build_experimental and _IS_WINDOWS:
+    # holder_scan needs internal symbols (statistics, planner filters) the official DLL does not export
+    raise RuntimeError("BAREDUCKDB_EXPERIMENTAL=1 is not supported on Windows")
+
+print(f"Experimental features (holder_scan): {'enabled' if build_experimental else 'disabled'} (BAREDUCKDB_EXPERIMENTAL={EXPERIMENTAL})")
+if build_experimental and holder_scan_pyx.exists():
     holder_scan_kwargs = get_args(
         name="bareduckdb.common.impl.holder_scan",
         sources=[str(holder_scan_pyx)],
@@ -394,7 +446,7 @@ if LINK_MODE == "static":
     print(f"Using DuckDB static lib: {selected_lib}")
 elif LINK_MODE == "dynamic":
     # Check that the library exists in the package _libs directory
-    lib_path = package_libs_dir / f"libduckdb.{_LIB_EXT}"
+    lib_path = package_libs_dir / _SHARED_LIB_NAME
     if not lib_path.exists():
         raise FileNotFoundError(
             f"DuckDB library not found: {lib_path}\n"
@@ -473,13 +525,18 @@ class ParallelBuildExt(build_ext):
         """Copy extensions to source directory"""
         build_ext.copy_extensions_to_source(self)
 
-        # For stable ABI builds, ensure wheels only contain .abi3.so extensions
+        # For stable ABI builds, ensure wheels only contain abi3 extensions, not
+        # version-specific ones (*.cpython-*.so on Linux/macOS, *.cp*-win_amd64.pyd on Windows).
         if USE_LIMITED_API:
-            for pattern in ["src/bareduckdb/**/*.cpython-*.so", "build/**/*.cpython-*.so"]:
-                for version_specific_so in glob.glob(pattern, recursive=True):
-                    if os.path.exists(version_specific_so):
-                        os.remove(version_specific_so)
-                        print(f"Removed version-specific extension: {version_specific_so}")
+            patterns = [
+                "src/bareduckdb/**/*.cpython-*.so", "build/**/*.cpython-*.so",
+                "src/bareduckdb/**/*.cp*-win_amd64.pyd", "build/**/*.cp*-win_amd64.pyd",
+            ]
+            for pattern in patterns:
+                for version_specific in glob.glob(pattern, recursive=True):
+                    if os.path.exists(version_specific):
+                        os.remove(version_specific)
+                        print(f"Removed version-specific extension: {version_specific}")
 
 
 # Only use py_limited_api for non-free-threaded builds

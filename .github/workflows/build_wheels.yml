@@ -17,8 +17,8 @@ jobs:
         platform:
           - { os: ubuntu-latest,     arch: x86_64,     cibw_system: manylinux }
           - { os: macos-latest,      arch: arm64,      cibw_system: macosx }
+          - { os: windows-latest,    arch: AMD64,      cibw_system: win }
           # - { os: macos-13,          arch: x86_64,     cibw_system: macosx }
-          # - { os: windows-latest,    arch: AMD64,      cibw_system: win }
     runs-on: ${{ matrix.platform.os }}
 
     steps:

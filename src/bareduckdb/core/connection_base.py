@@ -25,6 +25,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class _LazyCollectSource:
+    """Collects a lazy source (e.g. Polars LazyFrame) each time a stream is produced."""
+
+    def __init__(self, lazy: object) -> None:
+        self._lazy = lazy
+
+    def __arrow_c_stream__(self, requested_schema: object = None) -> object:
+        return self._lazy.collect().__arrow_c_stream__(requested_schema)  # type: ignore[attr-defined]
+
+
 class ConnectionBase:
     """
     Core DuckDB functions, implemented in Cython
@@ -130,9 +140,7 @@ class ConnectionBase:
         logger.debug("DataHolder unavailable for %s, using capsule registration", type(data).__name__)
         self._register_capsule(name, data)
 
-    def _register_capsule(
-        self, name: str, capsule: PyArrowCapsule | pa.Table | ds.Dataset | ds.Scanner | pd.DataFrame | pl.DataFrame | pl.LazyFrame | pa.RecordBatchReader
-    ) -> None:
+    def _register_capsule(self, name: str, capsule: object, replace: bool = True) -> None:
         """
         Register Arrow C Stream Interface capsule directly.
 
@@ -154,6 +162,9 @@ class ConnectionBase:
             cardinality,
         )
 
+        if not hasattr(capsule, "__arrow_c_stream__") and hasattr(capsule, "collect"):
+            capsule = _LazyCollectSource(capsule)
+
         if hasattr(capsule, "scanner"):
             capsule = capsule.scanner().to_reader()  # type: ignore
         if hasattr(capsule, "to_reader"):
@@ -169,7 +180,7 @@ class ConnectionBase:
         # Assume it's a capsule already
 
         self._registered_objects[name] = data
-        self._impl.register_capsule(name, data, cardinality, replace=True)
+        self._impl.register_capsule(name, data, cardinality, replace=replace)
 
     def _call(
         self,

@@ -116,7 +116,11 @@ class Connection(ConnectionAPI):
         """
         from bareduckdb.dataset.backend import register_table
 
-        return register_table(self, name, data, statistics=statistics, replace=replace)
+        if register_table(self, name, data, statistics=statistics, replace=replace):
+            return True
+
+        self._register_capsule(name, data, replace=replace)
+        return True
 
     def unregister(self, name: str) -> None:
         super().unregister(name)

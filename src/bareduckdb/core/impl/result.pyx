@@ -1,7 +1,6 @@
 # cython: language_level=3
 # cython: freethreading_compatible=True
 # distutils: language=c++
-# distutils: extra_compile_args=-std=c++17
 
 """
 Cython implementation of DuckDB query results
@@ -387,7 +386,9 @@ cdef class _ResultBase:
                     )
 
                 if not has_chunk:
-                    # No more chunks
+                    if result_has_error(self._result):
+                        error_msg = result_get_error(self._result)
+                        raise RuntimeError(f"Query failed: {error_msg.decode('utf-8') if error_msg else 'Unknown error'}")
                     break
 
                 # Get integer addresses of the structs

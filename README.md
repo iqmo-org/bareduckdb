@@ -30,6 +30,14 @@
 
 
 
+## Platform Notes
+
+Linux, macOS, and Windows are supported. Windows links the same official DuckDB build but
+reaches it through DuckDB's C API, so a few behaviors differ: registration copies the data,
+and the experimental enhancements listed above are unavailable. See
+[readme_windows.md](readme_windows.md) for the details. At runtime, `bareduckdb.features`
+reports what the installed build supports.
+
 ## Installation
 
 ### From PyPI
@@ -43,6 +51,9 @@ git clone --recurse-submodules https://github.com/iqmo-org/bareduckdb.git
 cd bareduckdb
 uv sync -v # or: pip install -e .
 ```
+
+If already cloned, use
+`git submodule update --init --recursive`
 
 ### Basic Usage
 

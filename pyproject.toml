@@ -73,7 +73,8 @@ package-dir = {"" = "src"}
 packages = ["bareduckdb", "bareduckdb.core", "bareduckdb.core.impl", "bareduckdb.aio", "bareduckdb.compat", "bareduckdb._libs", "bareduckdb.functional", "bareduckdb.dataset", "bareduckdb.data_sources", "bareduckdb.common", "bareduckdb.common.impl"]
 
 [tool.setuptools.package-data]
-bareduckdb = ["_libs/libduckdb.*"]
+# libduckdb.{so,dylib} on Linux/macOS; duckdb.dll on Windows
+bareduckdb = ["_libs/libduckdb.*", "_libs/duckdb.dll"]
 
 [tool.setuptools_scm]
 version_file = "src/bareduckdb/_version.py"
@@ -134,6 +135,7 @@ default-groups = ["dev"]
 environments = [ # no need to resolve packages beyond these platforms with uv...
     "python_version >= '3.12' and sys_platform == 'darwin' and platform_machine == 'arm64'",
     "python_version >= '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "python_version >= '3.12' and sys_platform == 'win32' and platform_machine == 'AMD64'",
 ]
 #required-environments = [ 
 #    "python_version >= '3.13' and sys_platform == 'darwin' and platform_machine == 'arm64'",
@@ -163,7 +165,7 @@ dev = [
     "pytest-timeout>=2.3.1",
     "pytest-xdist>=3.8.0",
     "pytest-repeat>=0.9.3",
-    "vortex-data;python_version < '3.14'", # no free-threaded
+    "vortex-data;python_version < '3.14' and sys_platform != 'win32'", # no free-threaded, no windows wheels
     "tabulate",
     "ruff>=0.14.10",
 ]

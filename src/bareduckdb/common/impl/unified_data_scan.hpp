@@ -550,6 +550,20 @@ static OperatorPartitionData HolderScanGetPartitionData(
     return OperatorPartitionData(state.batch_index);
 }
 
+// Dictionary and run-end encoded columns keep their string info on the child type, so the
+// outer ArrowType has no type_info to cast. They are not filtered by the holder either:
+// _is_supported_filter_type in arrow_holder.py rejects them.
+static bool IsPlainArrowString(const ArrowType& arrow_type) {
+    return !arrow_type.HasDictionary() && !arrow_type.RunEndEncoded();
+}
+
+static bool IsStringViewColumn(const ArrowType& arrow_type) {
+    if (!IsPlainArrowString(arrow_type)) {
+        return false;
+    }
+    return arrow_type.GetTypeInfo<ArrowStringInfo>().GetSizeType() == ArrowVariableSizeType::VIEW;
+}
+
 static bool HolderScanPushdownType(const FunctionData& bind_data, idx_t col_idx) {
     auto& data = bind_data.Cast<ArrowScanFunctionData>();
     auto* factory = reinterpret_cast<bareduckdb::HolderFactory*>(data.stream_factory_ptr);
@@ -580,8 +594,7 @@ static bool HolderScanPushdownType(const FunctionData& bind_data, idx_t col_idx)
     const auto& columns = data.arrow_table.GetColumns();
     for (const auto& col_pair : columns) {
         if (data.all_types[col_pair.first].id() == LogicalTypeId::VARCHAR) {
-            const auto& arrow_type = *col_pair.second;
-            if (arrow_type.GetTypeInfo<ArrowStringInfo>().GetSizeType() == ArrowVariableSizeType::VIEW) {
+            if (IsStringViewColumn(*col_pair.second)) {
                 return false;
             }
         }
@@ -607,12 +620,12 @@ static bool HolderScanPushdownType(const FunctionData& bind_data, idx_t col_idx)
             return true;
 
         case LogicalTypeId::VARCHAR: {
-            // Reject string_view
+            // Reject string_view, and dictionary / run-end encoded columns
             const auto& columns = data.arrow_table.GetColumns();
             auto it = columns.find(col_idx);
             if (it != columns.end()) {
                 const auto& arrow_type = *it->second;
-                if (arrow_type.GetTypeInfo<ArrowStringInfo>().GetSizeType() == ArrowVariableSizeType::VIEW) {
+                if (!IsPlainArrowString(arrow_type) || IsStringViewColumn(arrow_type)) {
                     return false;
                 }
             }

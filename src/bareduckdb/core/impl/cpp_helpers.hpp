@@ -1460,9 +1460,18 @@ namespace bareduckdb
         uint64_t creating_query_number = 0;
         duckdb::vector<duckdb::unique_ptr<ArrowArrayWrapper>> arrays;
         idx_t current_idx = 0;
-        ArrowSchema schema;
+        ArrowSchema schema {};
         bool schema_exported = false;
         duckdb::unique_ptr<ArrowQueryResult> owned_result;
+
+        ~ArrowArrayStreamWrapper()
+        {
+            // The schema is only handed to the consumer by GetSchema, which clears release
+            if (schema.release)
+            {
+                schema.release(&schema);
+            }
+        }
 
         static int GetSchema(ArrowArrayStream *stream, ArrowSchema *out)
         {
@@ -1572,7 +1581,7 @@ namespace bareduckdb
         QueryResultChunkScanState scan_state;
         QueryResult *result;
         uint64_t rows_per_batch;
-        ArrowSchema schema;
+        ArrowSchema schema {};
         bool schema_exported = false;
         string last_error;
 
@@ -1588,6 +1597,15 @@ namespace bareduckdb
             else
             {
                 creating_query_number = 0;
+            }
+        }
+
+        ~StreamingArrowArrayStreamWrapper()
+        {
+            // The schema is only handed to the consumer by GetSchema, which clears release
+            if (schema.release)
+            {
+                schema.release(&schema);
             }
         }
 
@@ -2130,7 +2148,12 @@ namespace bareduckdb
             std::string view_name_str(view_name);
 
             std::string drop_sql = "DROP VIEW " + quote_ident(view_name_str);
-            context->Query(drop_sql, false);
+            // Query reports failures through the result, it does not throw
+            auto result = context->Query(drop_sql, false);
+            if (result && result->HasError())
+            {
+                throw std::runtime_error(result->GetError());
+            }
         }
         catch (const std::exception &e)
         {

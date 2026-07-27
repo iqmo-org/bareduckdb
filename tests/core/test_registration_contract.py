@@ -96,9 +96,16 @@ def test_polars_frames(conn):
 
 def test_registering_a_reader_from_this_connection(conn):
     conn._register_arrow("src", conn._call("SELECT * FROM range(100) t(j)"))
-    reader = conn._call("SELECT * FROM src", output_type="arrow_reader")
-    conn._register_arrow("copy", reader)
+
+    conn._register_arrow("copy", conn._call("SELECT * FROM src"))
     assert _rows(conn, "SELECT count(*) c FROM copy") == [{"c": 100}]
+
+    # A live streaming reader from this same connection cannot be scanned by a later
+    # query on that connection - it would deadlock, so the scan reports it instead
+    reader = conn._call("SELECT * FROM src", output_type="arrow_reader")
+    conn._register_arrow("live", reader)
+    with pytest.raises(RuntimeError, match="Deadlock"):
+        conn._call("SELECT count(*) FROM live")
 
 
 def test_consumed_capsule_is_rejected(conn):

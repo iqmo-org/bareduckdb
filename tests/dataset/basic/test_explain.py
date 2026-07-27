@@ -1,5 +1,10 @@
 import pyarrow as pa
+import pytest
+
+import bareduckdb
 from bareduckdb import Connection
+
+pytestmark = pytest.mark.skipif(not bareduckdb.features["holder_scan"], reason="requires holder_scan experimental feature")
 
 
 def test_explain_shows_python_data_scan():

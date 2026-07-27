@@ -6,9 +6,11 @@ import uuid
 
 pa = pytest.importorskip("pyarrow")
 
+import bareduckdb
 from bareduckdb import Connection
 
 
+@pytest.mark.skipif(not bareduckdb.features["holder_scan"], reason="requires holder_scan experimental feature")
 def test_dataset_pushdown_in_explain(connect_config):
     """
     Verify that filter and projection pushdowns appear in EXPLAIN output

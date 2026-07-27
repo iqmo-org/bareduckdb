@@ -1,7 +1,6 @@
 # cython: language_level=3
 # cython: freethreading_compatible=True
 # distutils: language=c++
-# distutils: extra_compile_args=-std=c++17
 
 from libc.stdint cimport int64_t
 from libc.stdint cimport uint64_t

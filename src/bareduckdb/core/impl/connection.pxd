@@ -128,12 +128,15 @@ cdef extern from "cpp_helpers.hpp" namespace "bareduckdb":
     ) nogil
 
     # Capsule
+    void* arrow_registry_create() nogil
+    void arrow_registry_destroy(void* registry) nogil
+
     void register_capsule_stream(
-        duckdb_connection c_conn, void* stream_capsule,
+        duckdb_connection c_conn, void* registry, void* stream_capsule,
         const char* view_name, int64_t cardinality, bool replace
     ) except *
 
-    void unregister_python_object(duckdb_connection c_conn, const char* view_name) except +
+    void unregister_python_object(duckdb_connection c_conn, void* registry, const char* view_name) except *
 
     # Common result ops
     ArrowQueryResult* cast_to_arrow_result(QueryResult *result) nogil
@@ -152,20 +155,13 @@ cdef extern from "cpp_helpers.hpp" namespace "bareduckdb":
     bool export_arrow_result_schema(
         void* arrow_result_ptr, ArrowSchema *out_schema
     ) nogil
-    bool consumed_arrays_export_array_only(
-        void* arrays_ptr, size_t index, ArrowArray *out_array
-    ) nogil
     void consumed_arrays_free(void* arrays_ptr) nogil
-    ArrowArray* arrow_result_get_array(ArrowQueryResult *arrow_result, size_t index) nogil
 
     # Streaming Arrow path
     void* init_streaming_arrow_state(QueryResult* result) nogil
     bool fetch_arrow_chunk(
         void* state_ptr, uint64_t rows_per_batch,
         ArrowArray* out_array, ArrowSchema* out_schema
-    ) nogil
-    bool fetch_arrow_chunk_array_only(
-        void* state_ptr, uint64_t rows_per_batch, ArrowArray* out_array
     ) nogil
     bool export_streaming_arrow_schema(void* state_ptr, ArrowSchema* out_schema) nogil
     void free_streaming_arrow_state(void* state_ptr) nogil
@@ -199,6 +195,7 @@ cdef class ConnectionImpl:
     cdef shared_ptr[DatabaseHandle] _db_handle
     cdef duckdb_connection _conn
     cdef DuckDBConnection* _cpp_conn
+    cdef void* _arrow_registry
     cdef str _database_path
     cdef bool _closed
 

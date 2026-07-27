@@ -3,6 +3,14 @@ from __future__ import annotations
 import logging
 import os
 
+if os.name == "nt":
+    _libs_dir = os.path.join(os.path.dirname(__file__), "_libs")
+    if os.path.isdir(_libs_dir):
+        try:
+            os.add_dll_directory(_libs_dir)
+        except OSError:
+            pass
+
 # Import functional module for Ibis compatibility
 from . import functional
 from ._utils import pyarrow_available
@@ -18,6 +26,19 @@ from .compat.connection_compat import Connection
 from .core.connection_base import ConnectionBase
 
 logger = logging.getLogger(__name__)
+
+
+def _detect_features() -> dict[str, bool]:
+    from importlib.util import find_spec
+
+    return {
+        "holder_scan": find_spec("bareduckdb.common.impl.holder_scan") is not None,
+        "sql_parsing": os.name != "nt",
+    }
+
+
+# Experimental features present in this build (holder_scan: statistics injection + filter pushdown)
+features: dict[str, bool] = _detect_features()
 
 # Configure logging based on environment variable
 _log_level = os.environ.get("BAREDUCKDB_LOG_LEVEL", None)
@@ -53,7 +74,7 @@ def register_as_duckdb() -> None:
 connect = Connection
 
 __implementation__: str = "cython"
-__all__ = ["ConnectionBase", "Connection", "__version__", "__duckdb_version__", "pyarrow_available", "functional"]
+__all__ = ["ConnectionBase", "Connection", "__version__", "__duckdb_version__", "pyarrow_available", "functional", "features"]
 
 
 class ConnectionException(Exception):  # noqa: N818

@@ -56,11 +56,17 @@ def register_table(
     Raises:
         ValueError: If invalid column name in statistics
     """
-    from bareduckdb.common.impl.holder_scan import (
-        delete_holder_factory_pyx,
-        register_holder_pyx,
-        register_scan_function_pyx,
-    )
+    try:
+        # Not built when experimental is disabled
+        from bareduckdb.common.impl.holder_scan import (  # pyright: ignore[reportMissingImports]
+            delete_holder_factory_pyx,
+            register_holder_pyx,
+            register_scan_function_pyx,
+        )
+    except ImportError:
+        logger.debug("holder_scan extension not available, falling back to capsule registration")
+        return False
+
     from bareduckdb.data_sources import get_holder
 
     try:

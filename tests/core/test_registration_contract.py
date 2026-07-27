@@ -100,12 +100,17 @@ def test_registering_a_reader_from_this_connection(conn):
     conn._register_arrow("copy", conn._call("SELECT * FROM src"))
     assert _rows(conn, "SELECT count(*) c FROM copy") == [{"c": 100}]
 
-    # A live streaming reader from this same connection cannot be scanned by a later
-    # query on that connection - it would deadlock, so the scan reports it instead
     reader = conn._call("SELECT * FROM src", output_type="arrow_reader")
     conn._register_arrow("live", reader)
-    with pytest.raises(RuntimeError, match="Deadlock"):
-        conn._call("SELECT count(*) FROM live")
+    if sys.platform == "win32":
+        # Registration drains the reader before any query starts, so the
+        # copy is queryable like any other registration
+        assert _rows(conn, "SELECT count(*) c FROM live") == [{"c": 100}]
+    else:
+        # A live streaming reader from this same connection cannot be scanned by a
+        # later query on that connection - it would deadlock, so the scan reports it
+        with pytest.raises(RuntimeError, match="Deadlock"):
+            conn._call("SELECT count(*) FROM live")
 
 
 def test_consumed_capsule_is_rejected(conn):

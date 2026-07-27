@@ -34,11 +34,11 @@ def install_test_extensions(tmp_path_factory):
     lock_file = tmp_path_factory.getbasetemp().parent / "extensions_install.lock"
 
     with FileLock(str(lock_file)):
-        for ext_name in ("httpfs", "json"):
+        for ext_name, repository in (("httpfs", None), ("json", None), ("h3", "community")):
             try:
                 conn = Connection()
                 logger.info("Installing %s extension (with file lock)", ext_name)
-                conn.install_extension(ext_name)
+                conn.install_extension(ext_name, repository=repository)
                 conn.close()
             except Exception as e:
                 logger.warning("Failed to install %s extension: %s", ext_name, e)

@@ -18,12 +18,22 @@ def test_install_extension_force_reinstall():
     assert len(result) == 1
 
 
-def test_install_extension_with_repository():
+def test_install_extension_with_repository(monkeypatch):
     conn = bareduckdb.connect()
-    try:
-        conn.install_extension("h3", repository="community")
-    except Exception:
-        pass
+    seen: list[str] = []
+    monkeypatch.setattr(conn, "execute", lambda sql, *args, **kwargs: seen.append(sql))
+
+    conn.install_extension("h3", repository="community")
+    assert seen[-1] == "INSTALL h3 FROM community"
+
+    conn.install_extension("h3", repository_url="http://example.com/repo")
+    assert seen[-1] == "INSTALL h3 FROM 'http://example.com/repo'"
+
+    conn.install_extension("h3", repository="community", force_install=True)
+    assert seen[-1] == "FORCE INSTALL h3 FROM community"
+
+    conn.install_extension("h3", repository="community", version="1.0")
+    assert seen[-1] == "INSTALL h3 FROM community VERSION '1.0'"
 
 
 def test_install_extension_validation_both_repository_params():

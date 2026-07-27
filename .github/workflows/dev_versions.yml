@@ -35,6 +35,8 @@ jobs:
             python-version: '3.14t'
           - os: windows-latest
             python-version: '3.12'
+          - os: windows-latest
+            python-version: '3.14t'
     steps:
       - name: Checkout code
         uses: actions/checkout@main
@@ -153,7 +155,7 @@ jobs:
       #     uv pip uninstall duckdb-extensions duckdb-extension-httpfs
 
       - name: Run downstream integration tests
-        if: matrix.python-version != '3.14t' && runner.os != 'Windows'
+        if: matrix.python-version != '3.14t'  # duckdb doesn't support 3.14t
         shell: bash
         run: |
           # magic-duckdb

@@ -2,6 +2,7 @@
 
 import datetime
 import decimal
+import uuid
 
 import pytest
 
@@ -104,7 +105,8 @@ def test_default_renders_uuid_as_string(conn_default):
 
 
 def test_enum_stays_untagged_even_when_lossless(lossless_conn):
-    lossless_conn._call("CREATE TYPE mood AS ENUM ('happy','sad')", output_type="arrow_table")
-    arrow_type = _arrow_type(lossless_conn, "SELECT 'happy'::mood AS c")
+    name = f"mood_{uuid.uuid4().hex[:8]}"
+    lossless_conn._call(f"CREATE TYPE {name} AS ENUM ('happy','sad')", output_type="arrow_table")
+    arrow_type = _arrow_type(lossless_conn, f"SELECT 'happy'::{name} AS c")
     assert pa.types.is_dictionary(arrow_type)
     assert not isinstance(arrow_type, pa.OpaqueType)

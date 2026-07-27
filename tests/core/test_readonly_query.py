@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 
 import bareduckdb
@@ -13,7 +15,7 @@ def _populate(path):
 
 
 def test_readonly_select(tmp_path):
-    path = tmp_path / "ro.db"
+    path = tmp_path / f"ro_{uuid.uuid4().hex[:8]}.db"
     _populate(path)
 
     conn = bareduckdb.connect(str(path), read_only=True)
@@ -24,7 +26,7 @@ def test_readonly_select(tmp_path):
 
 
 def test_readonly_rejects_writes(tmp_path):
-    path = tmp_path / "ro.db"
+    path = tmp_path / f"ro_{uuid.uuid4().hex[:8]}.db"
     _populate(path)
 
     conn = bareduckdb.connect(str(path), read_only=True)
@@ -34,7 +36,7 @@ def test_readonly_rejects_writes(tmp_path):
 
 
 def test_readonly_register_arrow_and_query(tmp_path):
-    path = tmp_path / "ro.db"
+    path = tmp_path / f"ro_{uuid.uuid4().hex[:8]}.db"
     _populate(path)
 
     conn = bareduckdb.connect(str(path), read_only=True)
@@ -45,7 +47,7 @@ def test_readonly_register_arrow_and_query(tmp_path):
 
 def test_readonly_register_pandas_and_query(tmp_path):
     pd = pytest.importorskip("pandas")
-    path = tmp_path / "ro.db"
+    path = tmp_path / f"ro_{uuid.uuid4().hex[:8]}.db"
     _populate(path)
 
     conn = bareduckdb.connect(str(path), read_only=True)

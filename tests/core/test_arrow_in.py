@@ -2,6 +2,8 @@
 Test arrow registration
 """
 
+import sys
+
 import pytest
 from pathlib import Path
 from bareduckdb.core import ConnectionBase
@@ -71,6 +73,11 @@ def test_capsule_reuse_prevention():
         result1 = conn._call("SELECT * FROM test_table", output_type="arrow_table")
         assert len(result1) == 10
 
-        # Second query on same registered table should fail
-        with pytest.raises(RuntimeError, match="Arrow stream has already been consumed"):
-            conn._call("SELECT * FROM test_table", output_type="arrow_table")
+        if sys.platform == "win32":
+            # Registration materializes the stream, so re-query succeeds
+            result2 = conn._call("SELECT * FROM test_table", output_type="arrow_table")
+            assert len(result2) == 10
+        else:
+            # Second query on same registered table should fail
+            with pytest.raises(RuntimeError, match="Arrow stream has already been consumed"):
+                conn._call("SELECT * FROM test_table", output_type="arrow_table")

@@ -165,6 +165,7 @@ class TestNaNFilterPushdown:
 
         assert len(result) == 2, f"Expected 2 NaN values, got {len(result)}"
 
+    @pytest.mark.skipif(not bareduckdb.features["holder_scan"], reason="requires holder_scan experimental feature")
     def test_explain_shows_filter_pushdown(self, float_table_with_nan, unique_table_name, make_connection, connect_config, thread_index, iteration_index):
 
 

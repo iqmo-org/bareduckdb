@@ -1,4 +1,6 @@
 
+import sys
+
 import pytest
 from pathlib import Path
 from bareduckdb.core import ConnectionBase
@@ -26,8 +28,13 @@ def test_register_w_reader(make_connection, connect_config, thread_index, iterat
     reader1 = conn._call(query="select * from mydata", output_type="arrow_reader")
     
     conn._register_arrow("mydata1", reader1)
-    with pytest.raises(RuntimeError, match=".*Deadlock detected.*"):
-        table2 = conn._call(query="select * from mydata1", output_type="arrow_reader")
+
+    if sys.platform == "win32":
+        # Registration drains the reader into a table, so there is nothing to deadlock on
+        assert conn._call(query="select count(*) c from mydata1").to_pylist() == [{"c": 100}]
+    else:
+        with pytest.raises(RuntimeError, match=".*Deadlock detected.*"):
+            table2 = conn._call(query="select * from mydata1", output_type="arrow_reader")
     
 
 def test_unregister(make_connection, connect_config, thread_index, iteration_index):

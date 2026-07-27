@@ -9,6 +9,10 @@ from bareduckdb.core import ConnectionBase
 
 pa = pytest.importorskip("pyarrow")
 
+# These assert single-connection behavior against fixed view names, so running the same
+# test body in several threads would have them clobber each other's registrations
+pytestmark = pytest.mark.parallel_threads(1)
+
 CAT_TABLE = {"id": [1, 2, 3, 4], "cat": ["A", "B", "A", "B"], "val": [10, 20, 30, 40]}
 
 
@@ -119,7 +123,7 @@ def test_replace_false_rejects_an_existing_name():
 def test_registration_on_a_read_only_database(tmp_path):
     path = str(tmp_path / "ro.db")
     seed = bareduckdb.connect(path)
-    seed.execute("CREATE TABLE keep(a INTEGER)")
+    seed.execute("CREATE TABLE IF NOT EXISTS keep(a INTEGER)")
     seed.close()
 
     conn = bareduckdb.connect(path, read_only=True)

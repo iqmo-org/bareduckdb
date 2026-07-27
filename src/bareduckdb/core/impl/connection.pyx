@@ -1,7 +1,6 @@
 # cython: language_level=3
 # cython: freethreading_compatible=True
 # distutils: language=c++
-# distutils: extra_compile_args=-std=c++17
 
 """
 Cython implementation of DuckDB connection.
@@ -20,6 +19,7 @@ cdef class ConnectionImpl:
     def __cinit__(self, database=None, config=None, read_only=False):
         self._closed = False
         self._cpp_conn = NULL
+        self._arrow_registry = arrow_registry_create()
 
         # Use NULL (empty string) for truly private in-memory database
         if database is None:
@@ -131,6 +131,8 @@ cdef class ConnectionImpl:
     def close(self):
         """Close the database connection."""
         if not self._closed:
+            arrow_registry_destroy(self._arrow_registry)
+            self._arrow_registry = NULL
             duckdb_disconnect(&self._conn)
             # Drop our reference to the database
             # The shared_ptr will automatically close the database when the last reference is dropped
@@ -212,7 +214,7 @@ cdef class ConnectionImpl:
         cdef const char* c_name = name_bytes
         cdef void* capsule_ptr = <void*><PyObject*>stream_capsule
 
-        register_capsule_stream(self._conn, capsule_ptr, c_name, cardinality, replace)
+        register_capsule_stream(self._conn, self._arrow_registry, capsule_ptr, c_name, cardinality, replace)
 
     def unregister(self, str name):
         """
@@ -227,7 +229,7 @@ cdef class ConnectionImpl:
         # Drop the VIEW in DuckDB
         cdef bytes name_bytes = name.encode("utf-8")
         cdef const char* c_name = name_bytes
-        unregister_python_object(self._conn, c_name)
+        unregister_python_object(self._conn, self._arrow_registry, c_name)
 
         # NOTE: Object lifetime cleanup managed in connection.py
         # Factory deletion is handled by Python if factory_ptr was tracked

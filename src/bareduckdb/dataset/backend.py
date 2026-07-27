@@ -57,7 +57,8 @@ def register_table(
         ValueError: If invalid column name in statistics
     """
     try:
-        from bareduckdb.common.impl.holder_scan import (
+        # Not built when experimental is disabled
+        from bareduckdb.common.impl.holder_scan import (  # pyright: ignore[reportMissingImports]
             delete_holder_factory_pyx,
             register_holder_pyx,
             register_scan_function_pyx,

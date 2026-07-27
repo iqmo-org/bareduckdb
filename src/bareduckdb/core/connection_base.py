@@ -140,12 +140,7 @@ class ConnectionBase:
         logger.debug("DataHolder unavailable for %s, using capsule registration", type(data).__name__)
         self._register_capsule(name, data)
 
-    def _register_capsule(
-        self,
-        name: str,
-        capsule: PyArrowCapsule | pa.Table | ds.Dataset | ds.Scanner | pd.DataFrame | pl.DataFrame | pl.LazyFrame | pa.RecordBatchReader,
-        replace: bool = True,
-    ) -> None:
+    def _register_capsule(self, name: str, capsule: object, replace: bool = True) -> None:
         """
         Register Arrow C Stream Interface capsule directly.
 

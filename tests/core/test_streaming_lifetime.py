@@ -75,6 +75,8 @@ def _settled_growth(work):
 
 
 @pytest.mark.parallel_threads(1)
+# The measurement loop is already the repetition, and repeating it hits the 90s timeout
+@pytest.mark.iterations(1)
 def test_streaming_readers_do_not_accumulate():
     if _rss_bytes() is None:
         pytest.skip("no resident-memory measurement available")
@@ -88,6 +90,8 @@ def test_streaming_readers_do_not_accumulate():
 
 
 @pytest.mark.parallel_threads(1)
+# The measurement loop is already the repetition, and repeating it hits the 90s timeout
+@pytest.mark.iterations(1)
 def test_unconsumed_capsules_do_not_accumulate():
     if _rss_bytes() is None:
         pytest.skip("no resident-memory measurement available")

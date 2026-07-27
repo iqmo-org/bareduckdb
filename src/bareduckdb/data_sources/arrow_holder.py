@@ -1,4 +1,3 @@
-# Arrow data holder with native filter pushdown (supports Table and Dataset)
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Union
@@ -11,6 +10,7 @@ if TYPE_CHECKING:
     pass
 
 from bareduckdb.data_sources import DataHolder
+from bareduckdb.data_sources._filter_constants import _ComparisonType, _FilterType
 
 
 class ArrowHolder(DataHolder):
@@ -50,8 +50,7 @@ class ArrowHolder(DataHolder):
         filters: dict[int, dict[str, Any]] | None,
     ) -> Any:
         if projected_columns is None and filters is None:
-            empty_table = self._schema.empty_table()
-            return empty_table.__arrow_c_stream__()
+            return pa.RecordBatchReader.from_batches(self._schema, []).__arrow_c_stream__()
 
         filter_expr = None
         if filters:
@@ -76,29 +75,6 @@ class ArrowHolder(DataHolder):
 
 
 PyArrowHolder = ArrowHolder
-
-
-class _FilterType:
-    CONSTANT_COMPARISON = 0
-    IS_NULL = 1
-    IS_NOT_NULL = 2
-    CONJUNCTION_OR = 3
-    CONJUNCTION_AND = 4
-    STRUCT_EXTRACT = 5
-    OPTIONAL_FILTER = 6
-    IN_FILTER = 7
-    DYNAMIC_FILTER = 8
-    EXPRESSION_FILTER = 9
-    BLOOM_FILTER = 10
-
-
-class _ComparisonType:
-    EQUAL = 25
-    NOT_EQUAL = 26
-    LESS_THAN = 27
-    GREATER_THAN = 28
-    LESS_THAN_OR_EQUAL = 29
-    GREATER_THAN_OR_EQUAL = 30
 
 
 class _UnsupportedFilterError(Exception):
@@ -254,12 +230,19 @@ def _convert_value_for_type(value: Any, column_type: pa.DataType) -> Any:
 
     if pa.types.is_date(column_type):
         if isinstance(value, int):
-            return datetime.date.fromordinal(datetime.date(1970, 1, 1).toordinal() + value)
+            try:
+                return datetime.date.fromordinal(datetime.date(1970, 1, 1).toordinal() + value)
+            except (ValueError, OverflowError, OSError):
+                # Outside datetime's 1..9999 range; compare in the Arrow domain instead
+                return pa.scalar(value, pa.date32()).cast(column_type)
         return value
 
     if pa.types.is_timestamp(column_type):
         if isinstance(value, int):
-            ts = datetime.datetime.fromtimestamp(value / 1_000_000, tz=datetime.timezone.utc)
+            try:
+                ts = datetime.datetime.fromtimestamp(value / 1_000_000, tz=datetime.timezone.utc)
+            except (ValueError, OverflowError, OSError):
+                return pa.scalar(value, pa.timestamp("us")).cast(column_type)
             if column_type.tz is None:
                 ts = ts.replace(tzinfo=None)
             return ts

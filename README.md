@@ -11,7 +11,7 @@
 
 **bareduckdb** provides extensible and easy to build Python bindings to DuckDB using Cython. 
 
-- **Simple**  ~2k lines of C++ and ~2k lines of Python - easy to extend or customize
+- **Simple**  ~3.3k lines of C++, ~2k lines of Cython and ~2.9k lines of Python - easy to extend or customize
 - **Arrow-first data conversion** supporting Polars, PyArrow, and Pandas
 - **Support for latest Python features** Free threading, subinterpreters, ABI3 and asyncio
 - **Dynamically linked** to DuckDB's official library
@@ -289,7 +289,7 @@ result = conn.execute("""
 ```
 
 **Features:**
-- AST-based query preprocessing - pure Python
+- Query preprocessing via DuckDB's parser - references are extracted in C++, dispatch is in Python, and no Python callbacks run during query execution
 - Connection injection: Add `conn` parameter to access connection during execution
 - Supports any Arrow-compatible object: PyArrow Table, Polars DataFrame, Pandas DataFrame
 

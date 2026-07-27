@@ -419,6 +419,9 @@ struct HolderFactory {
         HolderProduceResult result = factory->produce_callback(factory->holder_ptr, &produce_params);
 
         if (!result.stream_ptr) {
+            if (result.has_error) {
+                throw std::runtime_error("Holder error: " + result.error_msg);
+            }
             throw std::runtime_error("Data holder returned null stream");
         }
 
@@ -475,6 +478,9 @@ extern "C" void* register_holder_cpp(
     HolderProduceParams initial_params = {};
     HolderProduceResult initial_result = callback(holder_pyobj, &initial_params);
     if (!initial_result.stream_ptr) {
+        if (initial_result.has_error) {
+            throw std::runtime_error("Holder error: " + initial_result.error_msg);
+        }
         throw std::runtime_error("Failed to get initial stream from holder");
     }
 

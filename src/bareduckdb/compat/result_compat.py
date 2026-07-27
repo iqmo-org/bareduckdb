@@ -12,6 +12,7 @@ Each call re-executes the query (no caching).
 
 from __future__ import annotations
 
+import datetime
 import logging
 import threading
 from typing import TYPE_CHECKING
@@ -26,6 +27,124 @@ if TYPE_CHECKING:
     from ..core import PyArrowCapsule
 
 logger = logging.getLogger(__name__)
+
+_BIGNUM_HEADER_BYTES = 3
+_BIGNUM_LENGTH_MASK = 0x7FFFFF
+
+_TIME_TZ_OFFSET_BITS = 24
+_TIME_TZ_OFFSET_MASK = 0xFFFFFF
+_TIME_TZ_OFFSET_BIAS = 57599
+
+
+def _decode_bignum(data: bytes) -> int:
+    """3-byte big-endian header"""
+    if len(data) < _BIGNUM_HEADER_BYTES:
+        raise ValueError(f"BIGNUM value too short: {len(data)} bytes")
+
+    positive = bool(data[0] & 0x80)
+    if not positive:
+        data = bytes(byte ^ 0xFF for byte in data)
+
+    length = int.from_bytes(data[:_BIGNUM_HEADER_BYTES], "big") & _BIGNUM_LENGTH_MASK
+    end = _BIGNUM_HEADER_BYTES + length
+    if length == 0 or end != len(data):
+        raise ValueError(f"BIGNUM header declares {length} magnitude bytes, payload carries {len(data) - _BIGNUM_HEADER_BYTES}")
+
+    magnitude = int.from_bytes(data[_BIGNUM_HEADER_BYTES:end], "big")
+    return magnitude if positive else -magnitude
+
+
+def _decode_bit(data: bytes) -> str:
+    """Leading byte is the count of padding bits in the first data byte"""
+    if not data:
+        raise ValueError("BIT value is empty")
+
+    padding = data[0]
+    if padding > 7:
+        raise ValueError(f"BIT padding out of range: {padding}")
+
+    bits = "".join(f"{byte:08b}" for byte in data[1:])
+    return bits[padding:]
+
+
+def _decode_time_tz(data: bytes) -> datetime.time:
+    """Packed 64-bit little-endian value"""
+    if len(data) != 8:
+        raise ValueError(f"TIMETZ value must be 8 bytes, got {len(data)}")
+
+    packed = int.from_bytes(data, "little")
+    micros = packed >> _TIME_TZ_OFFSET_BITS
+    offset_seconds = _TIME_TZ_OFFSET_BIAS - (packed & _TIME_TZ_OFFSET_MASK)
+
+    seconds, microsecond = divmod(micros, 1_000_000)
+    minutes, second = divmod(seconds, 60)
+    hour, minute = divmod(minutes, 60)
+    tzinfo = datetime.timezone(datetime.timedelta(seconds=offset_seconds))
+    return datetime.time(hour, minute, second, microsecond, tzinfo=tzinfo)
+
+
+_OPAQUE_DECODERS = {
+    "bignum": _decode_bignum,
+    "bit": _decode_bit,
+    "time_tz": _decode_time_tz,
+    "hugeint": lambda data: int.from_bytes(data, "little", signed=True),
+    "uhugeint": lambda data: int.from_bytes(data, "little", signed=False),
+}
+
+
+def _opaque_decoder(arrow_type: pa.DataType):
+    if getattr(arrow_type, "extension_name", None) != "arrow.opaque":
+        return None
+    if getattr(arrow_type, "vendor_name", None) != "DuckDB":
+        return None
+    return _OPAQUE_DECODERS.get(arrow_type.type_name)
+
+
+def _value_decoder(arrow_type: pa.DataType):
+    import pyarrow as pa_
+
+    direct = _opaque_decoder(arrow_type)
+    if direct is not None:
+        return direct
+
+    if pa_.types.is_list(arrow_type) or pa_.types.is_large_list(arrow_type) or pa_.types.is_fixed_size_list(arrow_type):
+        child = _value_decoder(arrow_type.value_type)
+        if child is None:
+            return None
+        return lambda values: [None if v is None else child(v) for v in values]
+
+    if pa_.types.is_struct(arrow_type):
+        children = {f.name: d for f in arrow_type if (d := _value_decoder(f.type)) is not None}
+        if not children:
+            return None
+
+        def decode_struct(value):
+            out = dict(value)
+            for name, child in children.items():
+                if out.get(name) is not None:
+                    out[name] = child(out[name])
+            return out
+
+        return decode_struct
+
+    if pa_.types.is_map(arrow_type):
+        key = _value_decoder(arrow_type.key_type)
+        item = _value_decoder(arrow_type.item_type)
+        if key is None and item is None:
+            return None
+
+        def decode_map(pairs):
+            return [
+                (
+                    k if key is None or k is None else key(k),
+                    v if item is None or v is None else item(v),
+                )
+                for k, v in pairs
+            ]
+
+        return decode_map
+
+    return None
 
 
 class Result:
@@ -42,14 +161,10 @@ class Result:
 
     def __init__(self, result_obj: pa.Table | PyArrowCapsule | pa.RecordBatchReader):
         """
-        Create result object (does NOT execute query by default).
+        Wrap an already-produced result.
 
         Args:
-            connection: ConnectionBase (minimal connection with _call() method)
-            query: SQL query string
-            batch_size: Arrow batch size for execution
-            parameters: Query parameters (positional list or named dict)
-            _immediate: If True, execute immediately and materialize (for DB-API 2.0 compatibility)
+            result_obj: A PyArrow Table, RecordBatchReader, or Arrow C stream capsule.
         """
 
         # A little more complicated because we're avoiding importing pyarrow
@@ -111,9 +226,11 @@ class Result:
                 from pandas import ArrowDtype
 
                 def _arrow_types_mapper(arrow_type: pa.DataType) -> ArrowDtype:
-                    # Map string_view to string (pandas doesn't support string_view yet - pandas#60068)
+                    # pandas has no view-type support yet (pandas#60068)
                     if arrow_type == pa.string_view():
                         return ArrowDtype(pa.string())
+                    if arrow_type == pa.binary_view():
+                        return ArrowDtype(pa.binary())
                     return ArrowDtype(arrow_type)
 
                 return self.arrow_table().to_pandas(types_mapper=_arrow_types_mapper)
@@ -174,7 +291,7 @@ class Result:
             import pyarrow as pa
 
             arrow_schema = reader.schema
-            empty_table = pa.table({field.name: pa.array([], type=field.type) for field in arrow_schema})
+            empty_table = pa.Table.from_batches([], schema=arrow_schema)
             polars_schema = pl.from_arrow(empty_table).schema
             first_df = None
             has_data = False
@@ -248,7 +365,20 @@ class Result:
         else:
             end_idx = min(self._offset + size, len(table))
 
+        opaque = [(i, d) for i, f in enumerate(table.schema) if (d := _value_decoder(f.type)) is not None]
+
         rows = [tuple(col[idx].as_py() for col in table.columns) for idx in range(self._offset, end_idx)]
+
+        if opaque:
+            decoded = []
+            for row in rows:
+                values = list(row)
+                for i, decoder in opaque:
+                    if values[i] is not None:
+                        values[i] = decoder(values[i])
+                decoded.append(tuple(values))
+            rows = decoded
+
         self._offset = end_idx
         return rows
 

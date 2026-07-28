@@ -5,6 +5,7 @@
 #include <memory>
 #include <stdexcept>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <atomic>
@@ -268,7 +269,10 @@ namespace bareduckdb
             if (failed)
             {
                 const char *message = duckdb_error_data_message(err);
-                win->conversion_error = message ? message : "Arrow conversion failed";
+                // The C API stores Exception::what() verbatim, which is JSON; ErrorData
+                // parses it back to the clean message POSIX surfaces.
+                win->conversion_error = message ? duckdb::ErrorData(std::string(message)).Message()
+                                               : "Arrow conversion failed";
             }
             if (err)
             {
@@ -857,26 +861,60 @@ namespace bareduckdb
         throw std::runtime_error(copy);
     }
 
+    // Zero-row ArrowArray tree mirroring an ArrowSchema. The importer walks children,
+    // dictionaries, and nested layouts even at length 0, so every node must exist; no
+    // buffers are needed. std::deque keeps node addresses stable during recursion.
+    struct EmptyArrowTree
+    {
+        std::deque<ArrowArray> nodes;
+        std::deque<duckdb::vector<ArrowArray *>> child_lists;
+        duckdb::vector<const void *> buffers;
+
+        EmptyArrowTree() : buffers(3, nullptr) {}
+
+        ArrowArray *build(const ArrowSchema &s)
+        {
+            nodes.push_back(ArrowArray{});
+            ArrowArray &arr = nodes.back();
+            arr.n_buffers = 3;
+            arr.buffers = buffers.data();
+            arr.n_children = s.n_children;
+            if (s.n_children > 0)
+            {
+                child_lists.emplace_back();
+                auto &ptrs = child_lists.back();
+                for (int64_t i = 0; i < s.n_children; i++)
+                {
+                    ptrs.push_back(build(*s.children[i]));
+                }
+                arr.children = ptrs.data();
+            }
+            if (s.dictionary)
+            {
+                arr.dictionary = build(*s.dictionary);
+            }
+            return &arr;
+        }
+    };
+
     // A source with no batches still needs column types, and the converted schema is opaque.
+    // The chunk copies nothing from the arena (length-0 vectors never touch buffers), so the
+    // tree living only for this call is safe; release stays null.
     inline duckdb_data_chunk empty_chunk(duckdb_connection c_conn, ArrowSchema &schema,
                                          duckdb_arrow_converted_schema converted)
     {
-        idx_t count = static_cast<idx_t>(schema.n_children);
-        duckdb::vector<const void *> buffers(3, nullptr);
-        duckdb::vector<ArrowArray> children(count);
-        duckdb::vector<ArrowArray *> child_ptrs(count);
-        for (idx_t i = 0; i < count; i++)
+        EmptyArrowTree tree;
+        duckdb::vector<ArrowArray *> roots;
+        for (int64_t i = 0; i < schema.n_children; i++)
         {
-            children[i].n_buffers = 3;
-            children[i].buffers = buffers.data();
-            child_ptrs[i] = &children[i];
+            roots.push_back(tree.build(*schema.children[i]));
         }
 
         ArrowArray root{};
-        root.n_children = static_cast<int64_t>(count);
-        root.children = child_ptrs.data();
+        root.n_children = schema.n_children;
+        root.children = roots.data();
         root.n_buffers = 1;
-        root.buffers = buffers.data();
+        root.buffers = tree.buffers.data();
 
         duckdb_data_chunk chunk = nullptr;
         throw_error_data(duckdb_data_chunk_from_arrow(c_conn, &root, converted, &chunk),
@@ -1100,6 +1138,11 @@ namespace bareduckdb
     extern "C" void *arrow_registry_create() { return nullptr; }
     extern "C" void arrow_registry_destroy(void *registry_ptr) { (void)registry_ptr; }
 
+    inline void export_arrow_schema(ArrowSchema *out_schema, duckdb::QueryResult &result)
+    {
+        duckdb::ArrowConverter::ToArrowSchema(out_schema, result.types, result.names, result.client_properties);
+    }
+
     // Execute query WITHOUT PhysicalArrowCollector
     extern "C" duckdb::QueryResult *execute_without_arrow_collector(
         duckdb_connection c_conn,
@@ -1294,12 +1337,8 @@ namespace bareduckdb
             *out_array = (*vec)[index]->arrow_array;
             (*vec)[index]->arrow_array.release = nullptr;
 
-            // Export schema-pass names by reference
-            duckdb::ArrowConverter::ToArrowSchema(
-                out_schema,
-                arrow_result->types,
-                arrow_result->names,
-                arrow_result->client_properties);
+            // Export schema (names passed by reference)
+            export_arrow_schema(out_schema, *arrow_result);
 
             return true;
         }
@@ -1324,11 +1363,7 @@ namespace bareduckdb
         {
             auto *arrow_result = reinterpret_cast<duckdb::ArrowQueryResult *>(arrow_result_ptr);
 
-            duckdb::ArrowConverter::ToArrowSchema(
-                out_schema,
-                arrow_result->types,
-                arrow_result->names,
-                arrow_result->client_properties);
+            export_arrow_schema(out_schema, *arrow_result);
 
             return true;
         }
@@ -1407,11 +1442,7 @@ namespace bareduckdb
 
             *out_array = data;
 
-            ArrowConverter::ToArrowSchema(
-                out_schema,
-                state->result->types,
-                state->result->names,
-                state->result->client_properties);
+            export_arrow_schema(out_schema, *state->result);
 
             return true;
         }
@@ -1433,11 +1464,7 @@ namespace bareduckdb
             auto *state = reinterpret_cast<StreamingArrowState *>(state_ptr);
             auto &result = *state->result;
 
-            duckdb::ArrowConverter::ToArrowSchema(
-                out_schema,
-                result.types,
-                result.names,
-                result.client_properties);
+            export_arrow_schema(out_schema, result);
 
             return true;
         }
@@ -1554,11 +1581,7 @@ namespace bareduckdb
 
             wrapper->arrays = wrapper->owned_result->ConsumeArrays();
 
-            ArrowConverter::ToArrowSchema(
-                &wrapper->schema,
-                wrapper->owned_result->types,
-                wrapper->owned_result->names,
-                wrapper->owned_result->client_properties);
+            export_arrow_schema(&wrapper->schema, *wrapper->owned_result);
 
             stream->private_data = wrapper;
             stream->get_schema = ArrowArrayStreamWrapper::GetSchema;
@@ -1625,11 +1648,9 @@ namespace bareduckdb
             {
                 if (wrapper->schema_exported)
                 {
-                    ArrowConverter::ToArrowSchema(
-                        out,
-                        wrapper->result->types,
-                        wrapper->result->names,
-                        wrapper->result->client_properties);
+                    // Schema was already transferred once; re-export a fresh copy
+                    // (Arrow C Data Interface transfers ownership on each export).
+                    export_arrow_schema(out, *wrapper->result);
                 }
                 else
                 {
@@ -1757,11 +1778,7 @@ namespace bareduckdb
 
             auto *wrapper = new StreamingArrowArrayStreamWrapper(result, rows_per_batch);
 
-            ArrowConverter::ToArrowSchema(
-                &wrapper->schema,
-                result->types,
-                result->names,
-                result->client_properties);
+            export_arrow_schema(&wrapper->schema, *result);
 
             stream->private_data = wrapper;
             stream->get_schema = StreamingArrowArrayStreamWrapper::GetSchema;
@@ -1849,7 +1866,7 @@ namespace bareduckdb
         {
             auto *wrapper = static_cast<SingleUseStreamWrapper *>(stream->private_data);
 
-            // TODO: Decide if needed... this was during debugging
+            // Validate stream pointer: the PyCapsule may have been garbage collected while still in use
             if (!wrapper->underlying_stream || !wrapper->underlying_stream->get_schema)
             {
                 wrapper->error_message =
@@ -1919,31 +1936,6 @@ namespace bareduckdb
             stream->release = nullptr;
         }
     };
-
-    // Store ArrowArrayStream* directly
-    namespace RawStreamCallbacks
-    {
-        // Note: These functions are reserved for future raw stream support
-        // Currently unused but kept for potential stream registration feature
-        [[maybe_unused]] static void GetSchema(uintptr_t factory_ptr, ArrowSchema &schema)
-        {
-            auto *stream = reinterpret_cast<ArrowArrayStream *>(factory_ptr);
-            int result = stream->get_schema(stream, &schema);
-            if (result != 0)
-            {
-                throw std::runtime_error("Failed to get schema from raw arrow stream");
-            }
-        }
-
-        [[maybe_unused]] static duckdb::unique_ptr<duckdb::ArrowArrayStreamWrapper> Produce(uintptr_t factory_ptr, ArrowStreamParameters &params)
-        {
-            auto *stream = reinterpret_cast<ArrowArrayStream *>(factory_ptr);
-            auto wrapper = duckdb::make_uniq<duckdb::ArrowArrayStreamWrapper>();
-            wrapper->arrow_array_stream = *stream;
-            stream->release = nullptr;
-            return wrapper;
-        }
-    }
 
     struct CapsuleArrowStreamFactory
     {
@@ -2070,7 +2062,6 @@ namespace bareduckdb
             void *factory_to_release = nullptr;
 
             // Always wrap in SingleUseStreamWrapper to prevent reuse and segfaults
-            // even for use_raw_stream=True, because RawStreamCallbacks::Produce consumes the stream
             {
                 auto *wrapper_ptr = new SingleUseStreamWrapper();
                 wrapper_ptr->underlying_stream = original_stream;

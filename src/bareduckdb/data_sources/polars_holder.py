@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from . import DataHolder
+from ._filter_constants import _ComparisonType, _FilterType
 
 logger = logging.getLogger(__name__)
 
@@ -144,31 +145,6 @@ class PolarsLazyHolder(DataHolder):
     def compute_statistics(self, columns: list[str] | bool) -> list[tuple]:
         """LazyFrames don't support statistics - would require full collection."""
         return []
-
-
-# Filter type constants (match DuckDB TableFilterType enum)
-class _FilterType:
-    CONSTANT_COMPARISON = 0
-    IS_NULL = 1
-    IS_NOT_NULL = 2
-    CONJUNCTION_OR = 3
-    CONJUNCTION_AND = 4
-    STRUCT_EXTRACT = 5
-    OPTIONAL_FILTER = 6
-    IN_FILTER = 7
-    DYNAMIC_FILTER = 8
-    EXPRESSION_FILTER = 9
-    BLOOM_FILTER = 10
-
-
-# Comparison type constants (match DuckDB ExpressionType enum)
-class _ComparisonType:
-    EQUAL = 25
-    NOT_EQUAL = 26
-    LESS_THAN = 27
-    GREATER_THAN = 28
-    LESS_THAN_OR_EQUAL = 29
-    GREATER_THAN_OR_EQUAL = 30
 
 
 def _translate_filters_to_polars(

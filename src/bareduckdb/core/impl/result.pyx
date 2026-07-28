@@ -31,6 +31,15 @@ cdef extern from *:
     void cpp_delete[T](T* ptr) noexcept
 
 
+cdef object _import_batch(object batch_import_func, ArrowArray* c_array, ArrowSchema* c_schema, size_t batch_index):
+    cdef uintptr_t array_addr = <uintptr_t>c_array
+    cdef uintptr_t schema_addr = <uintptr_t>c_schema
+    try:
+        return batch_import_func(array_addr, schema_addr)
+    except Exception as e:
+        raise RuntimeError(f"Failed to import Arrow array {batch_index}: {e}") from e
+
+
 cdef void arrow_array_stream_pycapsule_destructor(object capsule) noexcept:
     """Destructor for ArrowArrayStream PyCapsule - releases stream and frees memory."""
     # Get the pointer from the capsule (accepts Python object directly)
@@ -239,6 +248,10 @@ cdef class _ResultBase:
             arrow_result = cast_to_arrow_result(self._result)
 
         if arrow_result == NULL:
+            if result_has_error(self._result):
+                error_msg = result_get_error(self._result)
+                error_str = error_msg.decode("utf-8") if error_msg else "Unknown error"
+                raise RuntimeError(f"Arrow conversion failed: {error_str}")
             raise RuntimeError("Result is not an ArrowQueryResult")
 
         # Export schema once (works for both empty and non-empty results)
@@ -272,9 +285,7 @@ cdef class _ResultBase:
         batches = []
         cdef ArrowArray c_array
         cdef size_t i
-        cdef uintptr_t array_addr
-        # schema_addr already declared at top
-        # c_schema already declared at top
+        # schema_addr and c_schema already declared at top
 
         # Get the PyArrow import function
         # pyarrow.lib.RecordBatch._import_from_c(array_address, schema_address)
@@ -302,18 +313,7 @@ cdef class _ResultBase:
                         f"Failed to export array/schema at index {i}"
                     )
 
-                # Get integer addresses of the structs
-                array_addr = <uintptr_t>&c_array
-                schema_addr = <uintptr_t>&c_schema
-
-                try:
-                    # Import as RecordBatch using PyArrow's C Data Interface
-                    # This consumes the ArrowArray and ArrowSchema (calls their release callbacks)
-                    batch = batch_import_func(array_addr, schema_addr)
-
-                    batches.append(batch)
-                except Exception as e:
-                    raise RuntimeError(f"Failed to import Arrow array {i}: {e}")
+                batches.append(_import_batch(batch_import_func, &c_array, &c_schema, i))
 
         finally:
             # Always free the consumed arrays vector
@@ -371,8 +371,6 @@ cdef class _ResultBase:
         batches = []
         cdef ArrowArray c_array
         cdef ArrowSchema c_schema
-        cdef uintptr_t array_addr
-        cdef uintptr_t schema_addr
         cdef size_t batch_count = 0
         cdef bool has_chunk
 
@@ -391,18 +389,8 @@ cdef class _ResultBase:
                         raise RuntimeError(f"Query failed: {error_msg.decode('utf-8') if error_msg else 'Unknown error'}")
                     break
 
-                # Get integer addresses of the structs
-                array_addr = <uintptr_t>&c_array
-                schema_addr = <uintptr_t>&c_schema
-
-                try:
-                    # Import as RecordBatch using PyArrow's C Data Interface
-                    # This consumes the ArrowArray and ArrowSchema (calls their release callbacks)
-                    batch = batch_import_func(array_addr, schema_addr)
-                    batches.append(batch)
-                    batch_count += 1
-                except Exception as e:
-                    raise RuntimeError(f"Failed to import Arrow array {batch_count}: {e}")
+                batches.append(_import_batch(batch_import_func, &c_array, &c_schema, batch_count))
+                batch_count += 1
         finally:
             # Always free the streaming state
             with nogil:
@@ -453,6 +441,10 @@ cdef class _ResultBase:
                 arrow_result = cast_to_arrow_result(self._result)
 
             if arrow_result == NULL:
+                if result_has_error(self._result):
+                    error_msg = result_get_error(self._result)
+                    error_str = error_msg.decode("utf-8") if error_msg else "Unknown error"
+                    raise RuntimeError(f"Arrow conversion failed: {error_str}")
                 _logger.error("Failed to cast result to ArrowQueryResult")
                 raise RuntimeError("Result is not an ArrowQueryResult")
 

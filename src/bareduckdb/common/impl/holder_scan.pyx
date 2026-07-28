@@ -7,6 +7,7 @@ from libc.stdint cimport int64_t, uint32_t
 from libc.stdlib cimport malloc, free
 from libc.string cimport memset
 from libcpp cimport bool as cpp_bool
+from libcpp.string cimport string
 from libc.stddef cimport size_t
 
 from bareduckdb.core.impl.connection cimport (
@@ -60,6 +61,8 @@ cdef extern from "unified_data_scan.hpp":
     ctypedef struct HolderProduceResult:
         void* stream_ptr
         void* capsule_pyobj
+        cpp_bool has_error
+        string error_msg
 
 ctypedef HolderProduceResult (*holder_produce_callback_t)(void* holder_ptr, HolderProduceParams* params) noexcept nogil
 ctypedef void (*holder_release_capsule_callback_t)(void* capsule_pyobj) noexcept nogil
@@ -249,8 +252,8 @@ cdef HolderProduceResult _produce_with_gil(
         return result
 
     except Exception as e:
-        import sys
-        print(f"Error in produce_callback: {e}", file=sys.stderr)
+        result.has_error = True
+        result.error_msg = str(e).encode("utf-8")
         return result
 
 

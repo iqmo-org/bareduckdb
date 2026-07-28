@@ -241,3 +241,5 @@ duckdb_nightly/duck*
 *.code-workspace
 testdata
 benchmark-results/
+notebooks/
+/data/

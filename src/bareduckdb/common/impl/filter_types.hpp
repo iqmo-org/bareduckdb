@@ -57,6 +57,8 @@ typedef struct {
 typedef struct {
     void* stream_ptr;
     void* capsule_pyobj;
+    bool has_error = false;
+    std::string error_msg;
 } HolderProduceResult;
 
 typedef HolderProduceResult (*holder_produce_callback_t)(void* holder_ptr, HolderProduceParams* params);

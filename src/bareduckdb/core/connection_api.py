@@ -152,8 +152,6 @@ class ConnectionAPI(ConnectionBase):
         return self
 
     def _get_replacement(self, name: str) -> PyArrowCapsule | None:
-        import inspect
-
         for frame_info in inspect.stack()[1:]:  # Skip current frame
             frame = frame_info.frame
 

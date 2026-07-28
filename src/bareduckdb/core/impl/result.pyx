@@ -248,6 +248,10 @@ cdef class _ResultBase:
             arrow_result = cast_to_arrow_result(self._result)
 
         if arrow_result == NULL:
+            if result_has_error(self._result):
+                error_msg = result_get_error(self._result)
+                error_str = error_msg.decode("utf-8") if error_msg else "Unknown error"
+                raise RuntimeError(f"Arrow conversion failed: {error_str}")
             raise RuntimeError("Result is not an ArrowQueryResult")
 
         # Export schema once (works for both empty and non-empty results)
@@ -437,6 +441,10 @@ cdef class _ResultBase:
                 arrow_result = cast_to_arrow_result(self._result)
 
             if arrow_result == NULL:
+                if result_has_error(self._result):
+                    error_msg = result_get_error(self._result)
+                    error_str = error_msg.decode("utf-8") if error_msg else "Unknown error"
+                    raise RuntimeError(f"Arrow conversion failed: {error_str}")
                 _logger.error("Failed to cast result to ArrowQueryResult")
                 raise RuntimeError("Result is not an ArrowQueryResult")
 

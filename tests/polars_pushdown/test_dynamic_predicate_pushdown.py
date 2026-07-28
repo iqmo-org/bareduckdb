@@ -73,6 +73,8 @@ class TestDynamicPredicateSelfJoin:
         )
         got, _ = self._assert_same(sql)
         assert len(got) == 5
+        if not bareduckdb.features["holder_scan"]:
+            pytest.skip("filter pushdown to the holder requires holder_scan")
         assert DYNAMIC_FILTER in filter_recorder, (
             f"expected a dynamic filter at the holder, saw types {filter_recorder}"
         )

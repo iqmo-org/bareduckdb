@@ -5,6 +5,7 @@
 #include <memory>
 #include <stdexcept>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <atomic>
@@ -268,7 +269,10 @@ namespace bareduckdb
             if (failed)
             {
                 const char *message = duckdb_error_data_message(err);
-                win->conversion_error = message ? message : "Arrow conversion failed";
+                // The C API stores Exception::what() verbatim, which is JSON; ErrorData
+                // parses it back to the clean message POSIX surfaces.
+                win->conversion_error = message ? duckdb::ErrorData(std::string(message)).Message()
+                                               : "Arrow conversion failed";
             }
             if (err)
             {
@@ -857,26 +861,60 @@ namespace bareduckdb
         throw std::runtime_error(copy);
     }
 
+    // Zero-row ArrowArray tree mirroring an ArrowSchema. The importer walks children,
+    // dictionaries, and nested layouts even at length 0, so every node must exist; no
+    // buffers are needed. std::deque keeps node addresses stable during recursion.
+    struct EmptyArrowTree
+    {
+        std::deque<ArrowArray> nodes;
+        std::deque<duckdb::vector<ArrowArray *>> child_lists;
+        duckdb::vector<const void *> buffers;
+
+        EmptyArrowTree() : buffers(3, nullptr) {}
+
+        ArrowArray *build(const ArrowSchema &s)
+        {
+            nodes.push_back(ArrowArray{});
+            ArrowArray &arr = nodes.back();
+            arr.n_buffers = 3;
+            arr.buffers = buffers.data();
+            arr.n_children = s.n_children;
+            if (s.n_children > 0)
+            {
+                child_lists.emplace_back();
+                auto &ptrs = child_lists.back();
+                for (int64_t i = 0; i < s.n_children; i++)
+                {
+                    ptrs.push_back(build(*s.children[i]));
+                }
+                arr.children = ptrs.data();
+            }
+            if (s.dictionary)
+            {
+                arr.dictionary = build(*s.dictionary);
+            }
+            return &arr;
+        }
+    };
+
     // A source with no batches still needs column types, and the converted schema is opaque.
+    // The chunk copies nothing from the arena (length-0 vectors never touch buffers), so the
+    // tree living only for this call is safe; release stays null.
     inline duckdb_data_chunk empty_chunk(duckdb_connection c_conn, ArrowSchema &schema,
                                          duckdb_arrow_converted_schema converted)
     {
-        idx_t count = static_cast<idx_t>(schema.n_children);
-        duckdb::vector<const void *> buffers(3, nullptr);
-        duckdb::vector<ArrowArray> children(count);
-        duckdb::vector<ArrowArray *> child_ptrs(count);
-        for (idx_t i = 0; i < count; i++)
+        EmptyArrowTree tree;
+        duckdb::vector<ArrowArray *> roots;
+        for (int64_t i = 0; i < schema.n_children; i++)
         {
-            children[i].n_buffers = 3;
-            children[i].buffers = buffers.data();
-            child_ptrs[i] = &children[i];
+            roots.push_back(tree.build(*schema.children[i]));
         }
 
         ArrowArray root{};
-        root.n_children = static_cast<int64_t>(count);
-        root.children = child_ptrs.data();
+        root.n_children = schema.n_children;
+        root.children = roots.data();
         root.n_buffers = 1;
-        root.buffers = buffers.data();
+        root.buffers = tree.buffers.data();
 
         duckdb_data_chunk chunk = nullptr;
         throw_error_data(duckdb_data_chunk_from_arrow(c_conn, &root, converted, &chunk),

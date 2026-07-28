@@ -37,27 +37,33 @@ def _table():
     )
 
 
-@pytest.fixture
-def conn():
+def _connect():
     conn = bareduckdb.connect()
     conn.register("holder", _table())
     conn.execute("CREATE TABLE materialized AS SELECT * FROM holder")
-    yield conn
-    conn.close()
+    return conn
 
 
 @pytest.mark.parametrize("where", OUT_OF_PYTHON_RANGE + IN_RANGE)
-def test_pushdown_matches_materialized(conn, where):
-    pushed = conn.execute(f"SELECT count(*) FROM holder {where}").fetchall()
-    truth = conn.execute(f"SELECT count(*) FROM materialized {where}").fetchall()
-    assert pushed == truth
+def test_pushdown_matches_materialized(where):
+    conn = _connect()
+    try:
+        pushed = conn.execute(f"SELECT count(*) FROM holder {where}").fetchall()
+        truth = conn.execute(f"SELECT count(*) FROM materialized {where}").fetchall()
+        assert pushed == truth
+    finally:
+        conn.close()
 
 
 @pytest.mark.parametrize("where", OUT_OF_PYTHON_RANGE + IN_RANGE)
-def test_pushdown_returns_same_rows(conn, where):
-    pushed = conn.execute(f"SELECT v, d FROM holder {where} ORDER BY v").fetchall()
-    truth = conn.execute(f"SELECT v, d FROM materialized {where} ORDER BY v").fetchall()
-    assert pushed == truth
+def test_pushdown_returns_same_rows(where):
+    conn = _connect()
+    try:
+        pushed = conn.execute(f"SELECT v, d FROM holder {where} ORDER BY v").fetchall()
+        truth = conn.execute(f"SELECT v, d FROM materialized {where} ORDER BY v").fetchall()
+        assert pushed == truth
+    finally:
+        conn.close()
 
 
 def test_polars_pushdown_matches_materialized():

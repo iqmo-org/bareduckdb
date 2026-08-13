@@ -16,6 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Cython",
@@ -43,6 +44,7 @@ test = [
     "pytest-run-parallel>=0.2.0",
     "pytest-forked>=1.6.0",
     "pytest-repeat>=0.9.3",
+    "psutil>=5.9.0",
     "pyarrow>=22.0",
     "pandas>=3.0.0rc0",
 ]
@@ -143,7 +145,7 @@ environments = [ # no need to resolve packages beyond these platforms with uv...
 #]
 exclude-newer = "2 weeks"
 
-prerelease = "if-necessary-or-explicit"
+prerelease = "if-necessary"
 
 [dependency-groups]
 dev = [

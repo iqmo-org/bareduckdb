@@ -41,7 +41,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install UV
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v10.0.0
         with:
           enable-cache: true
           cache-suffix: -benchmarks

@@ -28,13 +28,13 @@ jobs:
           - os: ubuntu-latest
             python-version: '3.12'
           - os: ubuntu-latest
-            python-version: '3.14t'
+            python-version: '3.15t'
           # - os: macos-latest
           #   python-version: '3.12'
           - os: macos-latest
             python-version: '3.14t'
           - os: windows-latest
-            python-version: '3.12'
+            python-version: '3.15'
           - os: windows-latest
             python-version: '3.14t'
     steps:
@@ -61,7 +61,7 @@ jobs:
           allow-prereleases: true
 
       - name: Install UV
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v10.0.0
         with:
           enable-cache: true
           cache-suffix: -dev-versions-${{ matrix.python-version }}

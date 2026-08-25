@@ -33,7 +33,10 @@ Repository = "https://github.com/iqmo-org/bareduckdb"
 Issues = "https://github.com/iqmo-org/bareduckdb/issues"
 
 [project.optional-dependencies]
-arrow = ["pyarrow==22.0"]
+arrow = [
+    "pyarrow>=23.0.0; python_version >= '3.10' and python_version < '3.15' and (sys_platform != 'win32' or platform_machine != 'ARM64')",
+    "pyarrow>=23.0.0.dev0; python_version >= '3.15' and (sys_platform != 'win32' or platform_machine != 'ARM64')",
+]
 test = [
     "pytest>=8.4.2",
     "pytest-asyncio>=0.24.0",
@@ -85,6 +88,9 @@ version_file = "src/bareduckdb/_version.py"
 build-frontend = "build[uv]"
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
+enable = ["cpython-prerelease"]  # TODO: remove when 3.15 ships
+test-requires = ["uv"]
+test-sources = ["build_backend"]
 
 [tool.cibuildwheel.linux]
 # Don't bundle PyArrow libraries - loaded dynamically
@@ -92,6 +98,11 @@ repair-wheel-command = "auditwheel repair --exclude libarrow.so.2200 --exclude l
 
 [tool.cibuildwheel.macos]
 repair-wheel-command = "delocate-wheel --require-archs {delocate_archs} --ignore-missing-dependencies -w {dest_dir} -v {wheel}"
+
+[[tool.cibuildwheel.overrides]]
+# TODO: remove when 3.15 ships
+select = ["cp315-*", "cp315t-*"]  
+test-environment = { "CIBW_TEST_EXTRA_INDEX_URL" = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }
 
 [tool.cython-lint]
 max-line-length = 160
@@ -144,8 +155,19 @@ environments = [ # no need to resolve packages beyond these platforms with uv...
 #    "python_version >= '3.13' and sys_platform == 'linux' and platform_machine == 'x86_64'",
 #]
 exclude-newer = "2 weeks"
+exclude-newer-package = { cython = false, pyarrow = false, pandas = false, ipython = false, numpy = false, ipykernel = false }  # TODO: Remove after 3.15 release
 
 prerelease = "if-necessary"
+
+[[tool.uv.index]]
+name = "scientific-python-nightly"
+url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple"
+
+[tool.uv.sources]
+# 3.15 has no stable pyarrow / pandas wheels; pull from the nightlies on 3.15+.
+# TODO: remove when 3.15 ships
+pyarrow = [{ index = "scientific-python-nightly", marker = "python_version >= '3.15'" }]
+pandas  = [{ index = "scientific-python-nightly", marker = "python_version >= '3.15'" }]
 
 [dependency-groups]
 dev = [

@@ -104,6 +104,7 @@ jobs:
         shell: bash
         # 3.14t: no polars support yet.
         # 3.15: pending pola-rs/polars#2875
+
         if: matrix.python-version != '3.14t' && !startsWith(matrix.python-version, '3.15')
         run: uv pip install polars
 
@@ -209,7 +210,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@main
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: dev-versions-test-results-${{ matrix.python-version }}
           path: |

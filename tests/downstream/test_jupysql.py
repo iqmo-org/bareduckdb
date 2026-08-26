@@ -25,6 +25,10 @@ def fresh_shell(request):
         import bareduckdb
         bareduckdb.register_as_duckdb()
     elif impl_name == "duckdb":
+        import sysconfig
+
+        if sysconfig.get_config_var("Py_GIL_DISABLED"):
+            pytest.skip("upstream _duckdb has no Py_MOD_GIL_NOT_USED; importing it re-enables the GIL")
         import duckdb  # noqa: F401
 
     from IPython import get_ipython

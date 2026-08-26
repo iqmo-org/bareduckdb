@@ -35,14 +35,7 @@ def _rss_bytes():
         with open("/proc/self/statm") as handle:
             return int(handle.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
 
-    try:
-        import resource
-    except ImportError:
-        return None
-
-    # Peak, not current: only an upper bound on what the process ever held
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return peak if sys.platform == "darwin" else peak * 1024
+    return None
 
 
 def _read_streams(conn, count):

@@ -66,6 +66,7 @@ jobs:
       - name: Install pyyaml from source
         # TODO: Remove after 3.15 release
         run: |
+          uv venv -p 3.12
           uv pip install --no-binary :all: pyyaml
 
       - name: Build current repo

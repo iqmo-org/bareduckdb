@@ -162,6 +162,7 @@ prerelease = "if-necessary"
 [[tool.uv.index]]
 name = "scientific-python-nightly"
 url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple"
+explicit = true
 
 [tool.uv.sources]
 # 3.15 has no stable pyarrow / pandas wheels; pull from the nightlies on 3.15+.

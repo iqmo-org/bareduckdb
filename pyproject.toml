@@ -90,19 +90,20 @@ manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
 enable = ["cpython-prerelease"]  # TODO: remove when 3.15 ships
 test-requires = ["uv"]
-test-sources = ["build_backend"]
 
 [tool.cibuildwheel.linux]
-# Don't bundle PyArrow libraries - loaded dynamically
-repair-wheel-command = "auditwheel repair --exclude libarrow.so.2200 --exclude libarrow_python.so.2200 -w {dest_dir} {wheel}"
+# Don't bundle PyArrow libraries - loaded dynamically.
+# Wildcards, so this keeps working as the pyarrow soname version moves.
+repair-wheel-command = "auditwheel repair --exclude 'libarrow.so.*' --exclude 'libarrow_python.so.*' -w {dest_dir} {wheel}"
 
 [tool.cibuildwheel.macos]
 repair-wheel-command = "delocate-wheel --require-archs {delocate_archs} --ignore-missing-dependencies -w {dest_dir} -v {wheel}"
 
 [[tool.cibuildwheel.overrides]]
 # TODO: remove when 3.15 ships
-select = ["cp315-*", "cp315t-*"]  
-test-environment = { "CIBW_TEST_EXTRA_INDEX_URL" = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }
+select = ["cp315-*", "cp315t-*"]
+# build-frontend is build[uv], so the test env installs via `uv pip`; UV_EXTRA_INDEX_URL
+test-environment = { UV_EXTRA_INDEX_URL = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple", PIP_EXTRA_INDEX_URL = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }
 
 [tool.cython-lint]
 max-line-length = 160

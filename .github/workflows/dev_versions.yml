@@ -90,6 +90,13 @@ jobs:
             g++ --version
           fi
 
+      - name: Refresh lock for nightly deps
+        run: uv lock --upgrade
+
+      - name: Install pyyaml from source
+        # TODO: Remove after 3.15 release
+        run: uv pip install --no-binary :all: pyyaml
+
       - name: Build
         shell: bash
         run: |

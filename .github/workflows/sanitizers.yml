@@ -169,6 +169,9 @@ jobs:
                 export TSAN_OPTIONS='halt_on_error=0:detect_deadlocks=0'
               fi
 
+              # TODO: Remove after 3.15 release
+              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --no-binary :all: pyyaml
+
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages -e . --no-build-isolation -v
 
               echo 'Installing test dependencies'

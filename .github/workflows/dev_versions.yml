@@ -95,7 +95,8 @@ jobs:
 
       - name: Install pyyaml from source
         # TODO: Remove after 3.15 release
-        run: uv pip install --no-binary :all: pyyaml
+        run: |
+          uv pip install --no-binary :all: pyyaml
 
       - name: Build
         shell: bash

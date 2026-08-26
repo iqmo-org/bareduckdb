@@ -216,3 +216,58 @@ jobs:
           path: |
             .pytest_cache/
           retention-days: 7
+
+  musl:
+    name: 'Musl Tests - ${{ matrix.python }} - musllinux_1_2'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python: [cp312, cp315t]
+
+    steps:
+      # Checkout on the glibc host, not inside the container: the runner injects a
+      # glibc-linked node for actions/checkout, which musl cannot execute.
+      - name: Checkout code
+        uses: actions/checkout@main
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Initialize DuckDB submodule (headers only)
+        shell: bash
+        run: |
+          git submodule update --init external/duckdb
+          cd external/duckdb
+          git sparse-checkout init --cone
+          git sparse-checkout set src/include
+          cd ../..
+
+      - name: Build and test in musllinux_1_2
+        shell: bash
+        # Same image cibuildwheel uses, so this exercises what the musllinux wheels ship.
+        run: |
+          docker run --rm -v "$PWD:/build" -w /build \
+            quay.io/pypa/musllinux_1_2_x86_64 sh -c '
+              set -e
+              PY=/opt/python/${{ matrix.python }}-${{ matrix.python }}/bin/python
+              gcc --version | head -1
+              $PY -m pip install -q cython "setuptools>=42" "setuptools-scm>=8" wheel "pyarrow>=22.0"
+              $PY -m pip install -q -e . --no-build-isolation
+
+              # libduckdb must be the musl build, not glibc
+              LIB=$(find src/bareduckdb/_libs -name "libduckdb.so")
+              readelf -d "$LIB" | grep -q "libc.musl" || { echo "ERROR: $LIB is not musl-linked"; exit 1; }
+              echo "OK: $LIB is musl-linked"
+
+              $PY -m pip install -q pytest pytest-xdist pytest-asyncio pytest-timeout \
+                                    pytest-randomly pytest-run-parallel pytest-repeat \
+                                    pytest-forked psutil filelock "pandas>=3.0.0rc0"
+              $PY -m pytest tests --ignore=tests/experimental --ignore=tests/downstream \
+                  --ignore=tests/comparison --ignore=tests/benchmarks \
+                  -o addopts="" -q -n auto
+            '

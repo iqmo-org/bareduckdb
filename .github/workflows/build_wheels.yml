@@ -16,6 +16,7 @@ jobs:
         python: [cp312, cp314t, cp315t]
         platform:
           - { os: ubuntu-latest,     arch: x86_64,     cibw_system: manylinux }
+          - { os: ubuntu-latest,     arch: x86_64,     cibw_system: musllinux }
           - { os: macos-latest,      arch: arm64,      cibw_system: macosx }
           - { os: windows-latest,    arch: AMD64,      cibw_system: win }
           # - { os: macos-13,          arch: x86_64,     cibw_system: macosx }
@@ -47,21 +48,24 @@ jobs:
       - name: Setup Compiler
         shell: bash
         run: |
-          if [ "${{ matrix.platform.os }}" = "ubuntu-latest" ]; then
-            # Ubuntu: Install and configure GCC 14 for the host
-            # Note: cibuildwheel uses its own compilers inside manylinux containers
-            sudo apt-get update
-            sudo apt-get install -y gcc-14 g++-14
-            sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
-            sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
-            gcc --version
-            g++ --version
-          elif [ "${{ matrix.platform.os }}" = "macos-latest" ] || [ "${{ matrix.platform.os }}" = "macos-13" ]; then
-            # macOS: Use AppleClang (default) to match DuckDB's build
-            echo "Using default AppleClang compiler"
-            cc --version
-            c++ --version
-          fi
+          case "${{ matrix.platform.os }}" in
+            ubuntu*)
+              # Ubuntu: Install and configure GCC 14 for the host
+              # Note: cibuildwheel uses its own compilers inside the manylinux/musllinux containers
+              sudo apt-get update
+              sudo apt-get install -y gcc-14 g++-14
+              sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+              sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
+              gcc --version
+              g++ --version
+              ;;
+            macos*)
+              # macOS: Use AppleClang (default) to match DuckDB's build
+              echo "Using default AppleClang compiler"
+              cc --version
+              c++ --version
+              ;;
+          esac
 
       - name: Build and test wheels
         uses: pypa/cibuildwheel@v4.2.0

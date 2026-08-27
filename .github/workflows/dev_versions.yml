@@ -227,11 +227,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: [cp312, cp315t]
+        include:
+          - { python: cp312, pydir: cp312-cp312 }
+          - { python: cp314t, pydir: cp314-cp314t }
+          - { python: cp315t, pydir: cp315-cp315t }
 
     steps:
-      # Checkout on the glibc host, not inside the container: the runner injects a
-      # glibc-linked node for actions/checkout, which musl cannot execute.
+      # Checkout on the glibc host
       - name: Checkout code
         uses: actions/checkout@main
         with:
@@ -249,12 +251,13 @@ jobs:
 
       - name: Build and test in musllinux_1_2
         shell: bash
-        # Same image cibuildwheel uses, so this exercises what the musllinux wheels ship.
+        # Same image cibuildwheel uses
         run: |
           docker run --rm -v "$PWD:/build" -w /build \
             quay.io/pypa/musllinux_1_2_x86_64 sh -c '
               set -e
-              PY=/opt/python/${{ matrix.python }}-${{ matrix.python }}/bin/python
+              PY=/opt/python/${{ matrix.pydir }}/bin/python
+              test -x "$PY" || { echo "ERROR: no interpreter at $PY"; ls /opt/python; exit 1; }
               gcc --version | head -1
               $PY -m pip install -q cython "setuptools>=42" "setuptools-scm>=8" wheel "pyarrow>=22.0"
               $PY -m pip install -q -e . --no-build-isolation

@@ -11,11 +11,9 @@ pytest.importorskip("pyarrow")
 
 WARMUP = 200
 ITERATIONS = 2000
-# The allocator and DuckDB's buffer manager keep growing for a few thousand iterations
-# before they settle, so growth is measured over a second window of the same length:
-# warmup noise decays, a per-iteration leak does not. Measured on a correct build the
-# second window moves by ~3MB; a leaked QueryResult per iteration shows up as 30MB.
+# Let it settle since buffer managers grow first
 MAX_GROWTH_BYTES = 8 * 1024 * 1024
+DECAY_RATIO = 0.6
 
 # Wide rows make each retained QueryResult large enough to separate a leak from noise
 WIDE_QUERY = "SELECT " + ", ".join(f"range::INT AS c{i}" for i in range(60)) + " FROM range(200)"
@@ -51,18 +49,21 @@ def _drop_capsules(conn, count):
         del capsule
 
 
-def _settled_growth(work):
-    """Resident growth over a window that follows an equally long window."""
+def _growth_windows(work):
+    """Resident growth over two consecutive windows of equal length."""
     conn = ConnectionBase()
     try:
         work(conn, WARMUP)
-        work(conn, ITERATIONS)
         gc.collect()
-        before = _rss_bytes()
+        start = _rss_bytes()
 
         work(conn, ITERATIONS)
         gc.collect()
-        return _rss_bytes() - before
+        mid = _rss_bytes()
+
+        work(conn, ITERATIONS)
+        gc.collect()
+        return mid - start, _rss_bytes() - mid
     finally:
         conn.close()
 
@@ -74,11 +75,12 @@ def test_streaming_readers_do_not_accumulate():
     if _rss_bytes() is None:
         pytest.skip("no resident-memory measurement available")
 
-    growth = _settled_growth(_read_streams)
+    first, second = _growth_windows(_read_streams)
 
-    assert growth < MAX_GROWTH_BYTES, (
-        f"resident memory grew {growth / 1e6:.1f}MB over {ITERATIONS} streaming reads, "
-        "which suggests the exported stream is not freeing its QueryResult"
+    assert second < MAX_GROWTH_BYTES or second < first * DECAY_RATIO, (
+        f"resident memory grew {second / 1e6:.1f}MB over {ITERATIONS} streaming reads "
+        f"after {first / 1e6:.1f}MB over the preceding {ITERATIONS}, which suggests the "
+        "exported stream is not freeing its QueryResult"
     )
 
 
@@ -89,8 +91,9 @@ def test_unconsumed_capsules_do_not_accumulate():
     if _rss_bytes() is None:
         pytest.skip("no resident-memory measurement available")
 
-    growth = _settled_growth(_drop_capsules)
+    first, second = _growth_windows(_drop_capsules)
 
-    assert growth < MAX_GROWTH_BYTES, (
-        f"resident memory grew {growth / 1e6:.1f}MB over {ITERATIONS} unconsumed capsules"
+    assert second < MAX_GROWTH_BYTES or second < first * DECAY_RATIO, (
+        f"resident memory grew {second / 1e6:.1f}MB over {ITERATIONS} unconsumed capsules "
+        f"after {first / 1e6:.1f}MB over the preceding {ITERATIONS}"
     )

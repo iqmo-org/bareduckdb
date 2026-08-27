@@ -483,30 +483,18 @@ class ParallelBuildExt(build_ext):
         build_lib = build_py.build_lib
         build_version_file = os.path.join(build_lib, 'bareduckdb', '_version.py')
 
-        if os.path.exists(build_version_file):
-            sys_path_dir = os.path.abspath(build_lib)
-        elif os.path.exists(source_version_file):
-            sys_path_dir = os.path.abspath('src')
-        else:
+        if not os.path.exists(build_version_file) and not os.path.exists(source_version_file):
             raise ValueError("Unable to update _version file")
 
         duckdb_version = None
-        import sys
-        old_path = sys.path.copy()
-        sys.path.insert(0, os.path.abspath('src'))
-        sys.path.insert(0, sys_path_dir)
-
         try:
-            from bareduckdb.compat.connection_compat import Connection
-            con = Connection()
-            con.execute("SELECT version()")
-            result = con.fetchone()
-            duckdb_version = result[0] if result else None
-            con.close()
+            import ctypes
+            lib = ctypes.CDLL(_DUCKDB_SHARED_LIB)
+            lib.duckdb_library_version.restype = ctypes.c_char_p
+            duckdb_version = lib.duckdb_library_version().decode()
             print(f"Successfully queried DuckDB version: {duckdb_version}")
-        finally:
-            sys.path = old_path
-    
+        except Exception as e:
+            print(f"Unable to query DuckDB library version from {_DUCKDB_SHARED_LIB}: {e}")
 
         # Fallback to LATEST_DUCKDB_VERSION if dynamic query failed
         if not duckdb_version:

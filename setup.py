@@ -4,6 +4,8 @@ import shutil
 import subprocess
 import sys
 import glob
+import platform
+import sysconfig
 import urllib.request
 import zipfile
 import time
@@ -33,6 +35,42 @@ _IS_MACOS = sys.platform == "darwin"
 _IS_WINDOWS = sys.platform == "win32"
 _IS_MSVC = _IS_WINDOWS  # build with MSVC same as duckdb
 
+
+def _is_musl() -> bool:
+    host = sysconfig.get_config_var("HOST_GNU_TYPE") or ""
+    if host.endswith("musl"):
+        return True
+    if host.endswith("gnu"):
+        return False
+    return bool(glob.glob("/lib/ld-musl-*.so.1"))
+
+
+def duckdb_artifact() -> str:
+    """Name of the libduckdb release archive matching the build target."""
+    override = os.getenv("BAREDUCKDB_DUCKDB_ARTIFACT")
+    if override:
+        return override
+
+    if _IS_MACOS:
+        return "osx-universal"  # fat binary, covers arm64 and x86_64
+
+    if not _IS_WINDOWS and sys.platform != "linux":
+        raise RuntimeError(f"Unsupported platform: {sys.platform}")
+
+    # platform.machine() reports the host, which is wrong when cross-compiling.
+    machine = (os.getenv("BAREDUCKDB_TARGET_MACHINE") or platform.machine()).lower()
+    arch = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(machine)
+    if arch is None:
+        raise RuntimeError(f"Unsupported machine: {machine}")
+
+    if _IS_WINDOWS:
+        return f"windows-{arch}"
+
+    return f"linux-{arch}-musl" if _is_musl() else f"linux-{arch}"
+
+
+_DUCKDB_ARTIFACT = duckdb_artifact()
+
 if _IS_MACOS:
     _LIB_EXT = "dylib"
     _SHARED_LIB_NAME = f"libduckdb.{_LIB_EXT}"
@@ -43,7 +81,7 @@ else:
     _LIB_EXT = "so"
     _SHARED_LIB_NAME = f"libduckdb.{_LIB_EXT}"
 
-_DUCKDB_LIB_DIR_NAME = f"duckdb_lib_{LATEST_DUCKDB_VERSION}"
+_DUCKDB_LIB_DIR_NAME = f"duckdb_lib_{LATEST_DUCKDB_VERSION}_{_DUCKDB_ARTIFACT}"
 _DUCKDB_LIB_DIR_PATH = Path(os.path.dirname(__file__))  / _DUCKDB_LIB_DIR_NAME
 
 _DUCKDB_SHARED_LIB_PATH = _DUCKDB_LIB_DIR_PATH / _SHARED_LIB_NAME
@@ -140,24 +178,45 @@ def check_gcc_version(*, compiler_launcher, min_major=14, min_minor=0):
 
 
 
+def verify_duckdb_arch():
+    """Fail loudly if the fetched library does not match the build target."""
+    if _DUCKDB_ARTIFACT == "osx-universal":
+        return  # fat binary, matches either arch
+
+    expected = "arm64" if "arm64" in _DUCKDB_ARTIFACT else "amd64"
+
+    with open(_DUCKDB_SHARED_LIB_PATH, "rb") as f:
+        head = f.read(0x40)
+
+    if head[:4] == b"\x7fELF":
+        # e_machine, 2 bytes at offset 18
+        found = {0x3E: "amd64", 0xB7: "arm64"}.get(int.from_bytes(head[18:20], "little"))
+    elif head[:2] == b"MZ":
+        with open(_DUCKDB_SHARED_LIB_PATH, "rb") as f:
+            f.seek(int.from_bytes(head[0x3C:0x40], "little") + 4)
+            found = {0x8664: "amd64", 0xAA64: "arm64"}.get(int.from_bytes(f.read(2), "little"))
+    else:
+        return  # unrecognised container, leave it to the linker
+
+    if found != expected:
+        raise RuntimeError(
+            f"{_DUCKDB_SHARED_LIB_PATH} is {found or 'an unknown arch'}, expected {expected} "
+            f"(artifact {_DUCKDB_ARTIFACT}). Delete {_DUCKDB_LIB_DIR_PATH} and rebuild."
+        )
+
+
 # DuckDB auto-download
 def download_and_extract_duckdb():
     # TODO: Support nightlys
 
     
     if _DUCKDB_SHARED_LIB_PATH.exists():
+        verify_duckdb_arch()
         return
     else:
         print(f"{_DUCKDB_SHARED_LIB=} doesn't exist, downloading and extracting")
 
-    if _IS_MACOS:
-        url = f"https://install.duckdb.org/{LATEST_DUCKDB_VERSION}/libduckdb-osx-universal.zip"
-    elif sys.platform == "linux":
-        url = f"https://install.duckdb.org/{LATEST_DUCKDB_VERSION}/libduckdb-linux-amd64.zip"
-    elif _IS_WINDOWS:
-        url = f"https://install.duckdb.org/{LATEST_DUCKDB_VERSION}/libduckdb-windows-amd64.zip"
-    else:
-        raise RuntimeError(f"Unsupported platform: {sys.platform}")
+    url = f"https://install.duckdb.org/{LATEST_DUCKDB_VERSION}/libduckdb-{_DUCKDB_ARTIFACT}.zip"
 
     _DUCKDB_LIB_DIR_PATH.mkdir(exist_ok=True)
     
@@ -183,6 +242,7 @@ def download_and_extract_duckdb():
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(_DUCKDB_LIB_DIR)
     assert _DUCKDB_SHARED_LIB_PATH.exists()
+    verify_duckdb_arch()
 
     print(f"Downloaded & extracted successfully: {zip_path=}")
 

@@ -259,18 +259,15 @@ jobs:
               PY=/opt/python/${{ matrix.pydir }}/bin/python
               test -x "$PY" || { echo "ERROR: no interpreter at $PY"; ls /opt/python; exit 1; }
               gcc --version | head -1
-              $PY -m pip install -q cython "setuptools>=42" "setuptools-scm>=8" wheel "pyarrow>=22.0"
-              $PY -m pip install -q -e . --no-build-isolation
+              export UV_PYTHON="$PY"
+              uv sync --no-default-groups --extra test --reinstall-package bareduckdb -v
 
               # libduckdb must be the musl build, not glibc
               LIB=$(find src/bareduckdb/_libs -name "libduckdb.so")
               readelf -d "$LIB" | grep -q "libc.musl" || { echo "ERROR: $LIB is not musl-linked"; exit 1; }
               echo "OK: $LIB is musl-linked"
 
-              $PY -m pip install -q pytest pytest-xdist pytest-asyncio pytest-timeout \
-                                    pytest-randomly pytest-run-parallel pytest-repeat \
-                                    pytest-forked psutil filelock "pandas>=3.0.0rc0"
-              $PY -m pytest tests --ignore=tests/experimental --ignore=tests/downstream \
+              uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream \
                   --ignore=tests/comparison --ignore=tests/benchmarks \
                   -o addopts="" -q -n auto
             '

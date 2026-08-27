@@ -70,6 +70,7 @@ arrow = [
     { name = "pyarrow", version = "26.0.0.dev164", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
 ]
 test = [
+    { name = "filelock" },
     { name = "pandas", version = "3.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
     { name = "pandas", version = "3.1.0.dev0+1663.g6eba694f5d", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
     { name = "psutil" },
@@ -121,6 +122,7 @@ downstream = [
 
 [package.metadata]
 requires-dist = [
+    { name = "filelock", marker = "extra == 'test'", specifier = ">=3.16.0" },
     { name = "pandas", marker = "python_full_version >= '3.15' and extra == 'test'", specifier = ">=3.0.0rc0", index = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" },
     { name = "pandas", marker = "python_full_version < '3.15' and extra == 'test'", specifier = ">=3.0.0rc0" },
     { name = "psutil", marker = "extra == 'test'", specifier = ">=5.9.0" },

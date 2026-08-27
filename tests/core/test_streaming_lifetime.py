@@ -11,8 +11,9 @@ pytest.importorskip("pyarrow")
 
 WARMUP = 200
 ITERATIONS = 2000
-# Let it settle since buffer managers grow first
-MAX_GROWTH_BYTES = 8 * 1024 * 1024
+# Let it settle since buffer managers grow first.
+# macOS keeps freed spans resident
+MAX_GROWTH_BYTES = (20 if sys.platform == "darwin" else 8) * 1024 * 1024
 DECAY_RATIO = 0.6
 
 # Wide rows make each retained QueryResult large enough to separate a leak from noise

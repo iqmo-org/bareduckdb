@@ -13,7 +13,11 @@ def table():
 
 @pytest.fixture
 def spy(monkeypatch):
-    """Capture the statistics argument reaching register_table."""
+    """Capture the statistics argument reaching register_table.
+
+    The list accumulates across --iterations repeats of a test body, so tests
+    asserting on it must be marked ``iterations(1)``.
+    """
     seen = []
     real = bareduckdb.dataset.register_table
 
@@ -27,21 +31,25 @@ def spy(monkeypatch):
 
 class TestDefaultStatistics:
 
+    @pytest.mark.iterations(1)
     def test_register_uses_connection_default(self, table, spy):
         conn = bareduckdb.connect(default_statistics="numeric")
         conn.register("t", table)
         assert spy == ["numeric"]
 
+    @pytest.mark.iterations(1)
     def test_register_explicit_overrides_default(self, table, spy):
         conn = bareduckdb.connect(default_statistics="numeric")
         conn.register("t", table, statistics=True)
         assert spy == [True]
 
+    @pytest.mark.iterations(1)
     def test_register_honors_none_default(self, table, spy):
         conn = bareduckdb.connect(default_statistics=None)
         conn.register("t", table)
         assert spy == [None]
 
+    @pytest.mark.iterations(1)
     def test_register_and_inline_data_agree(self, table, spy):
         conn = bareduckdb.connect(default_statistics="numeric")
         conn.register("t", table)

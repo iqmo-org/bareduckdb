@@ -20,6 +20,14 @@ StatisticsType = list[str] | Literal["numeric"] | str | bool | None
 
 _data_source_registration_lock = threading.Lock()
 
+# Statistics travel to DuckDB through an int64 field
+_INT64_MIN = -(2**63)
+_INT64_MAX = 2**63 - 1
+
+
+def _fits_int64(*values: int) -> bool:
+    return all(_INT64_MIN <= value <= _INT64_MAX for value in values)
+
 
 def register_table(
     connection_base: "ConnectionBase",
@@ -304,55 +312,64 @@ def _compute_statistics_polars(df: Any, statistics: StatisticsType) -> list[tupl
         if name not in df.columns:
             raise ValueError(f"Column '{name}' not found. Available: {df.columns}")
 
-        idx = df.columns.index(name)
-        col = df[name]
-        dtype = col.dtype
-        null_count = col.null_count()
-        num_rows = df.height
+        try:
+            idx = df.columns.index(name)
+            col = df[name]
+            dtype = col.dtype
+            null_count = col.null_count()
+            num_rows = df.height
 
-        if null_count == num_rows:
-            results.append(_make_stats_tuple(idx, "null", null_count, num_rows))
-            continue
-
-        if dtype in _polars_float_types():
-            if col.is_nan().any():
-                continue
-
-        min_val = col.min()
-        max_val = col.max()
-
-        if min_val is None or max_val is None:
-            results.append(_make_stats_tuple(idx, "null", null_count, num_rows))
-            continue
-
-        if dtype in _polars_int_types():
-            results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=int(min_val), max_int=int(max_val)))
-        elif dtype in _polars_float_types():
-            results.append(_make_stats_tuple(idx, "float", null_count, num_rows, min_double=float(min_val), max_double=float(max_val)))
-        elif dtype in (pl.Utf8, pl.String):
-            max_len = col.str.len_bytes().max() or 0
-            results.append(_make_stats_tuple(idx, "str", null_count, num_rows, max_str_len=max_len, min_str=str(min_val), max_str=str(max_val)))
-        elif dtype == pl.Date:
-            min_days = (min_val - date(1970, 1, 1)).days
-            max_days = (max_val - date(1970, 1, 1)).days
-            results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=min_days, max_int=max_days))
-        elif dtype == pl.Datetime:
-            # Read the underlying physical integer. datetime.timestamp() treats a
-            # naive datetime as local time, which shifts the value by the UTC offset.
-            physical = col.cast(pl.Int64)
-            raw_min, raw_max = physical.min(), physical.max()
-            if raw_min is None or raw_max is None:
+            if null_count == num_rows:
                 results.append(_make_stats_tuple(idx, "null", null_count, num_rows))
                 continue
-            unit = getattr(dtype, "time_unit", "us")
-            if unit == "ms":
-                min_us, max_us = raw_min * 1_000, raw_max * 1_000
-            elif unit == "us":
-                min_us, max_us = raw_min, raw_max
-            else:
-                # Nanoseconds exceed DuckDB's microsecond resolution
-                min_us, max_us = raw_min // 1000, -(-raw_max // 1000)
-            results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=min_us, max_int=max_us))
+
+            if dtype in _polars_float_types():
+                if col.is_nan().any():
+                    continue
+
+            min_val = col.min()
+            max_val = col.max()
+
+            if min_val is None or max_val is None:
+                results.append(_make_stats_tuple(idx, "null", null_count, num_rows))
+                continue
+
+            if dtype in _polars_int_types():
+                min_i, max_i = int(min_val), int(max_val)
+                if not _fits_int64(min_i, max_i):
+                    continue
+                results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=min_i, max_int=max_i))
+            elif dtype in _polars_float_types():
+                results.append(_make_stats_tuple(idx, "float", null_count, num_rows, min_double=float(min_val), max_double=float(max_val)))
+            elif dtype in (pl.Utf8, pl.String):
+                max_len = col.str.len_bytes().max() or 0
+                results.append(_make_stats_tuple(idx, "str", null_count, num_rows, max_str_len=max_len, min_str=str(min_val), max_str=str(max_val)))
+            elif dtype == pl.Date:
+                min_days = (min_val - date(1970, 1, 1)).days
+                max_days = (max_val - date(1970, 1, 1)).days
+                results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=min_days, max_int=max_days))
+            elif dtype == pl.Datetime:
+                # Read the underlying physical integer. datetime.timestamp() treats a
+                # naive datetime as local time, which shifts the value by the UTC offset.
+                physical = col.cast(pl.Int64)
+                raw_min, raw_max = physical.min(), physical.max()
+                if raw_min is None or raw_max is None:
+                    results.append(_make_stats_tuple(idx, "null", null_count, num_rows))
+                    continue
+                unit = getattr(dtype, "time_unit", "us")
+                if unit == "ms":
+                    min_us, max_us = raw_min * 1_000, raw_max * 1_000
+                elif unit == "us":
+                    min_us, max_us = raw_min, raw_max
+                else:
+                    # Nanoseconds exceed DuckDB's microsecond resolution
+                    min_us, max_us = raw_min // 1000, -(-raw_max // 1000)
+                if not _fits_int64(min_us, max_us):
+                    continue
+                results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=min_us, max_int=max_us))
+        except Exception:
+            # Statistics are an optimization
+            logger.debug("skipping statistics for column %r", name, exc_info=True)
 
     return results
 
@@ -376,61 +393,70 @@ def _compute_statistics_arrow(table: "pa.Table", statistics: StatisticsType) -> 
         if name not in table.schema.names:
             raise ValueError(f"Column '{name}' not found. Available: {table.schema.names}")
 
-        idx = table.schema.get_field_index(name)
-        col = table.column(idx)
-        field = table.schema.field(idx)
+        try:
+            idx = table.schema.get_field_index(name)
+            col = table.column(idx)
+            field = table.schema.field(idx)
 
-        if field.type in (pa.string_view(), pa.binary_view()):
-            continue
-
-        null_count = col.null_count
-        num_rows = len(col)
-
-        if null_count == num_rows:
-            results.append(_make_stats_tuple(idx, "null", null_count, num_rows))
-            continue
-
-        if pa.types.is_floating(field.type):
-            if pc.any(pc.is_nan(col)).as_py():
+            if field.type in (pa.string_view(), pa.binary_view()):
                 continue
 
-        minmax = pc.min_max(col).as_py()
-        min_val, max_val = minmax["min"], minmax["max"]  # type: ignore
+            null_count = col.null_count
+            num_rows = len(col)
 
-        if min_val is None or max_val is None:
-            results.append(_make_stats_tuple(idx, "null", null_count, num_rows))
-            continue
-
-        if pa.types.is_integer(field.type):
-            results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=int(min_val), max_int=int(max_val)))
-        elif pa.types.is_floating(field.type):
-            results.append(_make_stats_tuple(idx, "float", null_count, num_rows, min_double=float(min_val), max_double=float(max_val)))
-        elif pa.types.is_string(field.type) or pa.types.is_large_string(field.type):
-            max_len = pc.max(pc.utf8_length(col)).as_py() or 0
-            results.append(_make_stats_tuple(idx, "str", null_count, num_rows, max_str_len=max_len, min_str=str(min_val), max_str=str(max_val)))
-        elif pa.types.is_date(field.type):
-            min_days = (min_val - date(1970, 1, 1)).days
-            max_days = (max_val - date(1970, 1, 1)).days
-            results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=min_days, max_int=max_days))
-        elif pa.types.is_timestamp(field.type):
-            # Read the raw storage integer. datetime.timestamp() treats a naive
-            # datetime as local time, which shifts the value by the UTC offset.
-            raw = pc.min_max(col.cast(pa.int64())).as_py()
-            raw_min, raw_max = raw["min"], raw["max"]  # type: ignore
-            if raw_min is None or raw_max is None:
+            if null_count == num_rows:
                 results.append(_make_stats_tuple(idx, "null", null_count, num_rows))
                 continue
-            unit = field.type.unit
-            if unit == "s":
-                min_us, max_us = raw_min * 1_000_000, raw_max * 1_000_000
-            elif unit == "ms":
-                min_us, max_us = raw_min * 1_000, raw_max * 1_000
-            elif unit == "us":
-                min_us, max_us = raw_min, raw_max
-            else:
-                # Nanoseconds exceed DuckDB's microsecond resolution; widen the
-                # bounds outward so the range never excludes a real value.
-                min_us, max_us = raw_min // 1000, -(-raw_max // 1000)
-            results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=min_us, max_int=max_us))
+
+            if pa.types.is_floating(field.type):
+                if pc.any(pc.is_nan(col)).as_py():
+                    continue
+
+            minmax = pc.min_max(col).as_py()
+            min_val, max_val = minmax["min"], minmax["max"]  # type: ignore
+
+            if min_val is None or max_val is None:
+                results.append(_make_stats_tuple(idx, "null", null_count, num_rows))
+                continue
+
+            if pa.types.is_integer(field.type):
+                min_i, max_i = int(min_val), int(max_val)
+                if not _fits_int64(min_i, max_i):
+                    continue
+                results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=min_i, max_int=max_i))
+            elif pa.types.is_floating(field.type):
+                results.append(_make_stats_tuple(idx, "float", null_count, num_rows, min_double=float(min_val), max_double=float(max_val)))
+            elif pa.types.is_string(field.type) or pa.types.is_large_string(field.type):
+                max_len = pc.max(pc.utf8_length(col)).as_py() or 0
+                results.append(_make_stats_tuple(idx, "str", null_count, num_rows, max_str_len=max_len, min_str=str(min_val), max_str=str(max_val)))
+            elif pa.types.is_date(field.type):
+                min_days = (min_val - date(1970, 1, 1)).days
+                max_days = (max_val - date(1970, 1, 1)).days
+                results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=min_days, max_int=max_days))
+            elif pa.types.is_timestamp(field.type):
+                # Read the raw storage integer. datetime.timestamp() treats a naive
+                # datetime as local time, which shifts the value by the UTC offset.
+                raw = pc.min_max(col.cast(pa.int64())).as_py()
+                raw_min, raw_max = raw["min"], raw["max"]  # type: ignore
+                if raw_min is None or raw_max is None:
+                    results.append(_make_stats_tuple(idx, "null", null_count, num_rows))
+                    continue
+                unit = field.type.unit
+                if unit == "s":
+                    min_us, max_us = raw_min * 1_000_000, raw_max * 1_000_000
+                elif unit == "ms":
+                    min_us, max_us = raw_min * 1_000, raw_max * 1_000
+                elif unit == "us":
+                    min_us, max_us = raw_min, raw_max
+                else:
+                    # Nanoseconds exceed DuckDB's microsecond resolution
+                    min_us, max_us = raw_min // 1000, -(-raw_max // 1000)
+                if not _fits_int64(min_us, max_us):
+                    continue
+                results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=min_us, max_int=max_us))
+        except Exception:
+            # Statistics are an optimization, so a column that cannot be summarized
+            # is left out rather than failing the registration
+            logger.debug("skipping statistics for column %r", name, exc_info=True)
 
     return results

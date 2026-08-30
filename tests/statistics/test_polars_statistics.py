@@ -37,3 +37,23 @@ class TestPolarsDatetimeStatistics:
         assert type_tag == "int"
         assert min_int == 1577836800000000
         assert max_int == 1577923200000000
+
+
+def test_uint64_above_int64_max_has_no_stats():
+    from bareduckdb.dataset.backend import _compute_statistics_polars
+
+    df = pl.DataFrame({'x': [10, 18446744073709551615]}, schema={'x': pl.UInt64})
+
+    assert _compute_statistics_polars(df, ['x']) == []
+
+
+def test_register_uint64_above_int64_max():
+    import bareduckdb
+
+    big = 18446744073709551615
+    df = pl.DataFrame({'x': [10, big]}, schema={'x': pl.UInt64})
+    conn = bareduckdb.connect()
+
+    conn.register('test', df, statistics=True)
+
+    assert conn.execute('SELECT max(x) AS m FROM test').arrow_table()['m'][0].as_py() == big

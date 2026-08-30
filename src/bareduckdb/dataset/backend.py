@@ -337,8 +337,21 @@ def _compute_statistics_polars(df: Any, statistics: StatisticsType) -> list[tupl
             max_days = (max_val - date(1970, 1, 1)).days
             results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=min_days, max_int=max_days))
         elif dtype == pl.Datetime:
-            min_us = int(min_val.timestamp() * 1_000_000)
-            max_us = int(max_val.timestamp() * 1_000_000)
+            # Read the underlying physical integer. datetime.timestamp() treats a
+            # naive datetime as local time, which shifts the value by the UTC offset.
+            physical = col.cast(pl.Int64)
+            raw_min, raw_max = physical.min(), physical.max()
+            if raw_min is None or raw_max is None:
+                results.append(_make_stats_tuple(idx, "null", null_count, num_rows))
+                continue
+            unit = getattr(dtype, "time_unit", "us")
+            if unit == "ms":
+                min_us, max_us = raw_min * 1_000, raw_max * 1_000
+            elif unit == "us":
+                min_us, max_us = raw_min, raw_max
+            else:
+                # Nanoseconds exceed DuckDB's microsecond resolution
+                min_us, max_us = raw_min // 1000, -(-raw_max // 1000)
             results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=min_us, max_int=max_us))
 
     return results
@@ -400,8 +413,24 @@ def _compute_statistics_arrow(table: "pa.Table", statistics: StatisticsType) -> 
             max_days = (max_val - date(1970, 1, 1)).days
             results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=min_days, max_int=max_days))
         elif pa.types.is_timestamp(field.type):
-            min_us = int(min_val.timestamp() * 1_000_000)
-            max_us = int(max_val.timestamp() * 1_000_000)
+            # Read the raw storage integer. datetime.timestamp() treats a naive
+            # datetime as local time, which shifts the value by the UTC offset.
+            raw = pc.min_max(col.cast(pa.int64())).as_py()
+            raw_min, raw_max = raw["min"], raw["max"]  # type: ignore
+            if raw_min is None or raw_max is None:
+                results.append(_make_stats_tuple(idx, "null", null_count, num_rows))
+                continue
+            unit = field.type.unit
+            if unit == "s":
+                min_us, max_us = raw_min * 1_000_000, raw_max * 1_000_000
+            elif unit == "ms":
+                min_us, max_us = raw_min * 1_000, raw_max * 1_000
+            elif unit == "us":
+                min_us, max_us = raw_min, raw_max
+            else:
+                # Nanoseconds exceed DuckDB's microsecond resolution; widen the
+                # bounds outward so the range never excludes a real value.
+                min_us, max_us = raw_min // 1000, -(-raw_max // 1000)
             results.append(_make_stats_tuple(idx, "int", null_count, num_rows, min_int=min_us, max_int=max_us))
 
     return results

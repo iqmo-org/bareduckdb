@@ -65,9 +65,25 @@ class TestStatisticsComputation:
         assert len(stats) == 1
         idx, type_tag, _, _, min_int, max_int, _, _, _, _, _ = stats[0]
         assert idx == 0
-        assert type_tag == "int" 
-        assert min_int == int(dt1.timestamp() * 1_000_000)
-        assert max_int == int(dt2.timestamp() * 1_000_000)
+        assert type_tag == "int"
+        # DuckDB TIMESTAMP is naive microseconds
+        assert min_int == 1577836800000000
+        assert max_int == 1609459199000000
+
+    @pytest.mark.parametrize("unit,scale", [("s", 1_000_000), ("ms", 1_000), ("us", 1)])
+    def test_timestamp_stats_units(self, unit, scale):
+        from datetime import datetime
+        table = pa.table({'x': pa.array([datetime(2020, 1, 1), datetime(2020, 1, 2)], type=pa.timestamp(unit))})
+        _, _, _, _, min_int, max_int, _, _, _, _, _ = _compute_statistics_arrow(table, ['x'])[0]
+        assert min_int == 1577836800000000
+        assert max_int == 1577923200000000
+
+    def test_timestamp_stats_tz_aware(self):
+        from datetime import datetime, timezone
+        table = pa.table({'x': pa.array([datetime(2020, 1, 1, tzinfo=timezone.utc)], type=pa.timestamp('us', tz='UTC'))})
+        _, _, _, _, min_int, max_int, _, _, _, _, _ = _compute_statistics_arrow(table, ['x'])[0]
+        assert min_int == 1577836800000000
+        assert max_int == 1577836800000000
 
 
 class TestNullHandling:

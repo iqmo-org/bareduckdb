@@ -16,7 +16,9 @@ jobs:
         python: [cp312, cp314t, cp315t]
         platform:
           - { os: ubuntu-latest,     arch: x86_64,     cibw_system: manylinux }
+          - { os: ubuntu-24.04-arm,  arch: aarch64,    cibw_system: manylinux }
           - { os: ubuntu-latest,     arch: x86_64,     cibw_system: musllinux }
+          - { os: ubuntu-24.04-arm,  arch: aarch64,    cibw_system: musllinux }
           - { os: macos-latest,      arch: arm64,      cibw_system: macosx }
           - { os: windows-latest,    arch: AMD64,      cibw_system: win }
           # - { os: macos-13,          arch: x86_64,     cibw_system: macosx }

@@ -1,13 +1,20 @@
 """
 Python result wrapper
 
-The Result object holds a query and connection. Execution is deferred until
-you call one of the three consumption methods:
-- arrow_table() -> Uses ARROW mode (PhysicalArrowCollector)
-- arrow_reader() -> Uses STREAM mode (streaming chunks)
-- __arrow_c_stream__() -> Uses ARROW_NOGIL mode (pure capsule)
+Result wraps a result that has already been produced. It holds no query and no
+connection, so it cannot re-execute and cannot change how the data was fetched.
 
-Each call re-executes the query (no caching).
+The fetch mode is chosen earlier, by the output_type passed to execute() or set
+on the connection:
+
+- output_type="arrow_table"   -> a materialized pa.Table
+- output_type="arrow_reader"  -> a streaming pa.RecordBatchReader
+- output_type="arrow_capsule" -> an Arrow C stream capsule
+
+Consumption methods therefore convert what is already there; they do not select
+a mode. arrow_table() can materialize a reader, but arrow_reader() cannot stream
+a table, and raises rather than returning a reader over memory that is already
+fully populated.
 """
 
 from __future__ import annotations
@@ -193,18 +200,21 @@ class Result:
             return self._table  # type: ignore
 
     def arrow_reader(self, batch_size: int | None = None) -> pa.RecordBatchReader:
+        """Return the streaming reader, or raise if the result was materialized."""
         with self._result_lock:
-            if self._table is not None:
-                return self._table.to_reader(max_chunksize=batch_size)
-            elif self._reader is not None:
+            if self._reader is not None:
                 self._read = True
                 _reader = self._reader
                 self._reader = None
 
                 return _reader  #  type: ignore # TODO: Handle Capsule scenario
 
-            else:
-                raise RuntimeError("Reader already consumed")
+            if self._table is not None:
+                raise RuntimeError(
+                    """arrow_reader() requires output_type='arrow_reader'. This result was fetched in a materializing mode, so the rows are already in memory and a reader over them would stream nothing. Pass output_type='arrow_reader' to execute(), or set it on the connection."""
+                )
+
+            raise RuntimeError("Reader already consumed")
 
     def __arrow_c_stream__(self, requested_schema=None):  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
         with self._result_lock:

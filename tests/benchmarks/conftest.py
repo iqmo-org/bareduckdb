@@ -226,11 +226,14 @@ def registered_tables(conn, request):
 
     for table_name, filepath in tables_to_register.items():
         data = load_data_by_mode(filepath, mode)
-        # Only bareduckdb supports statistics parameter
-        if hasattr(conn, '__class__') and 'bareduckdb' in conn.__class__.__module__:
-            conn.register(table_name, data, statistics=statistics_param)
-        else:
-            conn.register(table_name, data)
+        try:
+            # Only bareduckdb supports statistics parameter
+            if hasattr(conn, '__class__') and 'bareduckdb' in conn.__class__.__module__:
+                conn.register(table_name, data, statistics=statistics_param)
+            else:
+                conn.register(table_name, data)
+        except NotImplementedError as e:
+            pytest.xfail(f"registration mode {mode!r} needs register(): {e}")
 
     return tables_to_register
 

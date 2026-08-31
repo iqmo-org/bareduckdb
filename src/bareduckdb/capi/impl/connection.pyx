@@ -134,8 +134,8 @@ _UNAVAILABLE_MESSAGE = (
 )
 
 _TABLE_FUNCTION_MESSAGE = (
-    "this needs the v2 table-function surface, which C API v2 does not expose "
-    "yet; see plans/capi_v2/V2_TARGET_AND_API_NEEDS.md (ask 4)"
+    "this needs a table-function surface, which DuckDB's C API v2 does not "
+    "expose yet"
 )
 
 

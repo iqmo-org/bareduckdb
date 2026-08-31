@@ -17,7 +17,13 @@ else:
 
     _duckdb_lib_path = resolve_duckdb_lib()
     # Preload by absolute path so extension modules find it already loaded, not via RPATH.
-    ctypes.CDLL(str(_duckdb_lib_path), mode=os.RTLD_GLOBAL)
+    # RTLD_LOCAL (the default): the loader matches an already-loaded DT_NEEDED dependency
+    # by realpath/inode regardless of local/global scope, so our own extension modules still
+    # resolve against this library. RTLD_GLOBAL would additionally export every DuckDB C++
+    # symbol into the process-wide global scope, where it can interpose symbols of the same
+    # name in an unrelated, ABI-incompatible libduckdb (e.g. the official duckdb wheel's
+    # statically-linked copy), causing a crash.
+    ctypes.CDLL(str(_duckdb_lib_path), mode=os.RTLD_LOCAL)
 
 # For Ibis compatibility
 from . import functional

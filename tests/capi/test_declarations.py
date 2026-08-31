@@ -12,7 +12,6 @@ from bareduckdb._duckdb_runtime import resolve_duckdb_lib
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INCLUDE_DIR = REPO_ROOT / "src" / "bareduckdb" / "capi" / "include"
 VENDORED_HEADER = INCLUDE_DIR / "duckdb_v2.h"
-
 VSWHERE = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
 VC_TOOLS_REQUIREMENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
 

@@ -51,7 +51,7 @@ def test_oracle_agrees_on_a_simple_table(conn):
 
     sql = "SELECT i, i * 2 AS d, i::VARCHAR AS s FROM range(5000) t(i)"
     ours = table(conn, sql)
-    theirs = duckdb.sql(sql).arrow()
+    theirs = duckdb.sql(sql).to_arrow_table()
 
     assert ours.num_rows == theirs.num_rows
     assert ours.column_names == theirs.column_names

@@ -14,7 +14,11 @@ MODULES = [
 ]
 
 
-@pytest.mark.skipif(sys._is_gil_enabled(), reason="GIL-enabled interpreter")
+# sys._is_gil_enabled exists only on 3.13+; older interpreters always hold the GIL.
+GIL_ENABLED = getattr(sys, "_is_gil_enabled", lambda: True)()
+
+
+@pytest.mark.skipif(GIL_ENABLED, reason="GIL-enabled interpreter")
 @pytest.mark.parametrize("module", MODULES)
 def test_module_does_not_reenable_gil(module: str) -> None:
     """Importing the module in a fresh interpreter leaves the GIL disabled."""

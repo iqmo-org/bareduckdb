@@ -37,10 +37,11 @@ class Connection(ConnectionAPI):
             output_type: Default output format for queries
             config: {'threads': '4', 'memory_limit': '1GB'}
             read_only: default False
-            default_statistics: Default statistics mode for register() calls:
-                - None: No statistics (default)
-                - "numeric": Compute statistics for numeric columns only (fast)
+            default_statistics: Default statistics mode applied when register() or
+                execute(data=...) is called without an explicit statistics argument:
+                - "numeric": Compute statistics for numeric columns only (fast, default)
                 - True: Compute statistics for all columns
+                - None: No statistics
             udtf_functions: Dict of UDTF name -> function for template expansion
             enable_replacement_scan: Enable automatic discovery from scope
             _from_impl: Internal parameter for creating cursor with shared database
@@ -111,15 +112,11 @@ class Connection(ConnectionAPI):
         Args:
             name: Table name to register
             data: Data source (PyArrow Table, Polars DataFrame, Pandas DataFrame)
-            statistics: Statistics specification for query optimization
+            statistics: Statistics specification for query optimization. When None,
+                the connection's default_statistics is used.
             replace: If True (default), replace existing registration with same name
         """
-        from bareduckdb.dataset.backend import register_table
-
-        if register_table(self, name, data, statistics=statistics, replace=replace):
-            return True
-
-        self._register_capsule(name, data, replace=replace)
+        self._register_arrow(name, data, statistics=statistics, replace=replace)  # type: ignore
         return True
 
     def unregister(self, name: str) -> None:

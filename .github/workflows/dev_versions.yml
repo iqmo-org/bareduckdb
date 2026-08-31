@@ -105,7 +105,8 @@ jobs:
         # TODO: 3.14t: no polars support yet for free threading
         # TODO: 3.15: pola-rs/polars#28347
         if: matrix.python-version != '3.14t' && !startsWith(matrix.python-version, '3.15')
-        run: uv pip install polars
+        run: |
+          uv pip install --only-binary :all: polars
 
       - name: Run core tests 1
         shell: bash

@@ -167,6 +167,7 @@ exclude-newer = "2 weeks"
 exclude-newer-package = { cython = false, pyarrow = false, pandas = false, ipython = false, numpy = false, ipykernel = false }  # TODO: Remove after 3.15 release
 
 prerelease = "if-necessary"
+no-build-package = ["polars", "polars-runtime-32", "polars-runtime-64"]
 
 [[tool.uv.index]]
 name = "scientific-python-nightly"

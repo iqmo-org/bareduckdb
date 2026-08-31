@@ -2,6 +2,7 @@
 
 #include <Python.h>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -314,6 +315,19 @@ struct HolderFactory {
         return factory->num_rows;
     }
 
+    // bounds arrive in microseconds
+    static int64_t FloorDiv(int64_t value, int64_t divisor) {
+        int64_t quotient = value / divisor;
+        if (value % divisor != 0 && value < 0) quotient--;
+        return quotient;
+    }
+
+    static int64_t CeilDiv(int64_t value, int64_t divisor) {
+        int64_t quotient = value / divisor;
+        if (value % divisor != 0 && value > 0) quotient++;
+        return quotient;
+    }
+
     static unique_ptr<duckdb::BaseStatistics> ComputeColumnStatistics(
         uintptr_t factory_ptr,
         idx_t column_index,
@@ -353,6 +367,19 @@ struct HolderFactory {
             } else if (type_id == LogicalTypeId::TIMESTAMP || type_id == LogicalTypeId::TIMESTAMP_TZ) {
                 min_val = Value::TIMESTAMP(duckdb::timestamp_t(ps.min_int));
                 max_val = Value::TIMESTAMP(duckdb::timestamp_t(ps.max_int));
+            } else if (type_id == LogicalTypeId::TIMESTAMP_SEC) {
+                min_val = Value::TIMESTAMPSEC(duckdb::timestamp_sec_t(FloorDiv(ps.min_int, 1000000)));
+                max_val = Value::TIMESTAMPSEC(duckdb::timestamp_sec_t(CeilDiv(ps.max_int, 1000000)));
+            } else if (type_id == LogicalTypeId::TIMESTAMP_MS) {
+                min_val = Value::TIMESTAMPMS(duckdb::timestamp_ms_t(FloorDiv(ps.min_int, 1000)));
+                max_val = Value::TIMESTAMPMS(duckdb::timestamp_ms_t(CeilDiv(ps.max_int, 1000)));
+            } else if (type_id == LogicalTypeId::TIMESTAMP_NS) {
+                if (ps.min_int < std::numeric_limits<int64_t>::min() / 1000 ||
+                    ps.max_int > std::numeric_limits<int64_t>::max() / 1000) {
+                    return nullptr;
+                }
+                min_val = Value::TIMESTAMPNS(duckdb::timestamp_ns_t(ps.min_int * 1000));
+                max_val = Value::TIMESTAMPNS(duckdb::timestamp_ns_t(ps.max_int * 1000));
             } else if (ps.type_tag == 'f') {
                 min_val = Value::DOUBLE(ps.min_double).DefaultCastAs(column_type);
                 max_val = Value::DOUBLE(ps.max_double).DefaultCastAs(column_type);

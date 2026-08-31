@@ -125,20 +125,21 @@ class ConnectionBase:
         name: str,
         data: PyArrowCapsule | pa.Table | ds.Dataset | ds.Scanner | pd.DataFrame | pl.DataFrame | pl.LazyFrame | pa.RecordBatchReader,
         statistics: "list[str] | Literal['numeric'] | str | bool | None" = None,
+        replace: bool = True,
     ) -> None:
         """Register data using DataHolder"""
         effective_statistics = statistics if statistics is not None else self._default_statistics
 
         from ..dataset import register_table
 
-        is_registered = register_table(self, name, data, statistics=effective_statistics)
+        is_registered = register_table(self, name, data, statistics=effective_statistics, replace=replace)
         if is_registered:
             logger.debug("Registered table '%s' via DataHolder", name)
             return
 
         # Fallback to capsule
         logger.debug("DataHolder unavailable for %s, using capsule registration", type(data).__name__)
-        self._register_capsule(name, data)
+        self._register_capsule(name, data, replace=replace)
 
     def _register_capsule(self, name: str, capsule: object, replace: bool = True) -> None:
         """

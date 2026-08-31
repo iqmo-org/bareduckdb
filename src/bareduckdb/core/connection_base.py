@@ -9,7 +9,7 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
-from .impl.connection import ConnectionImpl  # type: ignore[import-untyped]
+from ..capi.impl.connection import CApiConnectionImpl as ConnectionImpl  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:
     from typing import Any, Literal, Mapping, Optional, Sequence  # type: ignore[attr-defined]
@@ -127,19 +127,10 @@ class ConnectionBase:
         statistics: "list[str] | Literal['numeric'] | str | bool | None" = None,
         replace: bool = True,
     ) -> None:
-        """Register data using DataHolder"""
-        effective_statistics = statistics if statistics is not None else self._default_statistics
-
-        from ..dataset import register_table
-
-        is_registered = register_table(self, name, data, statistics=effective_statistics, replace=replace)
-        if is_registered:
-            logger.debug("Registered table '%s' via DataHolder", name)
-            return
-
-        # Fallback to capsule
-        logger.debug("DataHolder unavailable for %s, using capsule registration", type(data).__name__)
-        self._register_capsule(name, data, replace=replace)
+        """Register data; not yet supported in C API v2."""
+        raise NotImplementedError(
+            "register(): this needs the v2 table-function surface, which C API v2 does not expose yet; see plans/capi_v2/V2_TARGET_AND_API_NEEDS.md (ask 4)"
+        )
 
     def _register_capsule(self, name: str, capsule: object, replace: bool = True) -> None:
         """
@@ -264,14 +255,14 @@ class ConnectionBase:
         """
         Unregister a previously registered table.
 
+        register() is not yet supported in C API v2, so nothing can be registered; this
+        only clears local bookkeeping and does not call into the backend.
+
         Args:
             name: Table name to unregister
         """
         logger.debug("Unregistering table: %s", name)
         with self._DUCKDB_INIT_LOCK:
-            self._impl.unregister(name)
-
-            # Clean up capsule registrations
             if name in self._registered_objects:
                 del self._registered_objects[name]
 

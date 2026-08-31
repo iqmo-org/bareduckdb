@@ -5,9 +5,7 @@ description = "Minimal Cython-based DuckDB Bindings"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
-dependencies = [
-    "typing-extensions>=4.15.0",
-]
+dependencies = []
 authors = [{name = "Paul T", email = "paul@iqmo.com"}]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -52,6 +50,9 @@ test = [
     "pyarrow>=22.0; python_version < '3.15'",
     "pyarrow>=26.0.0.dev0; python_version >= '3.15'",
     "pandas>=3.0.0rc0",
+    # Parity oracle only: cross-checks capi/v2 Arrow output against the official
+    # client. No wheels exist above cp314, so parity tests skip on 3.15+.
+    "duckdb>=1.5.5; python_version < '3.15'",
 ]
 
 [tool.pyright]
@@ -60,27 +61,70 @@ reportGeneralTypeIssues = false
 reportPrivateImportUsage = false
 reportAttributeAccessIssue = false
 reportMissingTypeStubs = false
-exclude = ["benchmark/**", "setup.py"]
+exclude = ["benchmark/**"]
 venvPath = "."
 venv = ".venv"
 ignore = ["tests/**"]
+stubPath = "typings"
 
 [build-system]
 requires = [
-    "setuptools>=42",
+    "scikit-build-core>=1.0",
+    "cython-cmake>=0.3",
+    "Cython>=3.1",
     "setuptools-scm>=8",
-    "wheel",
-    "Cython>=3.0",
 ]
-build-backend = "setuptools.build_meta"
+build-backend = "scikit_build_core.build"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-packages = ["bareduckdb", "bareduckdb.core", "bareduckdb.core.impl", "bareduckdb.aio", "bareduckdb.compat", "bareduckdb._libs", "bareduckdb.functional", "bareduckdb.dataset", "bareduckdb.data_sources", "bareduckdb.common", "bareduckdb.common.impl"]
+[tool.scikit-build]
+minimum-version = "1.0"
+build-dir = "build/{wheel_tag}"
+cmake.version = ">=3.21"
+cmake.build-type = "Release"
+cmake.source-dir = "."
 
-[tool.setuptools.package-data]
-# libduckdb.{so,dylib} on Linux/macOS; duckdb.dll on Windows
-bareduckdb = ["_libs/libduckdb.*", "_libs/duckdb.dll"]
+wheel.packages = ["src/bareduckdb"]
+wheel.py-api = "cp312"
+wheel.license-files = ["LICENSE"]
+wheel.exclude = [
+    "bareduckdb/capi/impl/*.pyx",
+    "bareduckdb/capi/impl/*.pxd",
+    "bareduckdb/capi/impl/*.c",
+    "bareduckdb/capi/impl/*.h",
+]
+
+sdist.include = ["src/bareduckdb/_version.py"]
+sdist.exclude = [
+    "src/bareduckdb/_libs/*",
+    "capi20/",
+    "plans/",
+    "external/",
+    "benchmark/",
+    "benchmarks/",
+    "tests/benchmarks/",
+    ".superpowers/",
+    "*.c",
+    "*.pyd",
+    "*.so",
+    "*.dylib",
+]
+
+build.verbose = true
+logging.level = "INFO"
+
+# Thin wheel: the DuckDB runtime library is NOT bundled. CMake still fetches it
+# at build time (headers and import library are needed to compile) and copies it
+# into src/bareduckdb/_libs/ for a dev checkout, but that directory is untracked
+# and matches the project's *.dll/*.so/*.dylib .gitignore rules, and
+# scikit-build-core's default wheel.packages walk reads .gitignore, so it is
+# naturally excluded from the wheel with no wheel.exclude entry needed.
+# bareduckdb._duckdb_runtime resolves the library at import time instead:
+# an env var, this same in-tree _libs/ directory (dev checkouts), a user cache
+# directory, or a download into that cache on first use. See that module and
+# README.md's C API v2 TODO section for the optional eager-install extra.
+
+[[tool.dynamic-metadata]]
+provider = "scikit_build_core.metadata.setuptools_scm"
 
 [tool.setuptools_scm]
 version_file = "src/bareduckdb/_version.py"
@@ -97,14 +141,22 @@ test-requires = ["uv"]
 
 [tool.cibuildwheel.linux]
 # Don't bundle PyArrow libraries - loaded dynamically.
-# Wildcards, so this keeps working as the pyarrow soname version moves.
-repair-wheel-command = "auditwheel repair --exclude 'libarrow.so.*' --exclude 'libarrow_python.so.*' -w {dest_dir} {wheel}"
+# Don't bundle libduckdb - thin wheel, resolved/downloaded at runtime by
+# bareduckdb._duckdb_runtime instead. Without this exclude, auditwheel repair
+# would vendor a copy of the build machine's libduckdb.so straight back into the
+# wheel, defeating the point.
+# Wildcards, so this keeps working as the pyarrow/duckdb soname versions move.
+repair-wheel-command = "auditwheel repair --exclude 'libarrow.so.*' --exclude 'libarrow_python.so.*' --exclude 'libduckdb.so*' -w {dest_dir} {wheel}"
 
 [tool.cibuildwheel.macos]
-repair-wheel-command = "delocate-wheel --require-archs {delocate_archs} --ignore-missing-dependencies -w {dest_dir} -v {wheel}"
+# --exclude keeps delocate from bundling the build machine's libduckdb.dylib into
+# the wheel; see the linux section above for why.
+repair-wheel-command = "delocate-wheel --require-archs {delocate_archs} --ignore-missing-dependencies --exclude libduckdb.dylib -w {dest_dir} -v {wheel}"
 
 [tool.cibuildwheel.windows]
-# skip delvewheel bc duckdb.dll ships in bareduckdb/_libs and is loaded via os.add_dll_directory
+# delvewheel is unneeded: duckdb.dll is resolved/downloaded at runtime by
+# bareduckdb._duckdb_runtime rather than bundled, and there are no other
+# external DLL dependencies to vendor.
 repair-wheel-command = ""
 
 [[tool.cibuildwheel.overrides]]
@@ -133,7 +185,6 @@ exclude = [
   "dev_*.py",
   "test_*.py",
   "*_repro.py",
-  "setup.py",
   "notebooks",
   "external"
 ]
@@ -151,6 +202,10 @@ ignore = [
   "S608",
   "C901"
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"src/bareduckdb/install_duckdb.py" = ["T201"]
+"tools/fetch_duckdb.py" = ["T201"]
 
 [tool.uv]
 default-groups = ["dev"]
@@ -200,6 +255,7 @@ dev = [
     "pytest-timeout>=2.3.1",
     "pytest-xdist>=3.8.0",
     "pytest-repeat>=0.9.3",
+    "duckdb>=1.5.5;python_version < '3.15'",  # parity oracle only, no wheels above cp314
     "vortex-data;python_version < '3.14' and sys_platform != 'win32'", # no free-threaded, no windows wheels
     "tabulate",
     "ruff>=0.14.10",
@@ -212,9 +268,6 @@ downstream = [
     "magic-duckdb>=0.2.3",
     "sqlalchemy>=2.0.44",
 ]
-
-[tool.uv.extra-build-dependencies]
-bareduckdb = ["Cython"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

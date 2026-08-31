@@ -60,9 +60,6 @@ wheels = [
 [[package]]
 name = "bareduckdb"
 source = { editable = "." }
-dependencies = [
-    { name = "typing-extensions" },
-]
 
 [package.optional-dependencies]
 arrow = [
@@ -70,6 +67,7 @@ arrow = [
     { name = "pyarrow", version = "26.0.0.dev164", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
 ]
 test = [
+    { name = "duckdb", marker = "python_full_version < '3.15'" },
     { name = "filelock" },
     { name = "pandas", version = "3.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
     { name = "pandas", version = "3.1.0.dev0+1663.g6eba694f5d", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
@@ -90,6 +88,7 @@ test = [
 [package.dev-dependencies]
 dev = [
     { name = "coverage" },
+    { name = "duckdb", marker = "python_full_version < '3.15'" },
     { name = "ipykernel", marker = "python_full_version < '3.14'" },
     { name = "pandas", version = "3.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
     { name = "pandas", version = "3.1.0.dev0+1663.g6eba694f5d", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
@@ -122,6 +121,7 @@ downstream = [
 
 [package.metadata]
 requires-dist = [
+    { name = "duckdb", marker = "python_full_version < '3.15' and extra == 'test'", specifier = ">=1.5.5" },
     { name = "filelock", marker = "extra == 'test'", specifier = ">=3.16.0" },
     { name = "pandas", marker = "python_full_version >= '3.15' and extra == 'test'", specifier = ">=3.0.0rc0", index = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" },
     { name = "pandas", marker = "python_full_version < '3.15' and extra == 'test'", specifier = ">=3.0.0rc0" },
@@ -139,13 +139,13 @@ requires-dist = [
     { name = "pytest-run-parallel", marker = "extra == 'test'", specifier = ">=0.2.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.3.1" },
     { name = "pytest-xdist", marker = "extra == 'test'", specifier = ">=3.8.0" },
-    { name = "typing-extensions", specifier = ">=4.15.0" },
 ]
 provides-extras = ["arrow", "test"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "coverage", specifier = ">=7.11.0" },
+    { name = "duckdb", marker = "python_full_version < '3.15'", specifier = ">=1.5.5" },
     { name = "ipykernel", marker = "python_full_version < '3.14'", specifier = ">=7.0.1" },
     { name = "pandas", marker = "python_full_version < '3.15'", specifier = ">=3.0.0rc0" },
     { name = "pandas", marker = "python_full_version >= '3.15'", specifier = ">=3.0.0rc0", index = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" },

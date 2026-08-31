@@ -63,24 +63,6 @@ def test_export_all_three_modes_agree():
     conn.close()
 
 
-def test_refeed_materialized():
-    conn = bareduckdb.connect()
-    original = conn.execute(QUERY, output_type="arrow_table").arrow_table()
-    conn.register("refed_mat", original)
-    out = conn.execute("SELECT * FROM refed_mat", output_type="arrow_table").arrow_table()
-    assert out.to_pylist() == original.to_pylist() == EXPECTED
-    conn.close()
-
-
-def test_refeed_streaming():
-    conn = bareduckdb.connect()
-    reader = conn.execute(QUERY, output_type="arrow_reader").arrow_reader()
-    conn.register("refed_stream", pa.table(reader))
-    out = conn.execute("SELECT * FROM refed_stream", output_type="arrow_table").arrow_table()
-    assert out.to_pylist() == EXPECTED
-    conn.close()
-
-
 @pytest.mark.parametrize("sql, expected", [("SELECT 'abc'::BLOB AS c", b"abc"), ("SELECT 'hi' AS c", "hi")])
 def test_df_view_types_are_usable(sql, expected):
     pytest.importorskip("pandas")

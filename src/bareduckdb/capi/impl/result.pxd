@@ -1,0 +1,42 @@
+# cython: language_level=3
+"""C-level surface of the v2 result object, for the Arrow layer to cimport."""
+
+from bareduckdb.capi.impl.connection cimport CApiConnectionImpl
+from bareduckdb.capi.impl.duckdb_v2 cimport (
+    duckdb_v2_data_chunk_handle,
+    duckdb_v2_error_info_handle,
+    duckdb_v2_error_t,
+    duckdb_v2_result_handle,
+    duckdb_v2_result_step_status_t,
+    duckdb_v2_schema_handle,
+)
+
+
+cdef duckdb_v2_error_t step_result_chunk(
+    duckdb_v2_result_handle result,
+    bint *finished,
+    duckdb_v2_data_chunk_handle *out_chunk,
+    duckdb_v2_result_step_status_t *out_status,
+    duckdb_v2_error_info_handle *out_err,
+) noexcept nogil
+
+
+cdef class CApiResult:
+    # Typed reference to the owning connection, so the raw handle below cannot outlive it.
+    cdef CApiConnectionImpl _conn_obj
+    cdef duckdb_v2_result_handle _result
+    cdef duckdb_v2_schema_handle _schema
+    # long, not bint: the transition is a compare-and-swap (v2 results are single-consumer).
+    cdef long _destroyed
+    cdef long _consumed
+    cdef bint _finished
+    cdef unsigned long long _batch_rows
+    cdef list _column_names
+    cdef list _column_decoders
+
+    cdef void _bind_owned(self, CApiConnectionImpl conn_obj, duckdb_v2_result_handle result) except *
+    cdef duckdb_v2_data_chunk_handle _next_chunk(self) except? NULL
+    cdef void _claim_for_export(self, str what) except *
+    cdef duckdb_v2_result_handle _release_result_ownership(self) noexcept
+    cdef duckdb_v2_schema_handle _release_schema_ownership(self) noexcept
+    cdef void _destroy(self) noexcept

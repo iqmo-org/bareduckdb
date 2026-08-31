@@ -3,63 +3,71 @@ from __future__ import annotations
 import logging
 import os
 
-if os.name == "nt":
-    _libs_dir = os.path.join(os.path.dirname(__file__), "_libs")
-    if os.path.isdir(_libs_dir):
-        try:
-            os.add_dll_directory(_libs_dir)
-        except OSError:
-            pass
+# Locate/download the DuckDB shared library and load it before any extension imports it.
+from ._duckdb_runtime import resolve_duckdb_lib
 
-# Import functional module for Ibis compatibility
+if os.name == "nt":
+    _duckdb_lib_dir = resolve_duckdb_lib().parent
+    try:
+        os.add_dll_directory(str(_duckdb_lib_dir))
+    except OSError:
+        logging.getLogger(__name__).exception("os.add_dll_directory(%r) failed", str(_duckdb_lib_dir))
+else:
+    import ctypes
+
+    _duckdb_lib_path = resolve_duckdb_lib()
+    # Preload by absolute path so extension modules find it already loaded, not via RPATH.
+    ctypes.CDLL(str(_duckdb_lib_path), mode=os.RTLD_GLOBAL)
+
+# For Ibis compatibility
 from . import functional
 from ._utils import pyarrow_available
 from ._version import __version__
-
-# Import DuckDB version (added at build time)
-try:
-    from ._version import __duckdb_version__
-except ImportError:
-    __duckdb_version__ = "unknown"
-
 from .compat.connection_compat import Connection
 from .core.connection_base import ConnectionBase
 
 logger = logging.getLogger(__name__)
 
 
-def _detect_features() -> dict[str, bool]:
-    from importlib.util import find_spec
+def __getattr__(name: str):
+    """Resolve __duckdb_version__ lazily via PEP 562, queried at first access."""
+    if name == "__duckdb_version__":
+        try:
+            from .capi.impl._probe import library_version  # pyright: ignore[reportMissingImports]
 
+            value = library_version()
+        except Exception:
+            logger.exception("Unable to determine DuckDB library version")
+            value = "unknown"
+        globals()["__duckdb_version__"] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _detect_features() -> dict[str, bool | str]:
     return {
-        "holder_scan": find_spec("bareduckdb.common.impl.holder_scan") is not None,
-        "sql_parsing": os.name != "nt",
+        "backend": "capi",
+        "holder_scan": False,
+        "sql_parsing": False,
     }
 
 
-# Experimental features present in this build (holder_scan: statistics injection + filter pushdown)
-features: dict[str, bool] = _detect_features()
+features: dict[str, bool | str] = _detect_features()
 
-# Configure logging based on environment variable
 _log_level = os.environ.get("BAREDUCKDB_LOG_LEVEL", None)
 
 if _log_level:
     logging.basicConfig(level=getattr(logging, _log_level.upper(), logging.WARNING), format="[%(name)s] %(levelname)s: %(message)s")
 
 
-# PEP 249 / DB-API 2.0 MODULE ATTRIBUTES
-# Note: This is a work-in-progress
+# PEP 249 / DB-API 2.0 MODULE ATTRIBUTES (work in progress)
 apilevel: str = "2.0"
 threadsafety: int = 1
 paramstyle: str = "qmark"
 
 
 def register_as_duckdb() -> None:
-    """
-    Register bareduckdb as 'duckdb' in sys.modules.
-
-    Not everything works the same, but helps with certain cases
-    """
+    """Register bareduckdb as 'duckdb' in sys.modules."""
     import sys
 
     sys.modules["duckdb"] = sys.modules["bareduckdb"]
@@ -70,11 +78,18 @@ def register_as_duckdb() -> None:
             sys.modules[alias] = sys.modules[key]
 
 
-# For: bareduckdb.connect()
 connect = Connection
 
 __implementation__: str = "cython"
-__all__ = ["ConnectionBase", "Connection", "__version__", "__duckdb_version__", "pyarrow_available", "functional", "features"]
+__all__ = [
+    "ConnectionBase",
+    "Connection",
+    "__version__",
+    "__duckdb_version__",  # pyright: ignore[reportUnsupportedDunderAll]  # provided by __getattr__ (PEP 562)
+    "pyarrow_available",
+    "functional",
+    "features",
+]
 
 
 class ConnectionException(Exception):  # noqa: N818

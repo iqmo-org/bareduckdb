@@ -6,10 +6,12 @@ __pycache__/
 # C extensions
 *.so
 *.dll
+*.pyd
 
 # Distribution / packaging
 .Python
 build/
+.duckdb-cache/
 develop-eggs/
 dist/
 downloads/

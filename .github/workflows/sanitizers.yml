@@ -43,9 +43,9 @@ jobs:
           echo "Contents of github.workspace:"
           ls -la "${{ github.workspace }}" | head -30
           echo "Checking for critical files in PWD:"
-          ls -l "$(pwd)/setup.py" "$(pwd)/pyproject.toml" 2>&1 || echo "Files missing in PWD!"
+          ls -l "$(pwd)/CMakeLists.txt" "$(pwd)/pyproject.toml" 2>&1 || echo "Files missing in PWD!"
           echo "Checking for critical files in github.workspace:"
-          ls -l "${{ github.workspace }}/setup.py" "${{ github.workspace }}/pyproject.toml" 2>&1 || echo "Files missing in github.workspace!"
+          ls -l "${{ github.workspace }}/CMakeLists.txt" "${{ github.workspace }}/pyproject.toml" 2>&1 || echo "Files missing in github.workspace!"
 
           # Use PWD instead of github.workspace for self-hosted runners
           WORKSPACE_PATH="$(pwd)"
@@ -87,11 +87,11 @@ jobs:
               echo 'Contents of /workspace:'
               ls -la /workspace/ | head -30
               echo 'Verifying critical files:'
-              ls -l /workspace/setup.py /workspace/pyproject.toml 2>&1 || echo 'Some files missing!'
+              ls -l /workspace/CMakeLists.txt /workspace/pyproject.toml 2>&1 || echo 'Some files missing!'
 
               echo 'Installing system dependencies'
               apt-get update -qq
-              apt-get install -y -qq unzip curl gcc g++ make clang gdb
+              apt-get install -y -qq unzip curl gcc g++ make clang gdb cmake ninja-build
 
               # Enable core dumps for debugging crashes
               ulimit -c unlimited
@@ -140,23 +140,23 @@ jobs:
               curl -LsSf https://astral.sh/uv/install.sh | sh
               export PATH=\"\$HOME/.local/bin:\$PATH\"
 
-              echo 'Installing build dependencies (including pyarrow for setup.py)'
+              echo 'Installing build dependencies (including pyarrow for the test run)'
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --upgrade pip
-              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages \"setuptools>=64\" \"setuptools-scm>=8\" wheel cython \"packaging>=24.2\" pyarrow
+              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages \"scikit-build-core>=1.0\" \"cython-cmake>=0.3\" \"Cython>=3.1\" \"setuptools-scm>=8\" pyarrow
 
               echo 'Installing bareduckdb'
               echo 'Current directory:'
               pwd
               echo 'Files in current directory:'
               ls -la .
-              echo 'Checking for setup.py in current directory:'
-              if [ -f setup.py ]; then
-                echo 'setup.py EXISTS'
-                ls -l setup.py
+              echo 'Checking for CMakeLists.txt in current directory:'
+              if [ -f CMakeLists.txt ]; then
+                echo 'CMakeLists.txt EXISTS'
+                ls -l CMakeLists.txt
               else
-                echo 'ERROR: setup.py NOT FOUND'
-                echo 'Searching for setup.py:'
-                find / -name setup.py 2>/dev/null | head -5
+                echo 'ERROR: CMakeLists.txt NOT FOUND'
+                echo 'Searching for CMakeLists.txt:'
+                find / -name CMakeLists.txt 2>/dev/null | head -5
               fi
 
               # Temporarily disable sanitizer checks during build and dependency installation

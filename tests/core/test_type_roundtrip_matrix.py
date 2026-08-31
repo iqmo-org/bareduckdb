@@ -275,14 +275,6 @@ REGISTER_ARROW_TYPES = {
 }
 
 
-def _register_params(marked=True):
-    return [
-        pytest.param(c, id=c.id, marks=[c.register_mark] if marked and c.register_mark else [])
-        for c in TYPE_CASES
-        if c.arr is not None
-    ]
-
-
 def _fetch_params(marked=True):
     return [
         pytest.param(c, id=c.id, marks=[c.fetch_mark] if marked and c.fetch_mark else [])
@@ -378,20 +370,6 @@ def test_fetch_arrow_type(case):
         conn.close()
 
 
-@pytest.mark.parametrize("case", _register_params(marked=False))
-def test_register_arrow_type(case):
-    expected = REGISTER_ARROW_TYPES[case.id]
-    if expected is None:
-        pytest.skip(f"{case.id} arrow type is environment dependent")
-
-    conn = bareduckdb.connect()
-    try:
-        conn.register("t", pa.table({"c": case.arr}))
-        assert str(conn.execute("SELECT * FROM t").arrow_table().schema.field(0).type) == expected
-    finally:
-        conn.close()
-
-
 def test_timestamptz_preserves_instant():
     conn = bareduckdb.connect()
     try:
@@ -424,99 +402,6 @@ def test_timetz_preserves_instant():
         assert east != west
     finally:
         conn.close()
-
-
-@pytest.mark.parametrize("case", _register_params())
-def test_register_roundtrip(case):
-    conn = bareduckdb.connect()
-    try:
-        expected = case.arr.to_pylist()
-        conn.register("t", pa.table({"c": case.arr}))
-        out = conn.execute("SELECT * FROM t").arrow_table()
-        assert out.num_rows == len(expected)
-        assert out.column(0).to_pylist() == expected
-    finally:
-        conn.close()
-
-
-# The three constructions exercise distinct paths: a sliced table exports a stream with
-# zero batches (types must be derived with no data), an empty reader is also zero batches
-# but has no __len__ (cardinality unknown), and an explicit zero-row batch carries the
-# full nested layout through the normal conversion path.
-_EMPTY_CONSTRUCTIONS = ["sliced_table", "empty_reader", "zero_row_batch"]
-
-
-def _empty_source(table, construction):
-    if construction == "sliced_table":
-        return table.slice(0, 0)
-    if construction == "empty_reader":
-        return pa.RecordBatchReader.from_batches(table.schema, [])
-    batch = table.to_batches()[0].slice(0, 0)
-    return pa.RecordBatchReader.from_batches(table.schema, [batch])
-
-
-@pytest.mark.parametrize("construction", _EMPTY_CONSTRUCTIONS)
-@pytest.mark.parametrize("case", _register_params())
-def test_empty_register_roundtrip(case, construction):
-    conn = bareduckdb.connect()
-    try:
-        conn.register("t", _empty_source(pa.table({"c": case.arr}), construction))
-        out = conn.execute("SELECT * FROM t").arrow_table()
-        assert out.num_rows == 0
-        expected_type = REGISTER_ARROW_TYPES[case.id]
-        if expected_type is not None:
-            assert str(out.schema.field(0).type) == expected_type
-    finally:
-        conn.close()
-
-
-def test_empty_register_extension_nested_storage():
-    tensor_type = pa.fixed_shape_tensor(pa.int32(), [2])
-    storage = pa.array([[1, 2]], pa.list_(pa.int32(), 2))
-    arr = pa.ExtensionArray.from_storage(tensor_type, storage)
-    conn = bareduckdb.connect()
-    try:
-        conn.register("t", pa.table({"c": arr}).slice(0, 0))
-        assert conn.execute("SELECT * FROM t").arrow_table().num_rows == 0
-    finally:
-        conn.close()
-
-
-def test_register_zero_column_source_no_crash():
-    conn = bareduckdb.connect()
-    try:
-        try:
-            conn.register("t", pa.table({}))
-        except Exception:
-            return
-        assert conn.execute("SELECT * FROM t").arrow_table().num_rows == 0
-    finally:
-        conn.close()
-
-
-def test_register_empty_fieldless_struct_no_crash():
-    arr = pa.array([{}, {}], pa.struct([]))
-    conn = bareduckdb.connect()
-    try:
-        try:
-            conn.register("t", pa.table({"c": arr}).slice(0, 0))
-        except Exception:
-            return
-        assert conn.execute("SELECT * FROM t").arrow_table().num_rows == 0
-    finally:
-        conn.close()
-
-
-def test_register_empty_polars_nested():
-    pl = pytest.importorskip("polars")
-    df = pl.DataFrame({"l": [[1, 2]], "s": [{"a": 1}]})
-    for source in [df.head(0), df.lazy().head(0)]:
-        conn = bareduckdb.connect()
-        try:
-            conn.register("t", source)
-            assert conn.execute("SELECT * FROM t").arrow_table().num_rows == 0
-        finally:
-            conn.close()
 
 
 @pytest.mark.parametrize("case", _fetch_params(marked=False))

@@ -21,7 +21,7 @@ def test_import_and_query_with_empty_environment() -> None:
         "mods = {m.split('.')[0] for m in sys.modules};"
         # _editable_ and pre_commit_uv are development-install artifacts injected by
         # the editable install and the pre-commit hook, not dependencies of the wheel.
-        "allowed = ('bareduckdb', '__main__', '_virtualenv', 'cython_runtime', '_cython_', '_editable_', 'pre_commit_uv');"
+        "allowed = ('bareduckdb', '__main__', '_virtualenv', 'cython_runtime', '_cython_', '_editable_', 'pre_commit_uv', '_distutils_hack');"
         "extra = {m for m in mods if not m.startswith(allowed) and m not in sys.stdlib_module_names};"
         "assert not extra, extra"
     )

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from bareduckdb._duckdb_runtime import resolve_duckdb_lib
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INCLUDE_DIR = REPO_ROOT / "src" / "bareduckdb" / "capi" / "include"
 VENDORED_HEADER = INCLUDE_DIR / "duckdb_v2.h"
@@ -118,8 +120,9 @@ def test_symbol_binds_at_link_time(tmp_path):
         "int main(void) { return (void *)duckdb_v2_library_version != 0 ? 0 : 1; }\n"
     )
     if sys.platform == "win32":
-        import_lib = REPO_ROOT / "duckdb_lib_preview_windows-amd64" / "duckdb.lib"
-        assert import_lib.exists(), f"DuckDB 2.0 preview import lib missing: {import_lib}"
+        import_lib = resolve_duckdb_lib().parent / "duckdb.lib"
+        if not import_lib.exists():
+            pytest.skip(f"no DuckDB import library beside {import_lib.parent}")
         cmd = [
             "cl",
             "/nologo",
@@ -130,14 +133,13 @@ def test_symbol_binds_at_link_time(tmp_path):
             str(import_lib),
         ]
     else:
-        candidates = sorted(REPO_ROOT.glob("duckdb_lib_preview_*/libduckdb.so"))
-        assert candidates, "no extracted DuckDB 2.0 preview library (libduckdb.so) found"
+        shared_lib = resolve_duckdb_lib()
         cmd = [
             "gcc",
             "-I",
             str(INCLUDE_DIR),
             str(src),
-            str(candidates[0]),
+            str(shared_lib),
             "-o",
             str(tmp_path / "t"),
         ]

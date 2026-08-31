@@ -50,9 +50,6 @@ test = [
     "pyarrow>=22.0; python_version < '3.15'",
     "pyarrow>=26.0.0.dev0; python_version >= '3.15'",
     "pandas>=3.0.0rc0",
-    # Parity oracle only: cross-checks capi/v2 Arrow output against the official
-    # client. No wheels exist above cp314, so parity tests skip on 3.15+.
-    "duckdb>=1.5.5; python_version < '3.15'",
 ]
 
 [tool.pyright]
@@ -222,7 +219,8 @@ exclude-newer = "2 weeks"
 exclude-newer-package = { cython = false, pyarrow = false, pandas = false, ipython = false, numpy = false, ipykernel = false }  # TODO: Remove after 3.15 release
 
 prerelease = "if-necessary"
-no-build-package = ["polars", "polars-runtime-32", "polars-runtime-64"]
+# Wheels only to prevent source builds
+no-build-package = ["polars", "polars-runtime-32", "polars-runtime-64", "duckdb"]
 
 [[tool.uv.index]]
 name = "scientific-python-nightly"
@@ -255,7 +253,7 @@ dev = [
     "pytest-timeout>=2.3.1",
     "pytest-xdist>=3.8.0",
     "pytest-repeat>=0.9.3",
-    "duckdb>=1.5.5;python_version < '3.15'",  # parity oracle only, no wheels above cp314
+    "duckdb>=1.5.5;python_version < '3.15'",
     "vortex-data;python_version < '3.14' and sys_platform != 'win32'", # no free-threaded, no windows wheels
     "tabulate",
     "ruff>=0.14.10",

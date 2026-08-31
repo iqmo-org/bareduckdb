@@ -128,9 +128,7 @@ class ConnectionBase:
         replace: bool = True,
     ) -> None:
         """Register data; not yet supported in C API v2."""
-        raise NotImplementedError(
-            "register(): this needs the v2 table-function surface, which C API v2 does not expose yet; see plans/capi_v2/V2_TARGET_AND_API_NEEDS.md (ask 4)"
-        )
+        raise NotImplementedError("register(): this needs a table-function surface, which DuckDB's C API v2 does not expose yet")
 
     def _register_capsule(self, name: str, capsule: object, replace: bool = True) -> None:
         """

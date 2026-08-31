@@ -34,7 +34,12 @@ repos:
   - repo: https://github.com/MarcoGorelli/cython-lint
     rev: v0.21.1
     hooks:
+      # .pxd files are cdef extern declarations transcribed from the vendored C
+      # header; line length there is a consequence of the C signature, not
+      # something worth reflowing. double-quote-cython-strings still runs on
+      # them.
       - id: cython-lint
+        exclude: \.pxd$
       - id: double-quote-cython-strings
   - repo: local
     hooks:

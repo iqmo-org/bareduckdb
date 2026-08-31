@@ -9,7 +9,7 @@ def test_compat(simple_query):
         result = conn.execute(query).arrow_table()
         assert validation(result)
 
-        result = conn.execute(query).arrow_reader()
+        result = conn.execute(query, output_type="arrow_reader").arrow_reader()
         assert validation(result)
 
         result = conn.execute(query).df()

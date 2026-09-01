@@ -1,6 +1,7 @@
 """Zero-copy Arrow export from v2 results, built on duckdb_v2_vector_get_view."""
 
 import gc
+import threading
 import time
 
 import pytest
@@ -27,11 +28,29 @@ except ImportError:
 
 
 @pytest.fixture
-def conn():
-    env = CApiEnvironment()
-    c = env.connect()
-    yield c
-    c.close()
+def make_conn():
+    """Hand out a fresh connection per call.
+
+    pytest-run-parallel builds a fixture once and passes that one object to
+    every worker thread and every --iterations pass, but a v2 connection
+    carries a single live result at a time, so threads sharing one collide
+    with "connection has a live result". Tests call this at the top of the
+    body instead, which also gives each thread its own anonymous in-memory
+    database rather than sharing tables.
+    """
+    created = []
+    lock = threading.Lock()
+
+    def _make():
+        c = CApiEnvironment().connect()
+        with lock:
+            created.append(c)
+        return c
+
+    yield _make
+
+    for c in created:
+        c.close()
 
 
 def table(conn, sql, parameters=None, batch_rows=1_000_000):
@@ -45,8 +64,9 @@ def run(conn, sql):
 
 
 @pytest.mark.skipif(not DUCKDB_CLIENT_AVAILABLE, reason="official duckdb client not installed")
-def test_oracle_agrees_on_a_simple_table(conn):
+def test_oracle_agrees_on_a_simple_table(make_conn):
     """Cross-check one Arrow table against the official client when it is installed."""
+    conn = make_conn()
     import duckdb
 
     sql = "SELECT i, i * 2 AS d, i::VARCHAR AS s FROM range(5000) t(i)"
@@ -92,7 +112,8 @@ FIXED_WIDTH_CASES = [
     [(c[1], c[2], c[3]) for c in FIXED_WIDTH_CASES],
     ids=[c[0] for c in FIXED_WIDTH_CASES],
 )
-def test_fixed_width_column_type_and_value(conn, sql, arrow_type, values):
+def test_fixed_width_column_type_and_value(make_conn, sql, arrow_type, values):
+    conn = make_conn()
     tbl = table(conn, sql)
     assert tbl.schema.field(0).type == arrow_type
     assert tbl.column_names == ["c"]
@@ -100,30 +121,35 @@ def test_fixed_width_column_type_and_value(conn, sql, arrow_type, values):
         assert tbl.column(0).to_pylist() == values
 
 
-def test_fixed_width_many_rows_round_trip(conn):
+def test_fixed_width_many_rows_round_trip(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT i::BIGINT AS i FROM range(100000) t(i)")
     assert tbl.num_rows == 100000
     assert tbl.column(0).to_pylist() == list(range(100000))
 
 
-def test_multiple_fixed_width_columns(conn):
+def test_multiple_fixed_width_columns(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT i::INTEGER AS a, (i * 1.5)::DOUBLE AS b FROM range(5000) t(i)")
     assert tbl.column_names == ["a", "b"]
     assert tbl.column(0).to_pylist() == list(range(5000))
     assert tbl.column(1).to_pylist() == [i * 1.5 for i in range(5000)]
 
 
-def test_interval_value_is_month_day_nano(conn):
+def test_interval_value_is_month_day_nano(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT INTERVAL '1 month 2 days 3 seconds' AS c")
     assert tbl.column(0).to_pylist() == [(1, 2, 3_000_000_000)]
 
 
-def test_hugeint_value(conn):
+def test_hugeint_value(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT (2**100)::HUGEINT AS c")
     assert int(tbl.column(0).to_pylist()[0]) == 2**100
 
 
-def test_negative_hugeint_value(conn):
+def test_negative_hugeint_value(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT (-(2**100))::HUGEINT AS c")
     assert int(tbl.column(0).to_pylist()[0]) == -(2**100)
 
@@ -131,36 +157,41 @@ def test_negative_hugeint_value(conn):
 # --- validity patterns ---
 
 
-def test_validity_alternating(conn):
+def test_validity_alternating(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT CASE WHEN i % 2 = 0 THEN i::INTEGER END AS c FROM range(10000) t(i)")
     expected = [i if i % 2 == 0 else None for i in range(10000)]
     assert tbl.column(0).to_pylist() == expected
 
 
-def test_validity_all_null(conn):
+def test_validity_all_null(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT NULL::INTEGER AS c FROM range(5000)")
     assert tbl.num_rows == 5000
     assert tbl.column(0).null_count == 5000
     assert tbl.column(0).to_pylist() == [None] * 5000
 
 
-def test_validity_first_row_null(conn):
+def test_validity_first_row_null(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT CASE WHEN i = 0 THEN NULL ELSE i::INTEGER END AS c FROM range(4096) t(i)")
     values = tbl.column(0).to_pylist()
     assert values[0] is None
     assert values[1:] == list(range(1, 4096))
 
 
-def test_validity_spanning_chunk_boundary(conn):
+def test_validity_spanning_chunk_boundary(make_conn):
     """DuckDB chunks at 2048 rows; nulls on either side of a boundary must line up."""
+    conn = make_conn()
     sql = "SELECT CASE WHEN i IN (2047, 2048, 2049) THEN NULL ELSE i::INTEGER END AS c FROM range(5000) t(i)"
     values = table(conn, sql).column(0).to_pylist()
     expected = [None if i in (2047, 2048, 2049) else i for i in range(5000)]
     assert values == expected
 
 
-def test_validity_null_in_final_partial_chunk(conn):
+def test_validity_null_in_final_partial_chunk(make_conn):
     """5000 rows is 2 full 2048 chunks plus a 904-row tail; the null lives in the tail."""
+    conn = make_conn()
     sql = "SELECT CASE WHEN i = 4999 THEN NULL ELSE i::INTEGER END AS c FROM range(5000) t(i)"
     values = table(conn, sql).column(0).to_pylist()
     assert values[-1] is None
@@ -173,16 +204,18 @@ MISALIGNED_SQL = (
 )
 
 
-def test_an_unordered_filter_really_produces_misaligned_chunks(conn):
+def test_an_unordered_filter_really_produces_misaligned_chunks(make_conn):
     """Grounds the test below: non-final chunks here are 1755/1756 rows, not multiples of 8."""
+    conn = make_conn()
     run(conn, "CREATE TABLE mis AS SELECT i FROM range(20000) t(i)")
     sizes = batch_sizes(conn, MISALIGNED_SQL, 1)
     misaligned = [size for size in sizes[:-1] if size % 8]
     assert misaligned, f"expected a non-final chunk that is not a multiple of 8, got {sizes}"
 
 
-def test_validity_survives_misaligned_chunk_sizes(conn):
+def test_validity_survives_misaligned_chunk_sizes(make_conn):
     """Coalescing misaligned chunks must not shift the validity bits."""
+    conn = make_conn()
     run(conn, "CREATE TABLE mis AS SELECT i FROM range(20000) t(i)")
     expected = sorted(
         (None if i % 3 == 0 else i for i in range(20000) if i % 7 != 0),
@@ -192,7 +225,8 @@ def test_validity_survives_misaligned_chunk_sizes(conn):
     assert sorted(values, key=lambda v: (v is None, v)) == expected
 
 
-def test_null_count_matches(conn):
+def test_null_count_matches(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT CASE WHEN i % 5 = 0 THEN NULL ELSE i::INTEGER END AS c FROM range(10000) t(i)")
     assert tbl.column(0).null_count == 2000
 
@@ -220,20 +254,23 @@ LAYOUT_QUERIES = [
 ]
 
 
-def test_flat_layout_is_produced_and_converted(conn):
+def test_flat_layout_is_produced_and_converted(make_conn):
+    conn = make_conn()
     sql = "SELECT i::INTEGER AS c FROM range(3000) t(i)"
     assert "FLAT" in observed_layouts(conn, sql)
     assert table(conn, sql).column(0).to_pylist() == list(range(3000))
 
 
-def test_result_boundary_hands_out_only_known_representations(conn):
+def test_result_boundary_hands_out_only_known_representations(make_conn):
     """Notices if a build ever hands out CONSTANT or DICTIONARY across the boundary."""
+    conn = make_conn()
     run(conn, "CREATE TABLE layoutmix AS SELECT i, (i % 3)::VARCHAR AS s FROM range(9000) t(i)")
     for sql in LAYOUT_QUERIES:
         assert observed_layouts(conn, sql) <= {"FLAT", "CONSTANT", "DICTIONARY"}, sql
 
 
-def test_constant_view_expands_to_every_row(conn):
+def test_constant_view_expands_to_every_row(make_conn):
+    conn = make_conn()
     batch = convert_first_chunk(
         execute(conn, "SELECT 42::INTEGER AS c FROM range(2048)"),
         as_constant=True,
@@ -243,7 +280,8 @@ def test_constant_view_expands_to_every_row(conn):
     assert batch.column(0).to_pylist() == [42] * 1000
 
 
-def test_constant_null_view_expands_to_nulls(conn):
+def test_constant_null_view_expands_to_nulls(make_conn):
+    conn = make_conn()
     batch = convert_first_chunk(
         execute(conn, "SELECT NULL::INTEGER AS c FROM range(2048)"),
         as_constant=True,
@@ -253,7 +291,8 @@ def test_constant_null_view_expands_to_nulls(conn):
     assert batch.column(0).null_count == 500
 
 
-def test_constant_string_view_expands(conn):
+def test_constant_string_view_expands(make_conn):
+    conn = make_conn()
     batch = convert_first_chunk(
         execute(conn, "SELECT 'a constant string value' AS c FROM range(2048)"),
         as_constant=True,
@@ -262,7 +301,8 @@ def test_constant_string_view_expands(conn):
     assert batch.column(0).to_pylist() == ["a constant string value"] * 300
 
 
-def test_dictionary_view_is_gathered_through_the_selection_vector(conn):
+def test_dictionary_view_is_gathered_through_the_selection_vector(make_conn):
+    conn = make_conn()
     selection = [7, 3, 3, 0, 2047, 1, 2, 2, 900]
     batch = convert_first_chunk(
         execute(conn, "SELECT i::INTEGER AS c FROM range(2048) t(i)"), selection=selection
@@ -270,7 +310,8 @@ def test_dictionary_view_is_gathered_through_the_selection_vector(conn):
     assert batch.column(0).to_pylist() == selection
 
 
-def test_dictionary_view_of_strings_is_gathered(conn):
+def test_dictionary_view_of_strings_is_gathered(make_conn):
+    conn = make_conn()
     selection = [5, 5, 1, 2047, 0]
     batch = convert_first_chunk(
         execute(conn, "SELECT repeat('v', i % 30) || i::VARCHAR AS c FROM range(2048) t(i)"),
@@ -279,7 +320,8 @@ def test_dictionary_view_of_strings_is_gathered(conn):
     assert batch.column(0).to_pylist() == ["v" * (i % 30) + str(i) for i in selection]
 
 
-def test_dictionary_view_carries_validity_through_the_selection(conn):
+def test_dictionary_view_carries_validity_through_the_selection(make_conn):
+    conn = make_conn()
     selection = [0, 1, 2, 3, 4, 5, 2046, 2047]
     batch = convert_first_chunk(
         execute(
@@ -291,7 +333,8 @@ def test_dictionary_view_carries_validity_through_the_selection(conn):
     assert batch.column(0).to_pylist() == [None if i % 2 == 0 else i for i in selection]
 
 
-def test_dictionary_view_of_a_struct_is_gathered(conn):
+def test_dictionary_view_of_a_struct_is_gathered(make_conn):
+    conn = make_conn()
     selection = [10, 2, 2, 0]
     batch = convert_first_chunk(
         execute(conn, "SELECT {'a': i, 'b': i::VARCHAR} AS c FROM range(2048) t(i)"),
@@ -300,7 +343,8 @@ def test_dictionary_view_of_a_struct_is_gathered(conn):
     assert batch.column(0).to_pylist() == [{"a": i, "b": str(i)} for i in selection]
 
 
-def test_dictionary_view_of_a_list_is_gathered(conn):
+def test_dictionary_view_of_a_list_is_gathered(make_conn):
+    conn = make_conn()
     selection = [4, 1, 1, 0]
     batch = convert_first_chunk(
         execute(conn, "SELECT [i, i + 1] AS c FROM range(2048) t(i)"), selection=selection
@@ -308,15 +352,17 @@ def test_dictionary_view_of_a_list_is_gathered(conn):
     assert batch.column(0).to_pylist() == [[i, i + 1] for i in selection]
 
 
-def test_selection_index_outside_the_chunk_is_rejected(conn):
+def test_selection_index_outside_the_chunk_is_rejected(make_conn):
+    conn = make_conn()
     with pytest.raises(ValueError, match="outside the chunk"):
         convert_first_chunk(
             execute(conn, "SELECT i FROM range(10) t(i)"), selection=[0, 99999]
         )
 
 
-def test_constant_and_dictionary_queries_still_convert_correctly(conn):
+def test_constant_and_dictionary_queries_still_convert_correctly(make_conn):
     """Whatever representation the engine picks, these queries must convert."""
+    conn = make_conn()
     assert table(conn, "SELECT 42 AS c FROM range(10000)").column(0).to_pylist() == [42] * 10000
     assert table(conn, "SELECT NULL::INTEGER AS c FROM range(10000)").column(0).null_count == 10000
     run(conn, "CREATE TABLE dictnulls AS SELECT CASE WHEN i % 5 = 0 THEN NULL "
@@ -328,26 +374,30 @@ def test_constant_and_dictionary_queries_still_convert_correctly(conn):
 # --- strings and blobs ---
 
 
-def test_short_string_is_inline(conn):
+def test_short_string_is_inline(make_conn):
     """12 bytes or fewer live inline in duckdb_v2_bytes, so no data buffer is used."""
+    conn = make_conn()
     tbl = table(conn, "SELECT 'abcdefghijkl' AS c")
     assert tbl.column(0).to_pylist() == ["abcdefghijkl"]
 
 
-def test_long_string_uses_the_pointer_form(conn):
+def test_long_string_uses_the_pointer_form(make_conn):
+    conn = make_conn()
     long_value = "x" * 500
     tbl = table(conn, f"SELECT repeat('x', 500) AS c")
     assert tbl.column(0).to_pylist() == [long_value]
 
 
-def test_mixed_inline_and_long_strings(conn):
+def test_mixed_inline_and_long_strings(make_conn):
+    conn = make_conn()
     sql = "SELECT CASE WHEN i % 2 = 0 THEN 'short' ELSE repeat('y', 100) END AS c FROM range(5000) t(i)"
     expected = ["short" if i % 2 == 0 else "y" * 100 for i in range(5000)]
     assert table(conn, sql).column(0).to_pylist() == expected
 
 
-def test_string_data_is_copied_not_borrowed(conn):
+def test_string_data_is_copied_not_borrowed(make_conn):
     """Read the whole table, force a GC, and re-read: borrowed chunk memory would be gone."""
+    conn = make_conn()
     tbl = table(conn, "SELECT repeat('z', 200) || i::VARCHAR AS c FROM range(5000) t(i)")
     gc.collect()
     values = tbl.column(0).to_pylist()
@@ -355,27 +405,32 @@ def test_string_data_is_copied_not_borrowed(conn):
     assert values[-1] == "z" * 200 + "4999"
 
 
-def test_string_nulls(conn):
+def test_string_nulls(make_conn):
+    conn = make_conn()
     sql = "SELECT CASE WHEN i % 3 = 0 THEN NULL ELSE repeat('q', i % 40) END AS c FROM range(4000) t(i)"
     expected = [None if i % 3 == 0 else "q" * (i % 40) for i in range(4000)]
     assert table(conn, sql).column(0).to_pylist() == expected
 
 
-def test_empty_string_round_trip(conn):
+def test_empty_string_round_trip(make_conn):
+    conn = make_conn()
     assert table(conn, "SELECT '' AS c").column(0).to_pylist() == [""]
 
 
-def test_unicode_string_round_trip(conn):
+def test_unicode_string_round_trip(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT 'naïve ünïcode ✓ string' AS c")
     assert tbl.column(0).to_pylist() == ["naïve ünïcode ✓ string"]
 
 
-def test_blob_round_trip(conn):
+def test_blob_round_trip(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT 'abc'::BLOB AS c")
     assert tbl.column(0).to_pylist() == [b"abc"]
 
 
-def test_long_blob_round_trip(conn):
+def test_long_blob_round_trip(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT repeat('a', 300)::BLOB AS c")
     assert tbl.column(0).to_pylist() == [b"a" * 300]
 
@@ -383,79 +438,94 @@ def test_long_blob_round_trip(conn):
 # --- nested types ---
 
 
-def test_list_of_int(conn):
+def test_list_of_int(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT [1, 2, 3] AS c")
     assert tbl.column(0).to_pylist() == [[1, 2, 3]]
 
 
-def test_list_many_rows(conn):
+def test_list_many_rows(make_conn):
+    conn = make_conn()
     sql = "SELECT [i, i + 1] AS c FROM range(5000) t(i)"
     assert table(conn, sql).column(0).to_pylist() == [[i, i + 1] for i in range(5000)]
 
 
-def test_list_with_null_element(conn):
+def test_list_with_null_element(make_conn):
+    conn = make_conn()
     assert table(conn, "SELECT [1, NULL, 3] AS c").column(0).to_pylist() == [[1, None, 3]]
 
 
-def test_null_list(conn):
+def test_null_list(make_conn):
+    conn = make_conn()
     sql = "SELECT CASE WHEN i % 2 = 0 THEN NULL ELSE [i] END AS c FROM range(4000) t(i)"
     expected = [None if i % 2 == 0 else [i] for i in range(4000)]
     assert table(conn, sql).column(0).to_pylist() == expected
 
 
-def test_empty_list(conn):
+def test_empty_list(make_conn):
+    conn = make_conn()
     assert table(conn, "SELECT []::INTEGER[] AS c").column(0).to_pylist() == [[]]
 
 
-def test_list_of_strings(conn):
+def test_list_of_strings(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT ['short', repeat('w', 90)] AS c")
     assert tbl.column(0).to_pylist() == [["short", "w" * 90]]
 
 
-def test_struct(conn):
+def test_struct(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT {'a': 1, 'b': 'x'} AS c")
     assert tbl.column(0).to_pylist() == [{"a": 1, "b": "x"}]
 
 
-def test_struct_many_rows(conn):
+def test_struct_many_rows(make_conn):
+    conn = make_conn()
     sql = "SELECT {'a': i, 'b': i::VARCHAR} AS c FROM range(5000) t(i)"
     expected = [{"a": i, "b": str(i)} for i in range(5000)]
     assert table(conn, sql).column(0).to_pylist() == expected
 
 
-def test_struct_with_null_field(conn):
+def test_struct_with_null_field(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT {'a': 1, 'b': NULL::INTEGER} AS c")
     assert tbl.column(0).to_pylist() == [{"a": 1, "b": None}]
 
 
-def test_null_struct(conn):
+def test_null_struct(make_conn):
+    conn = make_conn()
     sql = "SELECT CASE WHEN i % 2 = 0 THEN NULL ELSE {'a': i} END AS c FROM range(4000) t(i)"
     expected = [None if i % 2 == 0 else {"a": i} for i in range(4000)]
     assert table(conn, sql).column(0).to_pylist() == expected
 
 
-def test_list_of_struct(conn):
+def test_list_of_struct(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT [{'a': 1}, {'a': 2}] AS c")
     assert tbl.column(0).to_pylist() == [[{"a": 1}, {"a": 2}]]
 
 
-def test_struct_of_list(conn):
+def test_struct_of_list(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT {'l': [1, 2]} AS c")
     assert tbl.column(0).to_pylist() == [{"l": [1, 2]}]
 
 
-def test_fixed_size_array(conn):
+def test_fixed_size_array(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT [1, 2, 3]::INTEGER[3] AS c")
     assert tbl.schema.field(0).type == pa.list_(pa.field("", pa.int32(), nullable=True), 3)
     assert tbl.column(0).to_pylist() == [[1, 2, 3]]
 
 
-def test_map(conn):
+def test_map(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT MAP(['a', 'b'], [1, 2]) AS c")
     assert tbl.column(0).to_pylist() == [[("a", 1), ("b", 2)]]
 
 
-def test_enum(conn):
+def test_enum(make_conn):
+    conn = make_conn()
     run(conn, "CREATE TYPE mood AS ENUM ('happy', 'sad')")
     run(conn, "CREATE TABLE moods (m mood)")
     run(conn, "INSERT INTO moods VALUES ('happy'), ('sad'), ('happy')")
@@ -463,12 +533,14 @@ def test_enum(conn):
     assert tbl.column(0).to_pylist() == ["happy", "sad", "happy"]
 
 
-def test_uuid(conn):
+def test_uuid(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT '4ac7a9e9-607c-4c8a-84f3-843f0191e3fd'::UUID AS c")
     assert tbl.column(0).to_pylist() == ["4ac7a9e9-607c-4c8a-84f3-843f0191e3fd"]
 
 
-def test_sqlnull_column(conn):
+def test_sqlnull_column(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT NULL AS c")
     assert tbl.column(0).to_pylist() == [None]
 
@@ -476,21 +548,24 @@ def test_sqlnull_column(conn):
 # --- schema, empty results, and stream mechanics ---
 
 
-def test_empty_result_preserves_schema(conn):
+def test_empty_result_preserves_schema(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT i::INTEGER AS i, i::VARCHAR AS s FROM range(0) t(i)")
     assert tbl.num_rows == 0
     assert tbl.column_names == ["i", "s"]
     assert tbl.schema.field(0).type == pa.int32()
 
 
-def test_empty_result_from_a_filter_preserves_schema(conn):
+def test_empty_result_from_a_filter_preserves_schema(make_conn):
+    conn = make_conn()
     tbl = table(conn, "SELECT i::INTEGER AS i FROM range(1000) t(i) WHERE i < 0")
     assert tbl.num_rows == 0
     assert tbl.column_names == ["i"]
 
 
-def test_statement_expanding_into_a_group_exports_to_arrow(conn):
+def test_statement_expanding_into_a_group_exports_to_arrow(make_conn):
     """A dynamic PIVOT has no schema until stepping prepares its row-producing fragment."""
+    conn = make_conn()
     list(execute(conn, "CREATE TABLE arrow_piv(k VARCHAR, v INTEGER)").rows())
     list(execute(conn, "INSERT INTO arrow_piv VALUES ('a', 1), ('b', 2), ('a', 10)").rows())
     tbl = table(conn, "PIVOT arrow_piv ON k USING sum(v)")
@@ -512,19 +587,22 @@ def test_statement_expanding_into_a_group_through_the_public_api():
     assert tbl.to_pydict() == {"a": [11], "b": [2]}
 
 
-def test_capsule_is_a_pycapsule(conn):
+def test_capsule_is_a_pycapsule(make_conn):
+    conn = make_conn()
     capsule = arrow_stream_from_result(execute(conn, "SELECT 1 AS c"), 1_000_000)
     assert type(capsule).__name__ == "PyCapsule"
 
 
-def test_capsule_dropped_unconsumed_does_not_crash(conn):
+def test_capsule_dropped_unconsumed_does_not_crash(make_conn):
+    conn = make_conn()
     for _ in range(200):
         capsule = arrow_stream_from_result(execute(conn, "SELECT i FROM range(5000) t(i)"), 1_000_000)
         del capsule
         gc.collect()
 
 
-def test_capsule_partially_consumed_then_dropped(conn):
+def test_capsule_partially_consumed_then_dropped(make_conn):
+    conn = make_conn()
     capsule = arrow_stream_from_result(execute(conn, "SELECT i FROM range(50000) t(i)"), 1024)
     reader = pa.RecordBatchReader._import_from_c_capsule(capsule)
     next(iter(reader))
@@ -532,40 +610,46 @@ def test_capsule_partially_consumed_then_dropped(conn):
     gc.collect()
 
 
-def test_consuming_a_result_twice_raises(conn):
+def test_consuming_a_result_twice_raises(make_conn):
+    conn = make_conn()
     result = execute(conn, "SELECT 1 AS c")
     arrow_stream_from_result(result, 1_000_000)
     with pytest.raises(RuntimeError, match="already consumed"):
         arrow_stream_from_result(result, 1_000_000)
 
 
-def test_to_arrow_after_stream_export_raises(conn):
+def test_to_arrow_after_stream_export_raises(make_conn):
+    conn = make_conn()
     result = execute(conn, "SELECT 1 AS c")
     result.__arrow_c_stream__()
     with pytest.raises(RuntimeError, match="already consumed"):
         result.to_arrow()
 
 
-def test_rows_after_arrow_export_raises(conn):
+def test_rows_after_arrow_export_raises(make_conn):
+    conn = make_conn()
     result = execute(conn, "SELECT 1 AS c")
     result.to_arrow()
     with pytest.raises(RuntimeError):
         list(result.rows())
 
 
-def test_result_to_arrow_method(conn):
+def test_result_to_arrow_method(make_conn):
+    conn = make_conn()
     tbl = execute(conn, "SELECT i FROM range(100) t(i)").to_arrow()
     assert isinstance(tbl, pa.Table)
     assert tbl.num_rows == 100
 
 
-def test_result_arrow_c_stream_dunder(conn):
+def test_result_arrow_c_stream_dunder(make_conn):
+    conn = make_conn()
     result = execute(conn, "SELECT i FROM range(100) t(i)")
     reader = pa.RecordBatchReader._import_from_c_capsule(result.__arrow_c_stream__())
     assert reader.read_all().num_rows == 100
 
 
-def test_pa_table_accepts_the_result_directly(conn):
+def test_pa_table_accepts_the_result_directly(make_conn):
+    conn = make_conn()
     result = execute(conn, "SELECT i FROM range(100) t(i)")
     assert pa.table(result).num_rows == 100
 
@@ -579,31 +663,36 @@ def batch_sizes(conn, sql, batch_rows):
     return [batch.num_rows for batch in reader]
 
 
-def test_batch_rows_coalesces_chunks(conn):
+def test_batch_rows_coalesces_chunks(make_conn):
     """DuckDB emits 2048-row chunks; a 10000-row target must coalesce them."""
+    conn = make_conn()
     sizes = batch_sizes(conn, "SELECT i FROM range(50000) t(i)", 10000)
     assert sum(sizes) == 50000
     assert all(size >= 10000 for size in sizes[:-1]), sizes
     assert len(sizes) <= 6, sizes
 
 
-def test_batch_rows_small_target_does_not_coalesce(conn):
+def test_batch_rows_small_target_does_not_coalesce(make_conn):
+    conn = make_conn()
     sizes = batch_sizes(conn, "SELECT i FROM range(20000) t(i)", 1)
     assert sum(sizes) == 20000
     assert len(sizes) >= 9, sizes
 
 
-def test_batch_rows_larger_than_result_gives_one_batch(conn):
+def test_batch_rows_larger_than_result_gives_one_batch(make_conn):
+    conn = make_conn()
     sizes = batch_sizes(conn, "SELECT i FROM range(5000) t(i)", 1_000_000)
     assert sizes == [5000]
 
 
-def test_batch_rows_zero_falls_back_to_a_default(conn):
+def test_batch_rows_zero_falls_back_to_a_default(make_conn):
+    conn = make_conn()
     sizes = batch_sizes(conn, "SELECT i FROM range(5000) t(i)", 0)
     assert sum(sizes) == 5000
 
 
-def test_schema_is_stable_across_batches(conn):
+def test_schema_is_stable_across_batches(make_conn):
+    conn = make_conn()
     capsule = arrow_stream_from_result(execute(conn, "SELECT i, i::VARCHAR AS s FROM range(50000) t(i)"), 4096)
     reader = pa.RecordBatchReader._import_from_c_capsule(capsule)
     schema = reader.schema
@@ -614,12 +703,14 @@ def test_schema_is_stable_across_batches(conn):
 # --- errors ---
 
 
-def test_unsupported_type_raises_rather_than_guessing(conn):
+def test_unsupported_type_raises_rather_than_guessing(make_conn):
+    conn = make_conn()
     with pytest.raises((NotImplementedError, RuntimeError)):
         table(conn, "SELECT (123)::VARIANT AS c")
 
 
-def test_stream_from_a_closed_result_raises(conn):
+def test_stream_from_a_closed_result_raises(make_conn):
+    conn = make_conn()
     result = execute(conn, "SELECT 1 AS c")
     result.close()
     with pytest.raises(RuntimeError):
@@ -629,8 +720,9 @@ def test_stream_from_a_closed_result_raises(conn):
 # --- result seam edge cases ---
 
 
-def test_failed_drain_on_a_non_final_statement_does_not_leak(conn):
+def test_failed_drain_on_a_non_final_statement_does_not_leak(make_conn):
     """A constraint violation mid-multi-statement must destroy the result before raising."""
+    conn = make_conn()
     run(conn, "CREATE TABLE pk_t(i INTEGER PRIMARY KEY)")
     for _ in range(50):
         with pytest.raises(RuntimeError):
@@ -639,8 +731,9 @@ def test_failed_drain_on_a_non_final_statement_does_not_leak(conn):
     assert table(conn, "SELECT 1 AS c").column(0).to_pylist() == [1]
 
 
-def test_concurrent_close_is_safe(conn):
+def test_concurrent_close_is_safe(make_conn):
     """Two threads closing the same result must not double-destroy it."""
+    conn = make_conn()
     import threading
 
     for _ in range(50):
@@ -658,8 +751,9 @@ def test_concurrent_close_is_safe(conn):
             t.join()
 
 
-def test_result_outlives_the_python_connection_object(conn):
+def test_result_outlives_the_python_connection_object(make_conn):
     """The result holds a reference to its connection, so the handle cannot dangle."""
+    conn = make_conn()
     env = CApiEnvironment()
     other = env.connect()
     result = execute(other, "SELECT i FROM range(1000) t(i)")
@@ -669,8 +763,9 @@ def test_result_outlives_the_python_connection_object(conn):
 
 
 @pytest.mark.parallel_threads(1)
-def test_concurrent_drains_share_the_buffer_pool_safely(conn):
+def test_concurrent_drains_share_the_buffer_pool_safely(make_conn):
     """Free threading is the point: parallel drains must not corrupt the pooled buffers."""
+    conn = make_conn()
     import threading
 
     env = CApiEnvironment()
@@ -712,7 +807,8 @@ def test_concurrent_drains_share_the_buffer_pool_safely(conn):
 
 
 @pytest.mark.parallel_threads(1)
-def test_timing_sanity_drain_of_a_few_million_rows(conn):
+def test_timing_sanity_drain_of_a_few_million_rows(make_conn):
+    conn = make_conn()
     sql = "SELECT i AS a, (i * 2) AS b, (i % 97)::DOUBLE AS c FROM range(3000000) t(i)"
     start = time.perf_counter()
     tbl = table(conn, sql)

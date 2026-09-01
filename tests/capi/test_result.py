@@ -3,6 +3,7 @@
 import datetime
 import decimal
 import gc
+import threading
 import uuid
 
 import pytest
@@ -12,11 +13,29 @@ from bareduckdb.capi.impl.result import execute
 
 
 @pytest.fixture
-def conn():
-    env = CApiEnvironment()
-    c = env.connect()
-    yield c
-    c.close()
+def make_conn():
+    """Hand out a fresh connection per call.
+
+    pytest-run-parallel builds a fixture once and passes that one object to
+    every worker thread and every --iterations pass, but a v2 connection
+    carries a single live result at a time, so threads sharing one collide
+    with "connection has a live result". Tests call this at the top of the
+    body instead, which also gives each thread its own anonymous in-memory
+    database rather than sharing tables.
+    """
+    created = []
+    lock = threading.Lock()
+
+    def _make():
+        c = CApiEnvironment().connect()
+        with lock:
+            created.append(c)
+        return c
+
+    yield _make
+
+    for c in created:
+        c.close()
 
 
 def _one(conn, sql, parameters=None):
@@ -65,80 +84,96 @@ TYPE_ROUNDTRIPS = [
 
 
 @pytest.mark.parametrize("sql, expected", [(t[1], t[2]) for t in TYPE_ROUNDTRIPS], ids=[t[0] for t in TYPE_ROUNDTRIPS])
-def test_scalar_round_trip(conn, sql, expected):
+def test_scalar_round_trip(make_conn, sql, expected):
+    conn = make_conn()
     assert _one(conn, sql) == expected
 
 
-def test_hugeint_round_trip(conn):
+def test_hugeint_round_trip(make_conn):
+    conn = make_conn()
     assert _one(conn, "SELECT (2**100)::HUGEINT") == 2 ** 100
 
 
-def test_negative_hugeint_round_trip(conn):
+def test_negative_hugeint_round_trip(make_conn):
+    conn = make_conn()
     assert _one(conn, "SELECT (-(2**100))::HUGEINT") == -(2 ** 100)
 
 
-def test_uhugeint_round_trip(conn):
+def test_uhugeint_round_trip(make_conn):
+    conn = make_conn()
     assert _one(conn, "SELECT (2**100)::UHUGEINT") == 2 ** 100
 
 
-def test_null_round_trip(conn):
+def test_null_round_trip(make_conn):
+    conn = make_conn()
     assert _one(conn, "SELECT NULL::INTEGER") is None
 
 
-def test_interval_round_trip(conn):
+def test_interval_round_trip(make_conn):
+    conn = make_conn()
     value = _one(conn, "SELECT INTERVAL '1 month 2 days 3 seconds'")
     assert value == {"months": 1, "days": 2, "micros": 3_000_000}
 
 
-def test_list_of_struct_round_trip(conn):
+def test_list_of_struct_round_trip(make_conn):
+    conn = make_conn()
     value = _one(conn, "SELECT [{'a': 1}, {'a': 2}]")
     assert value == [{"a": 1}, {"a": 2}]
 
 
-def test_struct_with_list_field_round_trip(conn):
+def test_struct_with_list_field_round_trip(make_conn):
+    conn = make_conn()
     value = _one(conn, "SELECT {'l': [1, 2]}")
     assert value == {"l": [1, 2]}
 
 
-def test_list_with_null_element(conn):
+def test_list_with_null_element(make_conn):
+    conn = make_conn()
     value = _one(conn, "SELECT [1, NULL, 3]")
     assert value == [1, None, 3]
 
 
-def test_struct_with_null_field(conn):
+def test_struct_with_null_field(make_conn):
+    conn = make_conn()
     value = _one(conn, "SELECT {'a': 1, 'b': NULL}")
     assert value == {"a": 1, "b": None}
 
 
-def test_multiple_rows(conn):
+def test_multiple_rows(make_conn):
+    conn = make_conn()
     result = execute(conn, "SELECT i FROM range(5) t(i)")
     assert list(result.rows()) == [(0,), (1,), (2,), (3,), (4,)]
 
 
-def test_multiple_columns(conn):
+def test_multiple_columns(make_conn):
+    conn = make_conn()
     result = execute(conn, "SELECT 1 AS a, 'x' AS b")
     assert result.columns == ("a", "b")
     assert list(result.rows()) == [(1, "x")]
 
 
-def test_empty_result_keeps_schema(conn):
+def test_empty_result_keeps_schema(make_conn):
+    conn = make_conn()
     result = execute(conn, "SELECT i FROM range(0) t(i)")
     assert result.columns == ("i",)
     assert list(result.rows()) == []
 
 
-def test_error_message_carries_engine_text(conn):
+def test_error_message_carries_engine_text(make_conn):
+    conn = make_conn()
     with pytest.raises(RuntimeError) as excinfo:
         execute(conn, "SELEC 1")
     assert excinfo.value.args[0]
 
 
-def test_error_on_unknown_column(conn):
+def test_error_on_unknown_column(make_conn):
+    conn = make_conn()
     with pytest.raises(RuntimeError):
         execute(conn, "SELECT no_such_column FROM range(1)")
 
 
-def test_result_close_is_idempotent_under_gc(conn):
+def test_result_close_is_idempotent_under_gc(make_conn):
+    conn = make_conn()
     for _ in range(50):
         result = execute(conn, "SELECT 1")
         list(result.rows())
@@ -148,7 +183,8 @@ def test_result_close_is_idempotent_under_gc(conn):
         gc.collect()
 
 
-def test_result_dealloc_without_explicit_close(conn):
+def test_result_dealloc_without_explicit_close(make_conn):
+    conn = make_conn()
     for _ in range(50):
         result = execute(conn, "SELECT 1")
         list(result.rows())
@@ -156,30 +192,36 @@ def test_result_dealloc_without_explicit_close(conn):
         gc.collect()
 
 
-def test_positional_parameters(conn):
+def test_positional_parameters(make_conn):
+    conn = make_conn()
     assert _one(conn, "SELECT $1::INTEGER + $2::INTEGER", [1, 2]) == 3
 
 
-def test_positional_parameter_null(conn):
+def test_positional_parameter_null(make_conn):
+    conn = make_conn()
     assert _one(conn, "SELECT $1::INTEGER", [None]) is None
 
 
-def test_named_parameters(conn):
+def test_named_parameters(make_conn):
+    conn = make_conn()
     result = execute(conn, "SELECT $x::INTEGER + $y::INTEGER AS total", {"x": 1, "y": 2})
     assert list(result.rows()) == [(3,)]
 
 
-def test_named_parameter_null(conn):
+def test_named_parameter_null(make_conn):
+    conn = make_conn()
     result = execute(conn, "SELECT $val::INTEGER AS v", {"val": None})
     assert list(result.rows()) == [(None,)]
 
 
-def test_string_and_bytes_parameters(conn):
+def test_string_and_bytes_parameters(make_conn):
+    conn = make_conn()
     assert _one(conn, "SELECT $1::VARCHAR", ["hi"]) == "hi"
     assert _one(conn, "SELECT $1::BLOB", [b"hi"]) == b"hi"
 
 
-def test_bound_parameters_against_a_table(conn):
+def test_bound_parameters_against_a_table(make_conn):
+    conn = make_conn()
     _run(conn, "CREATE TABLE params_t(i INTEGER, s VARCHAR)")
     _run(conn, "INSERT INTO params_t VALUES ($1, $2)", [1, "a"])
     _run(conn, "INSERT INTO params_t VALUES ($1, $2)", [2, None])
@@ -187,7 +229,8 @@ def test_bound_parameters_against_a_table(conn):
     assert list(result.rows()) == [(1, "a"), (2, None)]
 
 
-def test_multi_statement_execution_returns_last_result(conn):
+def test_multi_statement_execution_returns_last_result(make_conn):
+    conn = make_conn()
     result = execute(
         conn,
         "CREATE TABLE multi_t(i INTEGER); INSERT INTO multi_t VALUES (1), (2); "
@@ -196,22 +239,25 @@ def test_multi_statement_execution_returns_last_result(conn):
     assert list(result.rows()) == [(1,), (2,)]
 
 
-def test_multi_statement_side_effects_are_applied(conn):
+def test_multi_statement_side_effects_are_applied(make_conn):
+    conn = make_conn()
     # Last statement streams lazily (v2 default); must be read to apply its rows.
     _run(conn, "CREATE TABLE side_t(i INTEGER); INSERT INTO side_t VALUES (1), (2), (3)")
     result = execute(conn, "SELECT COUNT(*) FROM side_t")
     assert list(result.rows()) == [(3,)]
 
 
-def test_unread_result_still_applies_side_effects(conn):
+def test_unread_result_still_applies_side_effects(make_conn):
+    conn = make_conn()
     _run(conn, "CREATE TABLE unread_t(i INTEGER)")
     execute(conn, "INSERT INTO unread_t VALUES (1)")  # never read, already applied
     result = execute(conn, "SELECT COUNT(*) FROM unread_t")
     assert list(result.rows()) == [(1,)]
 
 
-def test_statement_expanding_into_a_group_executes(conn):
+def test_statement_expanding_into_a_group_executes(make_conn):
     """A dynamic PIVOT expands into several engine statements, which cannot be bound."""
+    conn = make_conn()
     _run(conn, "CREATE TABLE piv(k VARCHAR, v INTEGER)")
     _run(conn, "INSERT INTO piv VALUES ('a', 1), ('b', 2)")
     result = execute(conn, "PIVOT piv ON k USING sum(v)")
@@ -219,19 +265,22 @@ def test_statement_expanding_into_a_group_executes(conn):
     assert list(result.rows()) == [(1, 2)]
 
 
-def test_call_impl_routes_to_execute(conn):
+def test_call_impl_routes_to_execute(make_conn):
+    conn = make_conn()
     result = conn.call_impl(query="SELECT 42", mode="stream", batch_size=1)
     assert list(result.rows()) == [(42,)]
 
 
-def test_call_impl_on_closed_connection_raises(conn):
+def test_call_impl_on_closed_connection_raises(make_conn):
+    conn = make_conn()
     conn.close()
     with pytest.raises(RuntimeError, match="closed"):
         conn.call_impl(query="SELECT 1", mode="stream", batch_size=1)
 
 
-def test_to_arrow_returns_a_table(conn):
+def test_to_arrow_returns_a_table(make_conn):
     """to_arrow() smoke test; the Arrow layer's own suite covers the detail."""
+    conn = make_conn()
     pa = pytest.importorskip("pyarrow")
     result = execute(conn, "SELECT 1 AS c")
     table = result.to_arrow()
@@ -239,7 +288,8 @@ def test_to_arrow_returns_a_table(conn):
     assert table.column(0).to_pylist() == [1]
 
 
-def test_arrow_c_stream_returns_a_capsule(conn):
+def test_arrow_c_stream_returns_a_capsule(make_conn):
+    conn = make_conn()
     pytest.importorskip("pyarrow")
     result = execute(conn, "SELECT 1 AS c")
     assert type(result.__arrow_c_stream__()).__name__ == "PyCapsule"

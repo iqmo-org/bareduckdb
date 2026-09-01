@@ -157,6 +157,7 @@ cdef class CApiConnectionImpl:
         self._conn = NULL
         self._database_path = "" if database is None else str(database)
         self._closed = False
+        self._close_claimed = 0
 
     def __init__(self, database=None, config=None, read_only=False):
         """Open a database under the shared environment and connect to it."""
@@ -251,18 +252,19 @@ cdef class CApiConnectionImpl:
         return execute(self, query, parameters, batch_size)
 
     def close(self):
-        """Disconnect and drop this connection's reference to the database."""
-        if self._closed:
-            return
-        if self._conn != NULL:
-            with nogil:
-                duckdb_v2_disconnect(&self._conn)
-        self._conn = NULL
-        self._db = None
-        self._closed = True
+        """Disconnect and drop this connection's reference to the database.
+
+        Safe to call more than once, from any thread.
+        """
+        self._do_close()
 
     def __dealloc__(self):
-        if self._closed:
+        self._do_close()
+
+    cdef void _do_close(self) noexcept:
+        """Disconnect exactly once
+        """
+        if not bdv2_cas(&self._close_claimed, 0, 1):
             return
         if self._conn != NULL:
             with nogil:
@@ -294,6 +296,7 @@ cdef class CApiConnectionImpl:
         cursor._db = self._db
         cursor._database_path = self._database_path
         cursor._closed = False
+        cursor._close_claimed = 0
 
         with nogil:
             rc = duckdb_v2_connect(self._db._db, &conn, &err)

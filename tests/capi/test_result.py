@@ -203,12 +203,11 @@ def test_multi_statement_side_effects_are_applied(conn):
     assert list(result.rows()) == [(3,)]
 
 
-def test_unread_result_abandons_side_effects(conn):
-    """v2 streams by default: an INSERT's effect only applies once its result is read."""
+def test_unread_result_still_applies_side_effects(conn):
     _run(conn, "CREATE TABLE unread_t(i INTEGER)")
-    execute(conn, "INSERT INTO unread_t VALUES (1)")  # never read, never applied
+    execute(conn, "INSERT INTO unread_t VALUES (1)")  # never read, already applied
     result = execute(conn, "SELECT COUNT(*) FROM unread_t")
-    assert list(result.rows()) == [(0,)]
+    assert list(result.rows()) == [(1,)]
 
 
 def test_statement_expanding_into_a_group_executes(conn):

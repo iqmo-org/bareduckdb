@@ -56,6 +56,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED,
     DUCKDB_V2_RESULT_STEP_STATUS_CHUNK,
     DUCKDB_V2_RESULT_STEP_STATUS_FINISHED,
+    DUCKDB_V2_RESULT_TYPE_QUERY_RESULT,
     idx_t,
     duckdb_v2_bool_t,
     duckdb_v2_connection_create_type_from_id,
@@ -80,10 +81,12 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_parse_sql,
     duckdb_v2_result_destroy,
     duckdb_v2_result_drain,
+    duckdb_v2_result_get_result_type,
     duckdb_v2_result_get_schema,
     duckdb_v2_result_handle,
     duckdb_v2_result_step,
     duckdb_v2_result_step_status_t,
+    duckdb_v2_result_type_t,
     duckdb_v2_result_wait,
     duckdb_v2_schema_destroy,
     duckdb_v2_schema_get_count,
@@ -175,6 +178,7 @@ def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_ro
     cdef bytes query_bytes = query.encode("utf-8")
     cdef const char *c_query = query_bytes
     cdef CApiResult py_result
+    cdef duckdb_v2_result_type_t result_type
 
     with nogil:
         rc = duckdb_v2_parse_sql(c_conn, c_query, &iterator, &err)
@@ -216,6 +220,19 @@ def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_ro
     finally:
         with nogil:
             duckdb_v2_statement_iterator_destroy(&iterator)
+
+    if current_result != NULL:
+        with nogil:
+            rc = duckdb_v2_result_get_result_type(current_result, &result_type, &err)
+        if rc != DUCKDB_V2_ERROR_NONE:
+            _destroy_result(current_result)
+            check_v2(rc, err, "duckdb_v2_result_get_result_type")
+        if result_type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT:
+            with nogil:
+                rc = duckdb_v2_result_drain(current_result, &rows_changed, &err)
+            if rc != DUCKDB_V2_ERROR_NONE:
+                _destroy_result(current_result)
+                check_v2(rc, err, "duckdb_v2_result_drain")
 
     py_result = CApiResult.__new__(CApiResult)
     if batch_rows is not None:

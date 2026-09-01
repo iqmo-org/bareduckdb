@@ -21,3 +21,5 @@ cdef class CApiConnectionImpl:
     cdef duckdb_v2_connection_handle _conn
     cdef str _database_path
     cdef bint _closed
+    cdef long _close_claimed
+    cdef void _do_close(self) noexcept

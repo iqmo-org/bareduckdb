@@ -39,7 +39,7 @@ jobs:
             python-version: '3.15t'
     steps:
       - name: Checkout code
-        uses: actions/checkout@main
+        uses: actions/checkout@7.0.1
         with:
           fetch-depth: 0
           submodules: false
@@ -55,13 +55,13 @@ jobs:
           cd ../..
 
       - name: Set up Python
-        uses: actions/setup-python@main
+        uses: actions/setup-python@7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
 
       - name: Install UV
-        uses: astral-sh/setup-uv@v10.0.0
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           cache-suffix: -dev-versions-${{ matrix.python-version }}
@@ -230,13 +230,12 @@ jobs:
       matrix:
         include:
           - { python: cp312, pydir: cp312-cp312 }
-          - { python: cp314t, pydir: cp314-cp314t }
           - { python: cp315t, pydir: cp315-cp315t }
 
     steps:
       # Checkout on the glibc host
       - name: Checkout code
-        uses: actions/checkout@main
+        uses: actions/checkout@7.0.1
         with:
           fetch-depth: 0
           submodules: false
@@ -267,6 +266,21 @@ jobs:
               LIB=$(find src/bareduckdb/_libs -name "libduckdb.so")
               readelf -d "$LIB" | grep -q "libc.musl" || { echo "ERROR: $LIB is not musl-linked"; exit 1; }
               echo "OK: $LIB is musl-linked"
+
+              # musl only matches a DT_NEEDED against libraries its own loader opened by
+              # name, so the ctypes preload in bareduckdb/__init__.py cannot satisfy the
+              # extension modules "libduckdb.so" the way glibc does. Install the library
+              # into the installed package instead, where their RUNPATH ($ORIGIN/../../_libs)
+              # looks for it.
+              PKG=$(uv run --no-sync python -c \
+                  "import importlib.util as u; print(u.find_spec(\"bareduckdb\").submodule_search_locations[0])")
+              if [ "$(realpath -m "$PKG/_libs")" != "$(realpath -m "$(dirname "$LIB")")" ]; then
+                mkdir -p "$PKG/_libs"
+                cp -f "$LIB" "$PKG/_libs/"
+                echo "Installed $LIB into $PKG/_libs"
+              else
+                echo "Package already resolves to $(dirname "$LIB")"
+              fi
 
               uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream \
                   --ignore=tests/comparison --ignore=tests/benchmarks \

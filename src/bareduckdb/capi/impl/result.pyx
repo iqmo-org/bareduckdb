@@ -225,9 +225,12 @@ def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_ro
         with nogil:
             rc = duckdb_v2_result_get_result_type(current_result, &result_type, &err)
         if rc != DUCKDB_V2_ERROR_NONE:
-            _destroy_result(current_result)
-            check_v2(rc, err, "duckdb_v2_result_get_result_type")
-        if result_type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT:
+            # A statement that expands into a group (PIVOT) has no result metadata until
+            # it is stepped, so it cannot be classified yet. Those produce rows, so leave
+            # the result for the caller to step rather than failing the execute.
+            if err != NULL:
+                duckdb_v2_error_info_destroy(&err)
+        elif result_type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT:
             with nogil:
                 rc = duckdb_v2_result_drain(current_result, &rows_changed, &err)
             if rc != DUCKDB_V2_ERROR_NONE:

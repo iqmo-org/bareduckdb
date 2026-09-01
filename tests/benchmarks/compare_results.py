@@ -38,6 +38,7 @@ def main():
         avg(wall_time_s)*1000 as time_ms_avg,
         avg(rusage_maxrss_delta_kb) as memory_kb_delta,
         avg(rusage_maxrss_peak_kb) as memory_kb_peak,
+        avg(rss_peak_delta_kb) as memory_kb_query_delta,
         count(*) num_tests
      from latest_results
      group by lib, test_name, mode
@@ -47,8 +48,10 @@ def main():
 
     create or replace table result_vs_baseline as
     select r.*, r.time_ms_avg/b.time_ms_avg as ms_ratio,
-     -- r.memory_kb_delta/b.memory_kb_delta as mem_delta_ratio, 
-    r.memory_kb_peak/b.memory_kb_peak as mem_peak_ratio
+     -- r.memory_kb_delta/b.memory_kb_delta as mem_delta_ratio,
+    r.memory_kb_peak/b.memory_kb_peak as mem_peak_ratio,
+    -- mem_query_ratio: per-query RSS delta, vs. mem_peak_ratio's process-wide peak
+    r.memory_kb_query_delta/b.memory_kb_query_delta as mem_query_ratio
     from result_stats r
     join baseline b
     on b.test_name=r.test_name
@@ -62,7 +65,8 @@ def main():
     pivot result_vs_baseline on lib using round(last(time_ms_avg), 1) as time_ms_avg, round(last(ms_ratio),2) as time group by test_name, mode
     ),
     mem_pivoted as (
-    pivot result_vs_baseline on lib using round(last(mem_peak_ratio),1) as mem group by test_name, mode
+    -- mem_peak: process-wide rusage high-water mark. mem_query: per-query RSS delta.
+    pivot result_vs_baseline on lib using round(last(mem_peak_ratio),1) as mem_peak, round(last(mem_query_ratio),1) as mem_query group by test_name, mode
     )
     select b.test_name as test,
         b.mode,

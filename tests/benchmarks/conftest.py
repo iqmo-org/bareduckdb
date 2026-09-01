@@ -2,11 +2,14 @@ import pytest
 import os
 import platform
 import resource
+import threading
 import time
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+import psutil
 
 try:
     from .data_setup import (
@@ -29,6 +32,38 @@ _output_file = None
 BENCHMARK_OUTPUT_DIR = Path("benchmark-results")
 
 BENCHMARK_SUFFIX = None
+
+_RSS_SAMPLE_INTERVAL_S = 0.002
+
+
+class _RssSampler:
+    """Background thread tracking peak process RSS (trustworthy only one test per process, see --forked)."""
+
+    def __init__(self, process, interval_s=_RSS_SAMPLE_INTERVAL_S):
+        self._process = process
+        self._interval_s = interval_s
+        self._stop_event = threading.Event()
+        self._peak_rss = 0
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        while not self._stop_event.is_set():
+            rss = self._process.memory_info().rss
+            if rss > self._peak_rss:
+                self._peak_rss = rss
+            self._stop_event.wait(self._interval_s)
+
+    def start(self):
+        self._peak_rss = self._process.memory_info().rss
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        self._thread.join(timeout=1.0)
+
+    @property
+    def peak_rss(self):
+        return self._peak_rss
 
 def pytest_addoption(parser):
     parser.addoption(
@@ -109,10 +144,18 @@ def pytest_runtest_call(item):
         yield
         return
 
+    process = psutil.Process()
+    rss_before_bytes = process.memory_info().rss
+    sampler = _RssSampler(process)
+    sampler.start()
+
     ru_before = resource.getrusage(resource.RUSAGE_SELF)
     wall_before = time.perf_counter()
 
-    yield
+    try:
+        yield
+    finally:
+        sampler.stop()
 
     wall_after = time.perf_counter()
     ru_after = resource.getrusage(resource.RUSAGE_SELF)
@@ -129,9 +172,13 @@ def pytest_runtest_call(item):
         "nivcsw": ru_after.ru_nivcsw - ru_before.ru_nivcsw,
     }
 
+    # Per-query memory: peak RSS observed while the test ran, minus the pre-test baseline.
+    rss_peak_delta_kb = max(0, sampler.peak_rss - rss_before_bytes) // 1024
+
     item.benchmark_result = {
         "wall_time_s": wall_time,
         "rusage": rusage_delta,
+        "rss_peak_delta_kb": rss_peak_delta_kb,
     }
 
     # Extract test metadata from item
@@ -188,6 +235,7 @@ def pytest_runtest_call(item):
         "lib_version": _lib_info.get("lib_version", "unknown"),
         "duckdb_version": _lib_info.get("duckdb_version", "unknown"),
         "wall_time_s": round(wall_time, 6),
+        "rss_peak_delta_kb": rss_peak_delta_kb,
         **{f"rusage_{k}": v for k, v in rusage_delta.items()},
     }
 

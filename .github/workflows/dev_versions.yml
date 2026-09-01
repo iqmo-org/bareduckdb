@@ -267,21 +267,13 @@ jobs:
               readelf -d "$LIB" | grep -q "libc.musl" || { echo "ERROR: $LIB is not musl-linked"; exit 1; }
               echo "OK: $LIB is musl-linked"
 
-              # musl only matches a DT_NEEDED against libraries its own loader opened by
-              # name, so the ctypes preload in bareduckdb/__init__.py cannot satisfy the
-              # extension modules "libduckdb.so" the way glibc does. Install the library
-              # into the installed package instead, where their RUNPATH ($ORIGIN/../../_libs)
-              # looks for it.
-              DEST_DIR=$(uv run --no-sync python -c "import importlib.util, os; print(os.path.join(importlib.util.find_spec(\"bareduckdb\").submodule_search_locations[0], \"_libs\"))")
+              # musl resolves the extension modules DT_NEEDED "libduckdb.so" from disk, via
+              # RUNPATH/LD_LIBRARY_PATH, and will not accept the ctypes preload in
+              # src/bareduckdb/__init__.py the way glibc does. Point the loader at the built
+              # library so it is found wherever the package is installed.
               SRC_DIR=$(cd "$(dirname "$LIB")" && pwd)
               # cd+pwd rather than realpath -m: busybox realpath has no -m.
-              if [ -d "$DEST_DIR" ] && [ "$(cd "$DEST_DIR" && pwd)" = "$SRC_DIR" ]; then
-                echo "Package already resolves to $SRC_DIR"
-              else
-                mkdir -p "$DEST_DIR"
-                cp -f "$LIB" "$DEST_DIR/"
-                echo "Installed $LIB into $DEST_DIR"
-              fi
+              export LD_LIBRARY_PATH="$SRC_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
               uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream \
                   --ignore=tests/comparison --ignore=tests/benchmarks \

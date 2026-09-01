@@ -22,16 +22,14 @@ cdef duckdb_v2_error_t step_result_chunk(
 
 
 cdef class CApiResult:
-    # Typed reference to the owning connection, so the raw handle below cannot outlive it.
     cdef CApiConnectionImpl _conn_obj
     cdef duckdb_v2_result_handle _result
     cdef duckdb_v2_schema_handle _schema
-    # long, not bint: the transition is a compare-and-swap (v2 results are single-consumer).
     cdef long _destroyed
     cdef long _consumed
     cdef bint _finished
     cdef duckdb_v2_data_chunk_handle _pending_chunk
-    cdef bint _schema_ready
+    cdef long _schema_ready
     cdef long _schema_lock
     cdef unsigned long long _batch_rows
     cdef list _column_names

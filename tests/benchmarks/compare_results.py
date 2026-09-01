@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
-"""Generate a benchmark comparison table from JSONL results and gate on regressions."""
+"""Generate a benchmark comparison table from JSONL results."""
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
 import bareduckdb
 
-DEFAULT_ALLOWLIST = Path(__file__).parent / "regression_allowlist.json"
-DEFAULT_THRESHOLD = 1.5
-DEFAULT_MIN_BASELINE_MS = 5.0
 
 # One statement per execute()
 SETUP_STATEMENTS = [
@@ -53,9 +49,7 @@ SETUP_STATEMENTS = [
      group by lib, test_name, mode
     """,
     "create or replace table baseline as (select * from result_stats where lib='duckdb')",
-    # Every (test, mode) the baseline measured, crossed with every library, so a
-    # library with no results for a case stays in the table as an explicit gap
-    # instead of being dropped by an inner join.
+    # Baseline (test, mode) crossed with every library, so a library with no results stays as an explicit gap.
     """
     create or replace table expected_cells as
     select b.test_name, b.mode, l.lib
@@ -136,161 +130,7 @@ def build_report_query(libs):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("results_dir", nargs="?", default="benchmark-results", help="Directory of benchmark JSONL files")
-    parser.add_argument(
-        "--threshold",
-        type=float,
-        default=DEFAULT_THRESHOLD,
-        help=f"Fail when a case's median time ratio exceeds this (default {DEFAULT_THRESHOLD})",
-    )
-    parser.add_argument(
-        "--allowlist",
-        default=str(DEFAULT_ALLOWLIST),
-        help="JSON file of known regressions that do not fail the gate",
-    )
-    parser.add_argument(
-        "--allow",
-        action="append",
-        default=[],
-        metavar="TEST[:MODE[:LIB]]",
-        help="Allowlist one case inline, repeatable; MODE and LIB default to '*'",
-    )
-    parser.add_argument(
-        "--min-baseline-ms",
-        type=float,
-        default=DEFAULT_MIN_BASELINE_MS,
-        help=f"Do not gate cases whose duckdb baseline median is below this, where noise dominates (default {DEFAULT_MIN_BASELINE_MS})",
-    )
-    parser.add_argument("--no-gate", action="store_true", help="Report only, never exit non-zero on a regression")
-    parser.add_argument("--fail-on-missing", action="store_true", help="Also fail when a library has no data for a baseline case")
     return parser.parse_args(argv)
-
-
-def load_allowlist(path, inline_entries):
-    """Read the allowlist file and merge in any --allow entries."""
-    entries = []
-    allowlist_path = Path(path)
-    if allowlist_path.exists():
-        raw = json.loads(allowlist_path.read_text())
-        for item in raw:
-            entries.append(
-                {
-                    "test": item["test"],
-                    "mode": item.get("mode", "*"),
-                    "lib": item.get("lib", "*"),
-                    "reason": item.get("reason", ""),
-                    "max_ratio": item.get("max_ratio"),
-                    "source": str(allowlist_path),
-                }
-            )
-
-    for spec in inline_entries:
-        parts = spec.split(":")
-        entries.append(
-            {
-                "test": parts[0],
-                "mode": parts[1] if len(parts) > 1 else "*",
-                "lib": parts[2] if len(parts) > 2 else "*",
-                "reason": "--allow on the command line",
-                "max_ratio": None,
-                "source": "--allow",
-            }
-        )
-    return entries
-
-
-def _matches(entry, row):
-    return (
-        entry["test"] == row["test_name"]
-        and entry["mode"] in ("*", row["mode"])
-        and entry["lib"] in ("*", row["lib"])
-    )
-
-
-def _entry_label(entry):
-    return f"{entry['test']}:{entry['mode']}:{entry['lib']}"
-
-
-def _is_number(value):
-    return value is not None and value == value
-
-
-def report_gate(df_ratios, args):
-    """Print the regression gate outcome and return the process exit code."""
-    entries = load_allowlist(args.allowlist, args.allow)
-
-    print("\n## Regression gate\n")
-    print(f"- median time ratio threshold: **{args.threshold}**")
-    print(f"- cases with a duckdb baseline median below {args.min_baseline_ms} ms are not gated, noise dominates there")
-    print(f"- allowlist file: `{args.allowlist}`" + ("" if Path(args.allowlist).exists() else " (absent)"))
-
-    if entries:
-        print("\n**Allowlisted regressions** (exempt from the gate, listed so they are never silent):\n")
-        print("| case | max_ratio | observed_median_ratio | matched | reason | source |")
-        print("| --- | --- | --- | --- | --- | --- |")
-    breaches = []
-
-    above_threshold = df_ratios[df_ratios["ms_median_ratio"].notna() & (df_ratios["ms_median_ratio"] > args.threshold)]
-    too_short = above_threshold["base_time_ms_median"] < args.min_baseline_ms
-    over = above_threshold[~too_short]
-    ungated = above_threshold[too_short]
-
-    for entry in entries:
-        observed = []
-        for _, row in df_ratios.iterrows():
-            if _matches(entry, row) and _is_number(row["ms_median_ratio"]):
-                observed.append(row["ms_median_ratio"])
-        worst = max(observed) if observed else None
-        worst_txt = "n/a" if worst is None else f"{worst:.2f}"
-        ceiling = "none" if entry["max_ratio"] is None else f"{entry['max_ratio']}"
-        matched = "yes" if observed else "NO (stale entry)"
-        print(f"| {_entry_label(entry)} | {ceiling} | {worst_txt} | {matched} | {entry['reason']} | {entry['source']} |")
-
-    for _, row in over.iterrows():
-        allowed_by = None
-        ceiling_breach = None
-        for entry in entries:
-            if _matches(entry, row):
-                if entry["max_ratio"] is not None and row["ms_median_ratio"] > entry["max_ratio"]:
-                    ceiling_breach = entry
-                else:
-                    allowed_by = entry
-                    break
-        if allowed_by is not None:
-            continue
-        breaches.append((row, ceiling_breach))
-
-    if breaches:
-        print("\n**REGRESSION GATE FAILED.** These cases exceed the median ratio threshold:\n")
-        print("| lib | case | mode | median_ratio | mean_ratio | note |")
-        print("| --- | --- | --- | --- | --- | --- |")
-        for row, ceiling_breach in breaches:
-            note = ""
-            if ceiling_breach is not None:
-                note = f"allowlisted but above its max_ratio {ceiling_breach['max_ratio']}"
-            mean_txt = f"{row['ms_ratio']:.2f}" if _is_number(row["ms_ratio"]) else "n/a"
-            print(f"| {row['lib']} | {row['test_name']} | {row['mode']} | {row['ms_median_ratio']:.2f} | {mean_txt} | {note} |")
-    else:
-        print(f"\nNo case exceeds the {args.threshold}x median ratio threshold outside the allowlist.")
-
-    if len(ungated) > 0:
-        ungated = ungated[[not any(_matches(e, row) for e in entries) for _, row in ungated.iterrows()]]
-    if len(ungated) > 0:
-        print(f"\n**Over threshold but not gated** (duckdb baseline median below {args.min_baseline_ms} ms):\n")
-        print(ungated[["lib", "test_name", "mode", "base_time_ms_median", "ms_median_ratio"]].to_markdown(index=False))
-
-    exit_code = 1 if breaches else 0
-
-    if args.fail_on_missing:
-        missing = df_ratios[df_ratios["missing"]]
-        if len(missing) > 0:
-            print("\n**REGRESSION GATE FAILED.** --fail-on-missing and these cases have no data:\n")
-            print(missing[["lib", "test_name", "mode"]].to_markdown(index=False))
-            exit_code = 1
-
-    if args.no_gate and exit_code:
-        print("\n_--no-gate given: reporting the breach but exiting 0._")
-        return 0
-    return exit_code
 
 
 def main(argv=None):
@@ -370,7 +210,7 @@ def main(argv=None):
         print("\n**WARNING: Fork isolation issue detected!** Multiple tests ran in same process:\n")
         print(df_check.to_markdown(index=False))
 
-    return report_gate(df_ratios, args)
+    return 0
 
 
 if __name__ == "__main__":

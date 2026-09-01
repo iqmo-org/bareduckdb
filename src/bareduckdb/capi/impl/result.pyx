@@ -147,7 +147,13 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_vector_get_value,
     duckdb_v2_vector_handle,
 )
-from bareduckdb.capi.impl.atomics cimport bdv2_cas, bdv2_lock, bdv2_unlock
+from bareduckdb.capi.impl.atomics cimport (
+    bdv2_cas,
+    bdv2_load_acquire,
+    bdv2_lock,
+    bdv2_store_release,
+    bdv2_unlock,
+)
 from bareduckdb.capi.impl.errors cimport (
     check_v2,
     logical_type_name,
@@ -156,7 +162,9 @@ from bareduckdb.capi.impl.errors cimport (
 )
 
 
+# Materializing coalesces hard; a stream coalesces less, since a large target only delays the first batch. Both are floors.
 DEFAULT_BATCH_ROWS = 1_000_000
+DEFAULT_STREAM_BATCH_ROWS = 65_536
 
 _EPOCH_DATE = datetime.date(1970, 1, 1)
 _EPOCH_DATETIME = datetime.datetime(1970, 1, 1)
@@ -225,9 +233,7 @@ def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_ro
         with nogil:
             rc = duckdb_v2_result_get_result_type(current_result, &result_type, &err)
         if rc != DUCKDB_V2_ERROR_NONE:
-            # A statement that expands into a group (PIVOT) has no result metadata until
-            # it is stepped, so it cannot be classified yet. Those produce rows, so leave
-            # the result for the caller to step rather than failing the execute.
+            # A statement that expands into a group (PIVOT) has no metadata until stepped, so leave it for the caller to step.
             if err != NULL:
                 duckdb_v2_error_info_destroy(&err)
         elif result_type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT:
@@ -559,9 +565,9 @@ cdef class CApiResult:
         self._consumed = 0
         self._finished = False
         self._pending_chunk = NULL
-        self._schema_ready = False
+        self._schema_ready = 0
         self._schema_lock = 0
-        self._batch_rows = <unsigned long long>DEFAULT_BATCH_ROWS
+        self._batch_rows = 0
         self._column_names = []
         self._column_decoders = []
 
@@ -573,13 +579,12 @@ cdef class CApiResult:
 
     cdef duckdb_v2_schema_handle _ensure_schema(self) except NULL:
         """Return the output schema, resolving it and the column metadata on first use."""
-        if not self._schema_ready:
-            # A spinlock rather than a Python lock, so no Python object guards an engine
-            # call. Taken with the GIL released, since the section below drops the GIL itself.
+        if not bdv2_load_acquire(&self._schema_ready):
+            # A spinlock rather than a Python lock, taken with the GIL released since the section below drops it.
             with nogil:
                 bdv2_lock(&self._schema_lock)
             try:
-                if not self._schema_ready:
+                if not bdv2_load_acquire(&self._schema_ready):
                     self._resolve_schema()
             finally:
                 bdv2_unlock(&self._schema_lock)
@@ -598,8 +603,7 @@ cdef class CApiResult:
         with nogil:
             rc = duckdb_v2_result_get_schema(self._result, &self._schema, &err)
         if rc != DUCKDB_V2_ERROR_NONE:
-            # duckdb_v2.h:5490: an expanding statement has no metadata until stepping has
-            # prepared its row-producing fragment, so drop this error and step once.
+            # duckdb_v2.h:5490: an expanding statement has no metadata until stepped, so drop this error and step once.
             if err != NULL:
                 with nogil:
                     duckdb_v2_error_info_destroy(&err)
@@ -610,7 +614,8 @@ cdef class CApiResult:
         check_v2(rc, err, "duckdb_v2_result_get_schema")
 
         self._build_column_metadata()
-        self._schema_ready = True
+        # Last, and with release semantics: every write above must be visible to a thread that sees the flag set.
+        bdv2_store_release(&self._schema_ready, 1)
 
     cdef void _step_for_schema(self) except *:
         """Step until the group's row-producing fragment is prepared, buffering any chunk."""
@@ -723,18 +728,29 @@ cdef class CApiResult:
         return schema
 
     def to_arrow(self, batch_rows=None):
-        """Materialize the whole result as a pyarrow.Table through one Arrow C stream."""
+        """Materialize the whole result as a pyarrow.Table through one Arrow C stream.
+
+        batch_rows is a floor, not a cap: whole engine chunks are accumulated until it
+        is reached, so a batch can overshoot by up to one chunk. Defaults to
+        DEFAULT_BATCH_ROWS unless execute() was given one.
+        """
         from bareduckdb.capi.impl.arrow import arrow_table_from_result
 
-        return arrow_table_from_result(
-            self, self._batch_rows if batch_rows is None else batch_rows
-        )
+        if batch_rows is None:
+            batch_rows = self._batch_rows or DEFAULT_BATCH_ROWS
+        return arrow_table_from_result(self, batch_rows)
 
     def __arrow_c_stream__(self, requested_schema=None):
-        """Export this result as an Arrow C Stream capsule, consuming it."""
+        """Export this result as an Arrow C Stream capsule, consuming it.
+
+        Defaults to DEFAULT_STREAM_BATCH_ROWS rather than DEFAULT_BATCH_ROWS, because a
+        stream is read batch by batch and a large target only delays the first batch.
+        execute(batch_rows=...) overrides it.
+        """
         from bareduckdb.capi.impl.arrow import arrow_stream_from_result
 
-        return arrow_stream_from_result(self, self._batch_rows, requested_schema)
+        batch_rows = self._batch_rows or DEFAULT_STREAM_BATCH_ROWS
+        return arrow_stream_from_result(self, batch_rows, requested_schema)
 
     def close(self):
         """Destroy the underlying v2 result. Safe to call more than once, from any thread."""

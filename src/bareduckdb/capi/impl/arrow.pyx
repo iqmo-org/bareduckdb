@@ -128,7 +128,7 @@ cdef const char *BD_MSG_CONVERT = b"failed to convert a chunk into Arrow buffers
 cdef const char *BD_MSG_FINALIZE = b"failed to finalize the Arrow batch"
 cdef const char *BD_MSG_CANCELLED = b"query was cancelled"
 cdef const char *BD_MSG_VECTOR_COUNT = b"chunk vector count does not match the result schema"
-cdef const char *BD_MSG_SEL_RANGE = b"a selection vector does not cover the rows requested from it"
+cdef const char *BD_MSG_VIEW_RANGE = b"a vector view does not cover the rows requested from it"
 cdef const char *BD_CTX_STEP = b"duckdb_v2_result_step"
 cdef const char *BD_CTX_CHUNK_SIZE = b"duckdb_v2_data_chunk_get_size"
 cdef const char *BD_CTX_VECTOR_COUNT = b"duckdb_v2_data_chunk_get_vector_count"
@@ -977,6 +977,8 @@ cdef duckdb_v2_error_t resolve_vector(
             )
             if rc != DUCKDB_V2_ERROR_NONE:
                 return rc
+        # The entries node has no vector of its own, so its length is its keys' length.
+        out.children[0].count = out.children[0].children[0].count
         return DUCKDB_V2_ERROR_NONE
 
     for i in range(out.n_children):
@@ -1170,9 +1172,8 @@ cdef int append_rows(ColBuild *b, RVec *rv, idx_t start, idx_t count) noexcept n
     if count == 0:
         return 0
 
-    # rv.sel holds rv.count entries, one per logical row of the view. A run reaching
-    # past them would gather from off the end of the selection vector.
-    if rv.sel != NULL and not rv.is_constant and start + count > rv.count:
+    # rv.count is the view's own logical length and every run formed here ends exactly at it. CONSTANT is exempt: one slot stands for any row count.
+    if not rv.is_constant and start + count > rv.count:
         return -4
 
     if plan.kind == K_NULLCOL:
@@ -1666,7 +1667,7 @@ cdef int convert_chunk(
             return 5
         append_rc = append_rows(&root.children[i], &state.rvec.children[i], 0, chunk_size)
         if append_rc != 0:
-            state_set_error(state, BD_MSG_SEL_RANGE if append_rc == -4 else BD_MSG_CONVERT)
+            state_set_error(state, BD_MSG_VIEW_RANGE if append_rc == -4 else BD_MSG_CONVERT)
             return 12
 
     root.length += <int64_t>chunk_size
@@ -1809,7 +1810,12 @@ cdef ColPlan *build_root_plan(duckdb_v2_schema_handle schema, idx_t *out_count) 
 
 
 def arrow_stream_from_result(CApiResult result, batch_rows=None, requested_schema=None):
-    """Export a result as an Arrow C Stream capsule, taking ownership of it."""
+    """Export a result as an Arrow C Stream capsule, taking ownership of it.
+
+    batch_rows is a floor, not a cap. Whole engine chunks are accumulated until it is
+    reached, so a batch overshoots by up to one chunk and can never be smaller than the
+    engine's chunk size. A falsy value selects DEFAULT_BATCH_ROWS.
+    """
     cdef ArrowArrayStream *stream = NULL
     cdef StreamState *state = NULL
     cdef ColPlan *plan = NULL
@@ -1884,7 +1890,8 @@ _VECTOR_TYPE_NAMES = {
 
 
 def convert_first_chunk(CApiResult result, object selection=None, bint as_constant=False,
-                        object constant_rows=None, object selection_rows=None):
+                        object constant_rows=None, object selection_rows=None,
+                        object flat_rows=None):
     """Convert one chunk to a RecordBatch; test hook that forces non-FLAT views."""
     import pyarrow
 
@@ -1930,8 +1937,7 @@ def convert_first_chunk(CApiResult result, object selection=None, bint as_consta
                         f"selection index {index} is outside the chunk's {chunk_size} rows"
                     )
             sel_count = <idx_t>len(selection)
-            # selection_rows asks for more logical rows than the vector covers, which is
-            # how a test reaches the out-of-range gather an engine contract breach would.
+            # selection_rows asks for more logical rows than the vector covers, reaching the out-of-range gather.
             rows = sel_count if selection_rows is None else <idx_t>selection_rows
             sel = <duckdb_v2_sel_t *>malloc(max(sel_count, 1) * sizeof(duckdb_v2_sel_t))
             if sel == NULL:
@@ -1940,6 +1946,9 @@ def convert_first_chunk(CApiResult result, object selection=None, bint as_consta
                 sel[i] = <duckdb_v2_sel_t>selection[i]
         elif as_constant:
             rows = <idx_t>(chunk_size if constant_rows is None else constant_rows)
+        elif flat_rows is not None:
+            # A FLAT view asked for more rows than its count covers, reaching the out-of-range read.
+            rows = <idx_t>flat_rows
         else:
             rows = chunk_size
 
@@ -1960,9 +1969,7 @@ def convert_first_chunk(CApiResult result, object selection=None, bint as_consta
                 rvec.children[i].is_constant = 1
             append_rc = append_rows(&root.children[i], &rvec.children[i], 0, rows)
             if append_rc == -4:
-                raise RuntimeError(
-                    "the selection vector does not cover the rows requested from it"
-                )
+                raise RuntimeError("a vector view does not cover the rows requested from it")
             if append_rc != 0:
                 raise RuntimeError("failed to convert the chunk into Arrow buffers")
 
@@ -1977,6 +1984,64 @@ def convert_first_chunk(CApiResult result, object selection=None, bint as_consta
     finally:
         build_clear(&root)
         free(sel)
+        rvec_free(rvec)
+        plan_free(plan)
+        with nogil:
+            duckdb_v2_data_chunk_destroy(&chunk)
+
+
+cdef dict _rvec_shape(RVec *node, ColPlan *plan):
+    """Describe one resolved node and its children, for the view-shape probe."""
+    return {
+        "kind": plan.kind,
+        "count": node.count,
+        "has_sel": node.sel != NULL,
+        "is_constant": bool(node.is_constant),
+        "children": [
+            _rvec_shape(&node.children[i], plan.children[i]) for i in range(node.n_children)
+        ],
+    }
+
+
+def probe_vector_views(CApiResult result):
+    """Report the first chunk's resolved view shape per column and nested child.
+
+    A diagnostic hook: append_rows bounds a run against these counts, so what the engine
+    reports for a nested child has to be measured rather than assumed.
+    """
+    cdef ColPlan *plan = NULL
+    cdef RVec *rvec = NULL
+    cdef duckdb_v2_data_chunk_handle chunk = NULL
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef idx_t count = 0
+    cdef idx_t chunk_size = 0
+    cdef idx_t i
+    cdef duckdb_v2_vector_handle vec = NULL
+
+    plan = build_root_plan(result._ensure_schema(), &count)
+    chunk = result._next_chunk()
+    if chunk == NULL:
+        plan_free(plan)
+        raise RuntimeError("the result produced no chunk to probe")
+    try:
+        rvec = rvec_new(plan)
+        if rvec == NULL:
+            raise MemoryError("failed to allocate the resolved-vector tree")
+        with nogil:
+            rc = duckdb_v2_data_chunk_get_size(chunk, &chunk_size, &err)
+        check_v2(rc, err, "duckdb_v2_data_chunk_get_size")
+        columns = []
+        for i in range(count):
+            with nogil:
+                rc = duckdb_v2_data_chunk_get_vector(chunk, i, &vec, &err)
+            check_v2(rc, err, "duckdb_v2_data_chunk_get_vector")
+            with nogil:
+                rc = resolve_vector(vec, plan.children[i], &rvec.children[i], &err)
+            check_v2(rc, err, "duckdb_v2_vector_get_view")
+            columns.append(_rvec_shape(&rvec.children[i], plan.children[i]))
+        return {"chunk_size": chunk_size, "columns": columns}
+    finally:
         rvec_free(rvec)
         plan_free(plan)
         with nogil:

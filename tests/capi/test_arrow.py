@@ -1,6 +1,7 @@
 """Zero-copy Arrow export from v2 results, built on duckdb_v2_vector_get_view."""
 
 import gc
+import os
 import threading
 import time
 
@@ -14,6 +15,7 @@ from bareduckdb.capi.impl.arrow import (  # noqa: E402
     convert_first_chunk,
     pool_double_return_count,
     probe_vector_types,
+    probe_vector_views,
 )
 from bareduckdb.capi.impl.connection import CApiEnvironment  # noqa: E402
 from bareduckdb.capi.impl.result import execute  # noqa: E402
@@ -25,6 +27,15 @@ try:  # pragma: no cover - environment probe, reported not asserted
     DUCKDB_CLIENT_AVAILABLE = True
 except ImportError:
     _official_duckdb = None
+
+# The oracle is in no dependency group (33b4427), so uv sync removes it; BAREDUCKDB_REQUIRE_ORACLE=1 turns the skip into a failure.
+ORACLE_HOWTO = (
+    "the official duckdb client is not importable, so the cross-check did not run. "
+    "It belongs to no dependency group, so `uv sync` uninstalls it; enable it with "
+    "`uv pip install 'duckdb>=1.5.5'` on a 3.12 to 3.14 interpreter, since it publishes "
+    "no wheel above cp314. Set BAREDUCKDB_REQUIRE_ORACLE=1 to fail instead of skipping."
+)
+ORACLE_REQUIRED = os.environ.get("BAREDUCKDB_REQUIRE_ORACLE") == "1"
 
 
 @pytest.fixture
@@ -62,9 +73,12 @@ def run(conn, sql):
     list(execute(conn, sql).rows())
 
 
-@pytest.mark.skipif(not DUCKDB_CLIENT_AVAILABLE, reason="official duckdb client not installed")
 def test_oracle_agrees_on_a_simple_table(make_conn):
     """Cross-check one Arrow table against the official client when it is installed."""
+    if not DUCKDB_CLIENT_AVAILABLE:
+        if ORACLE_REQUIRED:
+            pytest.fail(ORACLE_HOWTO)
+        pytest.skip(ORACLE_HOWTO)
     conn = make_conn()
     import duckdb
 
@@ -362,7 +376,7 @@ def test_selection_index_outside_the_chunk_is_rejected(make_conn):
 def test_more_rows_than_the_selection_vector_covers_is_rejected(make_conn):
     """A gather past the end of a selection vector must raise, not read off the array."""
     conn = make_conn()
-    with pytest.raises(RuntimeError, match="selection vector"):
+    with pytest.raises(RuntimeError, match="does not cover the rows requested"):
         convert_first_chunk(
             execute(conn, "SELECT i::INTEGER AS c FROM range(2048) t(i)"),
             selection=[0, 1, 2],
@@ -373,7 +387,7 @@ def test_more_rows_than_the_selection_vector_covers_is_rejected(make_conn):
 def test_more_rows_than_a_string_selection_vector_covers_is_rejected(make_conn):
     """The same guard on the varchar path, where a stray index gathers a pointer."""
     conn = make_conn()
-    with pytest.raises(RuntimeError, match="selection vector"):
+    with pytest.raises(RuntimeError, match="does not cover the rows requested"):
         convert_first_chunk(
             execute(conn, "SELECT i::VARCHAR AS c FROM range(2048) t(i)"),
             selection=[0, 1, 2],
@@ -391,6 +405,89 @@ def test_a_selection_vector_covering_every_requested_row_still_converts(make_con
         selection_rows=len(selection),
     )
     assert batch.column(0).to_pylist() == selection
+
+
+def test_more_rows_than_a_flat_view_covers_is_rejected(make_conn):
+    """A FLAT view is bounded too: sel == NULL does not make a long run safe.
+
+    The chunk is deliberately small so the over-read the guard prevents stays inside
+    DuckDB's full-capacity vector buffer, which makes the unguarded outcome garbage
+    rather than a segfault.
+    """
+    conn = make_conn()
+    with pytest.raises(RuntimeError, match="does not cover the rows requested"):
+        convert_first_chunk(
+            execute(conn, "SELECT i::INTEGER AS c FROM range(5) t(i)"), flat_rows=69
+        )
+
+
+def test_a_flat_view_covering_every_requested_row_still_converts(make_conn):
+    """The bound is exact: a run ending on the view's last row is not rejected."""
+    conn = make_conn()
+    batch = convert_first_chunk(
+        execute(conn, "SELECT i::INTEGER AS c FROM range(5) t(i)"), flat_rows=5
+    )
+    assert batch.column(0).to_pylist() == [0, 1, 2, 3, 4]
+
+
+NESTED_SHAPE_QUERIES = [
+    "SELECT range(0, i % 4) AS l FROM range(10) t(i)",
+    "SELECT [i, i+1, i+2]::INTEGER[3] AS a FROM range(7) t(i)",
+    "SELECT {'a': i, 'b': i::VARCHAR} AS s FROM range(6) t(i)",
+    "SELECT MAP([i], [i*2]) AS m FROM range(6) t(i)",
+    "SELECT [{'a': i}, {'a': i+1}] AS l FROM range(5) t(i)",
+    "SELECT [[i, i+1],[i+2]] AS l FROM range(4) t(i)",
+    "SELECT [{'a': i}, {'a': i+1}]::STRUCT(a BIGINT)[2] AS a FROM range(5) t(i)",
+    "SELECT CASE WHEN i % 2 = 0 THEN NULL ELSE range(0, i) END AS l FROM range(8) t(i)",
+]
+
+K_LIST, K_ARRAY, K_STRUCT, K_MAP = 9, 10, 11, 12
+
+
+def assert_child_counts_hold(node, chunk_size):
+    """A resolved node's count must be its own logical length, per nested kind."""
+    assert node["count"] == chunk_size, node
+    for child in node["children"]:
+        if node["kind"] == K_STRUCT:
+            assert_child_counts_hold(child, chunk_size)
+        elif node["kind"] == K_ARRAY:
+            # An ARRAY child holds array_size elements per parent row, so its count is a whole multiple of the parent's.
+            assert child["count"] % chunk_size == 0 and child["count"] >= chunk_size, child
+            assert_child_counts_hold(child, child["count"])
+        else:
+            # LIST and MAP children hold every element of every entry, end to end.
+            assert child["count"] >= 0, child
+            assert_child_counts_hold(child, child["count"])
+
+
+@pytest.mark.parametrize("sql", NESTED_SHAPE_QUERIES)
+def test_nested_child_views_report_their_own_length(make_conn, sql):
+    """The FLAT bound rests on this: no nested child under-reports what it holds."""
+    conn = make_conn()
+    shape = probe_vector_views(execute(conn, sql))
+    for column in shape["columns"]:
+        assert_child_counts_hold(column, shape["chunk_size"])
+
+
+@pytest.mark.parametrize("sql", NESTED_SHAPE_QUERIES)
+def test_nested_shapes_still_convert_under_the_flat_bound(make_conn, sql):
+    """The bound must not false-reject a legitimate nested child run."""
+    conn = make_conn()
+    assert table(conn, sql).num_rows > 0
+
+
+def test_the_map_entries_node_reports_its_entry_count(make_conn):
+    """The synthetic MAP entries node used to keep a stale zero count."""
+    conn = make_conn()
+    shape = probe_vector_views(
+        execute(conn, "SELECT MAP([i, i+1], [i*2, i*3]) AS m FROM range(6) t(i)")
+    )
+    column = shape["columns"][0]
+    assert column["kind"] == K_MAP
+    entries = column["children"][0]
+    assert entries["kind"] == K_STRUCT
+    assert entries["count"] == 12
+    assert [child["count"] for child in entries["children"]] == [12, 12]
 
 
 def test_constant_and_dictionary_queries_still_convert_correctly(make_conn):

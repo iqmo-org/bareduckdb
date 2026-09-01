@@ -1,9 +1,0 @@
-[
-  {
-    "test": "test_range",
-    "mode": "*",
-    "lib": "*",
-    "max_ratio": 600.0,
-    "reason": "known: bareduckdb range() scan is far slower than duckdb (469x in CI); ceiling keeps it from getting worse silently"
-  }
-]

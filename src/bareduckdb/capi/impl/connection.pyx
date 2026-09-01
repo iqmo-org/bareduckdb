@@ -37,19 +37,26 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_str_t,
     idx_t,
 )
-from bareduckdb.capi.impl.atomics cimport bdv2_add, bdv2_cas, bdv2_lock, bdv2_unlock
+from bareduckdb.capi.impl.atomics cimport (
+    bdv2_add,
+    bdv2_cas,
+    bdv2_load_acquire,
+    bdv2_lock,
+    bdv2_store_release,
+    bdv2_unlock,
+)
 from bareduckdb.capi.impl.errors cimport check_v2, last_error_text
 
 _logger = logging.getLogger("bareduckdb.capi")
 
-# The process-wide v2 environment, required before any database opens. Two
-# databases under one environment share a cache, which is what detects a file
-# being opened twice, so there must be exactly one per interpreter.
+# The process-wide v2 environment. Two databases under one environment share a cache, so there must be exactly one per interpreter.
 cdef duckdb_v2_environment_handle _ENV = NULL
 cdef long _env_lock = 0
 
-# duckdb_v2_destroy_environment refuses while any database opened through the
-# environment is alive (duckdb_v2.h:1673), so teardown waits for the last one.
+# Release-stored once _ENV holds a live handle, acquire-loaded by the fast path. _ENV is a pointer, which the long-typed atomics cannot address.
+cdef long _env_ready = 0
+
+# duckdb_v2_destroy_environment refuses while any database opened through it is alive (duckdb_v2.h:1673), so teardown waits for the last one.
 cdef long _open_databases = 0
 cdef long _env_shutdown = 0
 
@@ -61,11 +68,10 @@ cdef duckdb_v2_environment_handle _ensure_environment() except NULL:
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
 
-    if _ENV != NULL:
+    if bdv2_load_acquire(&_env_ready):
         return _ENV
 
-    # A spinlock rather than a Python lock, so no Python object guards an engine call.
-    # Taken with the GIL released, since the section below drops the GIL itself.
+    # A spinlock rather than a Python lock, taken with the GIL released since the section below drops it.
     with nogil:
         bdv2_lock(&_env_lock)
     try:
@@ -74,6 +80,7 @@ cdef duckdb_v2_environment_handle _ensure_environment() except NULL:
                 rc = duckdb_v2_create_environment(&env, &err)
             check_v2(rc, err, "duckdb_v2_create_environment")
             _ENV = env
+            bdv2_store_release(&_env_ready, 1)
         return _ENV
     finally:
         bdv2_unlock(&_env_lock)
@@ -81,23 +88,21 @@ cdef duckdb_v2_environment_handle _ensure_environment() except NULL:
 
 cdef void _destroy_environment_if_idle() noexcept nogil:
     """Destroy the shared environment once exit has begun and no database is open."""
-    if not _env_shutdown or _ENV == NULL:
+    if not bdv2_load_acquire(&_env_shutdown) or not bdv2_load_acquire(&_env_ready):
         return
-    # A try-lock, not a wait. This runs from __dealloc__, and a destructor that blocked
-    # on a thread creating the environment, or on this thread mid-collection, would be
-    # worse than leaving the environment for the exiting process to reclaim.
+    # A try-lock, not a wait: this runs from __dealloc__, where blocking would be worse than leaving the environment for the exiting process.
     if not bdv2_cas(&_env_lock, 0, 1):
         return
     if _ENV != NULL and _open_databases == 0:
         duckdb_v2_destroy_environment(&_ENV)
+        # Retire the flag so the fast path falls back to the lock, which re-checks _ENV.
+        bdv2_store_release(&_env_ready, 0)
     bdv2_unlock(&_env_lock)
 
 
 def _destroy_environment():
     """Arm the environment teardown at interpreter exit, running it if nothing is open."""
-    global _env_shutdown
-
-    _env_shutdown = 1
+    bdv2_store_release(&_env_shutdown, 1)
     with nogil:
         _destroy_environment_if_idle()
     if _ENV != NULL:
@@ -154,9 +159,7 @@ cdef class _DatabaseHandle:
             with nogil:
                 duckdb_v2_close(&self._db)
                 if bdv2_add(&_open_databases, -1) == 0:
-                    # The environment can only go once its last database has, which
-                    # is here rather than at exit: the exit hook runs while the
-                    # interpreter still holds every connection the caller left open.
+                    # Here rather than at exit: the exit hook runs while the interpreter still holds every connection the caller left open.
                     _destroy_environment_if_idle()
 
 
@@ -214,8 +217,7 @@ cdef class CApiConnectionImpl:
 
         env = _ensure_environment()
 
-        # v2 treats an empty view and any ':memory:...' path as in-memory, so the
-        # stored path is passed through verbatim and only None becomes empty.
+        # v2 treats an empty view and any ':memory:...' path as in-memory, so only None becomes empty.
         if self._database_path:
             path_bytes = self._database_path.encode("utf-8")
             path.ptr = <const char *>path_bytes
@@ -277,9 +279,7 @@ cdef class CApiConnectionImpl:
         if self._closed:
             raise RuntimeError("Connection is closed")
 
-        # v2 has a single fetch path (streamed result_step/result_fetch_chunk),
-        # so mode is accepted for interface compatibility and ignored. batch_size
-        # becomes the Arrow layer's coalescing target for this result.
+        # v2 has one streamed fetch path, so mode is ignored; batch_size is the Arrow coalescing target.
         from bareduckdb.capi.impl.result import execute
         return execute(self, query, parameters, batch_size)
 
@@ -363,8 +363,7 @@ cdef class CApiConnectionImpl:
             if rc != DUCKDB_V2_ERROR_NONE:
                 return _parse_result_error(last_error_text(err))
 
-            # v2 reports a deferred parse error only at the statement that fails,
-            # so the iterator is walked to exhaustion before reporting success.
+            # v2 reports a deferred parse error only at the failing statement, so the iterator is walked to exhaustion.
             while True:
                 statement = NULL
                 with nogil:

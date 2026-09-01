@@ -19,7 +19,11 @@ def fresh_shell(request):
     except Exception:
         pass
 
-    original_duckdb = sys.modules.get('duckdb')
+    # register_as_duckdb() aliases every bareduckdb.* submodule as duckdb.*, so the
+    # whole duckdb* module set has to be restored, not just "duckdb" itself.
+    original_duckdb_modules = {
+        k: v for k, v in sys.modules.items() if k == "duckdb" or k.startswith("duckdb.")
+    }
 
     if impl_name == "bareduckdb":
         import bareduckdb
@@ -45,10 +49,11 @@ def fresh_shell(request):
     yield shell
 
     if impl_name == "bareduckdb":
-        if 'duckdb' in sys.modules:
-            del sys.modules['duckdb']
-        if original_duckdb is not None:
-            sys.modules['duckdb'] = original_duckdb
+        # Leaving the aliases behind makes a later "import duckdb" resolve the real
+        # package's "from ._version import ..." against bareduckdb._version instead.
+        for key in [k for k in sys.modules if k == "duckdb" or k.startswith("duckdb.")]:
+            del sys.modules[key]
+        sys.modules.update(original_duckdb_modules)
 
     try:
         from sql.connection.connection import ConnectionManager

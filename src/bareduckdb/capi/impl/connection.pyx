@@ -7,7 +7,6 @@ import atexit
 import logging
 
 from libc.stdint cimport int64_t, uint64_t
-from libc.stdio cimport fprintf, stderr
 from libc.stdlib cimport free, malloc
 
 from bareduckdb.capi.impl.duckdb_v2 cimport (
@@ -89,10 +88,8 @@ cdef void _destroy_environment_if_idle() noexcept nogil:
     # worse than leaving the environment for the exiting process to reclaim.
     if not bdv2_cas(&_env_lock, 0, 1):
         return
-    fprintf(stderr, "TRACE destroy_if_idle open=%ld\n", _open_databases)
     if _ENV != NULL and _open_databases == 0:
         duckdb_v2_destroy_environment(&_ENV)
-        fprintf(stderr, "TRACE environment destroyed\n")
     bdv2_unlock(&_env_lock)
 
 
@@ -155,7 +152,6 @@ cdef class _DatabaseHandle:
     def __dealloc__(self):
         if self._db != NULL:
             with nogil:
-                fprintf(stderr, "TRACE database handle dealloc\n")
                 duckdb_v2_close(&self._db)
                 if bdv2_add(&_open_databases, -1) == 0:
                     # The environment can only go once its last database has, which

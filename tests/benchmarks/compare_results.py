@@ -298,8 +298,36 @@ def main(argv=None):
     results_dir = Path(args.results_dir)
 
     with bareduckdb.connect() as conn:
-        for statement in SETUP_STATEMENTS:
-            conn.execute(statement.replace("RESULTS_DIR", str(results_dir).replace("\\", "/")))
+        prefix = str(results_dir).replace("\\", "/")
+        try:
+            conn.execute(SETUP_STATEMENTS[0].replace("RESULTS_DIR", prefix))
+        except Exception as exc:
+            print("# No benchmark data")
+            print()
+            print(f"No readable `*.jsonl` was found in `{results_dir}`.")
+            print(f"\n```\n{exc}\n```")
+            return 1
+
+        records = conn.execute("select count(*) from all_results_raw").fetchall()[0][0]
+        if not records:
+            print("# No benchmark data")
+            print()
+            print(f"No records were read from `{results_dir}`.")
+            print("The benchmark arms produced no output, so there is nothing to compare.")
+            return 1
+
+        present = {row[0] for row in conn.execute("describe all_results_raw").fetchall()}
+        absent = sorted({"timestamp", "nodeid"} - present)
+        if absent:
+            print("# Malformed benchmark data")
+            print()
+            print(f"Records in `{results_dir}` are missing: {', '.join(absent)}.")
+            print()
+            print(f"Columns found: {', '.join(sorted(present))}")
+            return 1
+
+        for statement in SETUP_STATEMENTS[1:]:
+            conn.execute(statement.replace("RESULTS_DIR", prefix))
 
         libs = [row[0] for row in conn.execute("select distinct lib from result_vs_baseline order by lib").fetchall()]
         if not libs:

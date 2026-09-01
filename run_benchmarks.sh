@@ -24,8 +24,12 @@ PYTHON_SPEC=${BENCHMARK_PYTHON:-3.14}
 REPS=${BENCHMARK_REPS:-3}
 MODES=${BENCHMARK_MODES:-polars_lazy,arrow,parquet}
 RESULTS_DIR=${BENCHMARK_RESULTS_DIR:-benchmark-results}
-# `-` and not `:-`, so BENCHMARK_FORK_FLAG= disables --forked on Windows.
-FORK_FLAG=${BENCHMARK_FORK_FLAG--forked}
+# Set BENCHMARK_FORK_FLAG= (empty) to drop --forked, which needs os.fork.
+if [ -n "${BENCHMARK_FORK_FLAG+set}" ]; then
+    FORK_FLAG=$BENCHMARK_FORK_FLAG
+else
+    FORK_FLAG=--forked
+fi
 
 venv_python() {
     if [ -x "$1/bin/python" ]; then

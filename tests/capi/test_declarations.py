@@ -1,5 +1,6 @@
 """The vendored duckdb_v2.h must compile standalone and export what we bind."""
 
+import os
 import shutil
 import subprocess
 import sys
@@ -51,9 +52,11 @@ def _msvc_env():
 
     # Run vcvarsall in a cmd child and capture the resulting environment. The
     # outer quotes are cmd's own quoting rule for /c with a quoted script path.
-    script = 'cmd /d /c ""' + str(vcvarsall) + '" x64 >nul 2>&1 && set"'
+    # vcvarsall's own chatter goes to stderr (1>&2) so it stays diagnosable while
+    # leaving stdout to carry only the `set` dump.
+    script = 'cmd /d /c ""' + str(vcvarsall) + '" x64 1>&2 && set"'
     proc = subprocess.run(script, shell=True, capture_output=True, text=True, timeout=60)
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == 0, f"vcvarsall failed: {script}\n{proc.stderr}"
 
     env = {}
     for line in proc.stdout.splitlines():
@@ -62,11 +65,21 @@ def _msvc_env():
             env[key] = value
     cl = shutil.which("cl", path=env.get("PATH", ""))
     if not env.get("INCLUDE") or cl is None:
-        pytest.fail("vcvarsall ran but did not yield a usable MSVC environment")
+        pytest.fail(f"vcvarsall ran but did not yield a usable MSVC environment\n{proc.stderr}")
 
     _msvc_env_cache = env
     _msvc_cl_cache = cl
     return env, cl
+
+
+def _cc():
+    """Return the C driver to use on non-Windows platforms, honouring $CC."""
+    candidates = [os.environ.get("CC")]
+    candidates += ["clang", "gcc"] if sys.platform == "darwin" else ["gcc", "cc", "clang"]
+    for name in candidates:
+        if name and shutil.which(name):
+            return name
+    pytest.fail(f"no usable C compiler found; tried {[c for c in candidates if c]}")
 
 
 def _compile(cmd, cwd):
@@ -107,7 +120,7 @@ def test_header_compiles_standalone(tmp_path):
         ]
     else:
         obj = tmp_path / "t.o"
-        cmd = ["gcc", "-c", "-I", str(INCLUDE_DIR), str(src), "-o", str(obj)]
+        cmd = [_cc(), "-c", "-I", str(INCLUDE_DIR), str(src), "-o", str(obj)]
     _compile(cmd, cwd=tmp_path)
     assert obj.exists(), f"compiler reported success but {obj} was not written"
 
@@ -133,15 +146,15 @@ def test_symbol_binds_at_link_time(tmp_path):
         ]
     else:
         shared_lib = resolve_duckdb_lib()
-        cmd = [
-            "gcc",
-            "-I",
-            str(INCLUDE_DIR),
-            str(src),
-            str(shared_lib),
-            "-o",
-            str(tmp_path / "t"),
-        ]
+        if not shared_lib.exists():
+            pytest.skip(f"no DuckDB shared library at {shared_lib}")
+        cmd = [_cc(), "-I", str(INCLUDE_DIR), str(src), str(shared_lib)]
+        if sys.platform == "darwin":
+            cmd += [
+                "-Wl,-undefined,error",
+                f"-Wl,-rpath,{shared_lib.parent}",
+            ]
+        cmd += ["-o", str(tmp_path / "t")]
     _compile(cmd, cwd=tmp_path)
     exe = tmp_path / ("t.exe" if sys.platform == "win32" else "t")
     assert exe.exists(), f"linker reported success but {exe} was not written"

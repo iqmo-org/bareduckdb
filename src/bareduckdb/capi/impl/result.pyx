@@ -147,7 +147,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_vector_get_value,
     duckdb_v2_vector_handle,
 )
-from bareduckdb.capi.impl.atomics cimport bdv2_cas, bdv2_unlock
+from bareduckdb.capi.impl.atomics cimport bdv2_cas, bdv2_lock, bdv2_unlock
 from bareduckdb.capi.impl.errors cimport (
     check_v2,
     logical_type_name,
@@ -574,9 +574,10 @@ cdef class CApiResult:
     cdef duckdb_v2_schema_handle _ensure_schema(self) except NULL:
         """Return the output schema, resolving it and the column metadata on first use."""
         if not self._schema_ready:
-            # A spinlock rather than a Python lock, so no Python object guards an engine call.
-            while not bdv2_cas(&self._schema_lock, 0, 1):
-                pass
+            # A spinlock rather than a Python lock, so no Python object guards an engine
+            # call. Taken with the GIL released, since the section below drops the GIL itself.
+            with nogil:
+                bdv2_lock(&self._schema_lock)
             try:
                 if not self._schema_ready:
                     self._resolve_schema()

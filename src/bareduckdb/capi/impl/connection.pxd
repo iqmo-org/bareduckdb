@@ -10,6 +10,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
 
 cdef class _DatabaseHandle:
     cdef duckdb_v2_database_handle _db
+    cdef void _adopt(self, duckdb_v2_database_handle db) noexcept
 
 
 cdef class CApiEnvironment:

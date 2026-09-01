@@ -150,6 +150,7 @@ def test_symbol_binds_at_link_time(tmp_path):
             pytest.skip(f"no DuckDB shared library at {shared_lib}")
         cmd = [_cc(), "-I", str(INCLUDE_DIR), str(src), str(shared_lib)]
         if sys.platform == "darwin":
+
             cmd += [
                 "-Wl,-undefined,error",
                 f"-Wl,-rpath,{shared_lib.parent}",

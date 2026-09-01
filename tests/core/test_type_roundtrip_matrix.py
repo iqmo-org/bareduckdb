@@ -191,10 +191,7 @@ TYPE_CASES = [
 EXCLUDED_DUCKDB_TYPES = {"TYPE"}
 
 
-# Exported Arrow types under bareduckdb's init_sql (arrow_output_version='1.5',
-# produce_arrow_string_view=true). These are characterization assertions: they pin what
-# DuckDB currently emits so a change in init_sql or a DuckDB bump is visible rather than
-# silent. Value assertions alone cannot see any of it.
+# Exported Arrow type
 FETCH_ARROW_TYPES = {
     "bool": "bool",
     "int8": "int8",

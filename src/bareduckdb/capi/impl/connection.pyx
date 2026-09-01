@@ -7,6 +7,7 @@ import atexit
 import logging
 
 from libc.stdint cimport int64_t, uint64_t
+from libc.stdio cimport fprintf, stderr
 from libc.stdlib cimport free, malloc
 
 from bareduckdb.capi.impl.duckdb_v2 cimport (
@@ -37,7 +38,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_str_t,
     idx_t,
 )
-from bareduckdb.capi.impl.atomics cimport bdv2_cas, bdv2_unlock
+from bareduckdb.capi.impl.atomics cimport bdv2_add, bdv2_cas, bdv2_lock, bdv2_unlock
 from bareduckdb.capi.impl.errors cimport check_v2, last_error_text
 
 _logger = logging.getLogger("bareduckdb.capi")
@@ -47,6 +48,11 @@ _logger = logging.getLogger("bareduckdb.capi")
 # being opened twice, so there must be exactly one per interpreter.
 cdef duckdb_v2_environment_handle _ENV = NULL
 cdef long _env_lock = 0
+
+# duckdb_v2_destroy_environment refuses while any database opened through the
+# environment is alive (duckdb_v2.h:1673), so teardown waits for the last one.
+cdef long _open_databases = 0
+cdef long _env_shutdown = 0
 
 
 cdef duckdb_v2_environment_handle _ensure_environment() except NULL:
@@ -60,8 +66,9 @@ cdef duckdb_v2_environment_handle _ensure_environment() except NULL:
         return _ENV
 
     # A spinlock rather than a Python lock, so no Python object guards an engine call.
-    while not bdv2_cas(&_env_lock, 0, 1):
-        pass
+    # Taken with the GIL released, since the section below drops the GIL itself.
+    with nogil:
+        bdv2_lock(&_env_lock)
     try:
         if _ENV == NULL:
             with nogil:
@@ -73,21 +80,39 @@ cdef duckdb_v2_environment_handle _ensure_environment() except NULL:
         bdv2_unlock(&_env_lock)
 
 
-def _destroy_environment():
-    """Tear down the shared environment at interpreter exit."""
-    global _ENV
-    cdef duckdb_v2_error_t rc
-
-    if _ENV == NULL:
+cdef void _destroy_environment_if_idle() noexcept nogil:
+    """Destroy the shared environment once exit has begun and no database is open."""
+    if not _env_shutdown or _ENV == NULL:
         return
+    # A try-lock, not a wait. This runs from __dealloc__, and a destructor that blocked
+    # on a thread creating the environment, or on this thread mid-collection, would be
+    # worse than leaving the environment for the exiting process to reclaim.
+    if not bdv2_cas(&_env_lock, 0, 1):
+        return
+    fprintf(stderr, "TRACE destroy_if_idle open=%ld\n", _open_databases)
+    if _ENV != NULL and _open_databases == 0:
+        duckdb_v2_destroy_environment(&_ENV)
+        fprintf(stderr, "TRACE environment destroyed\n")
+    bdv2_unlock(&_env_lock)
+
+
+def _destroy_environment():
+    """Arm the environment teardown at interpreter exit, running it if nothing is open."""
+    global _env_shutdown
+
+    _env_shutdown = 1
     with nogil:
-        rc = duckdb_v2_destroy_environment(&_ENV)
-    if rc != DUCKDB_V2_ERROR_NONE:
-        _logger.warning(
-            "duckdb_v2_destroy_environment refused at exit with code %d; "
-            "a database opened through it was never closed",
-            <int>rc,
+        _destroy_environment_if_idle()
+    if _ENV != NULL:
+        _logger.debug(
+            "environment teardown left to the last database handle; %d still open",
+            _open_databases,
         )
+
+
+def _environment_is_active():
+    """Report whether the shared environment currently exists, for teardown diagnostics."""
+    return _ENV != NULL
 
 
 atexit.register(_destroy_environment)
@@ -122,10 +147,21 @@ cdef class _DatabaseHandle:
     def __cinit__(self):
         self._db = NULL
 
+    cdef void _adopt(self, duckdb_v2_database_handle db) noexcept:
+        """Take ownership of an open database and count it against the environment."""
+        self._db = db
+        bdv2_add(&_open_databases, 1)
+
     def __dealloc__(self):
         if self._db != NULL:
             with nogil:
+                fprintf(stderr, "TRACE database handle dealloc\n")
                 duckdb_v2_close(&self._db)
+                if bdv2_add(&_open_databases, -1) == 0:
+                    # The environment can only go once its last database has, which
+                    # is here rather than at exit: the exit hook runs while the
+                    # interpreter still holds every connection the caller left open.
+                    _destroy_environment_if_idle()
 
 
 _UNAVAILABLE_MESSAGE = (
@@ -236,7 +272,7 @@ cdef class CApiConnectionImpl:
             check_v2(rc, err, "duckdb_v2_connect")
 
         handle = _DatabaseHandle()
-        handle._db = db
+        handle._adopt(db)
         self._db = handle
         self._conn = conn
 

@@ -359,6 +359,40 @@ def test_selection_index_outside_the_chunk_is_rejected(make_conn):
         )
 
 
+def test_more_rows_than_the_selection_vector_covers_is_rejected(make_conn):
+    """A gather past the end of a selection vector must raise, not read off the array."""
+    conn = make_conn()
+    with pytest.raises(RuntimeError, match="selection vector"):
+        convert_first_chunk(
+            execute(conn, "SELECT i::INTEGER AS c FROM range(2048) t(i)"),
+            selection=[0, 1, 2],
+            selection_rows=64,
+        )
+
+
+def test_more_rows_than_a_string_selection_vector_covers_is_rejected(make_conn):
+    """The same guard on the varchar path, where a stray index gathers a pointer."""
+    conn = make_conn()
+    with pytest.raises(RuntimeError, match="selection vector"):
+        convert_first_chunk(
+            execute(conn, "SELECT i::VARCHAR AS c FROM range(2048) t(i)"),
+            selection=[0, 1, 2],
+            selection_rows=64,
+        )
+
+
+def test_a_selection_vector_covering_every_requested_row_still_converts(make_conn):
+    """The guard does not narrow the gather it protects."""
+    conn = make_conn()
+    selection = [3, 1, 1, 0, 2047]
+    batch = convert_first_chunk(
+        execute(conn, "SELECT i::INTEGER AS c FROM range(2048) t(i)"),
+        selection=selection,
+        selection_rows=len(selection),
+    )
+    assert batch.column(0).to_pylist() == selection
+
+
 def test_constant_and_dictionary_queries_still_convert_correctly(make_conn):
     """Whatever representation the engine picks, these queries must convert."""
     conn = make_conn()

@@ -110,7 +110,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_vector_view_t,
     idx_t,
 )
-from bareduckdb.capi.impl.atomics cimport bdv2_cas, bdv2_unlock
+from bareduckdb.capi.impl.atomics cimport bdv2_lock, bdv2_unlock
 from bareduckdb.capi.impl.errors cimport check_v2, logical_type_name, str_view_to_str
 from bareduckdb.capi.impl.result cimport CApiResult, step_result_chunk
 
@@ -128,6 +128,7 @@ cdef const char *BD_MSG_CONVERT = b"failed to convert a chunk into Arrow buffers
 cdef const char *BD_MSG_FINALIZE = b"failed to finalize the Arrow batch"
 cdef const char *BD_MSG_CANCELLED = b"query was cancelled"
 cdef const char *BD_MSG_VECTOR_COUNT = b"chunk vector count does not match the result schema"
+cdef const char *BD_MSG_SEL_RANGE = b"a selection vector does not cover the rows requested from it"
 cdef const char *BD_CTX_STEP = b"duckdb_v2_result_step"
 cdef const char *BD_CTX_CHUNK_SIZE = b"duckdb_v2_data_chunk_get_size"
 cdef const char *BD_CTX_VECTOR_COUNT = b"duckdb_v2_data_chunk_get_vector_count"
@@ -157,8 +158,7 @@ def pool_double_return_count():
 
 
 cdef inline void pool_lock() noexcept nogil:
-    while not bdv2_cas(&_pool_lock, 0, 1):
-        pass
+    bdv2_lock(&_pool_lock)
 
 
 cdef inline void pool_unlock() noexcept nogil:
@@ -1170,6 +1170,11 @@ cdef int append_rows(ColBuild *b, RVec *rv, idx_t start, idx_t count) noexcept n
     if count == 0:
         return 0
 
+    # rv.sel holds rv.count entries, one per logical row of the view. A run reaching
+    # past them would gather from off the end of the selection vector.
+    if rv.sel != NULL and not rv.is_constant and start + count > rv.count:
+        return -4
+
     if plan.kind == K_NULLCOL:
         # A SQLNULL column has no values at all: leave every validity bit clear.
         if buf_bits_reserve(&b.validity, <size_t>b.length + count) != 0:
@@ -1286,14 +1291,16 @@ cdef int append_rows(ColBuild *b, RVec *rv, idx_t start, idx_t count) noexcept n
     elif plan.kind == K_STRUCT:
         for i in range(b.n_children):
             if rv.sel == NULL and not rv.is_constant:
-                if append_rows(&b.children[i], &rv.children[i], start, count) != 0:
-                    return -1
+                rc = append_rows(&b.children[i], &rv.children[i], start, count)
+                if rc != 0:
+                    return rc
             else:
                 for j in range(count):
-                    if append_rows(
+                    rc = append_rows(
                         &b.children[i], &rv.children[i], rv_phys(rv, start + j), 1
-                    ) != 0:
-                        return -1
+                    )
+                    if rc != 0:
+                        return rc
     elif plan.kind == K_LIST or plan.kind == K_MAP:
         src = <const uint8_t *>rv.data
         for i in range(count):
@@ -1315,10 +1322,11 @@ cdef int append_rows(ColBuild *b, RVec *rv, idx_t start, idx_t count) noexcept n
     elif plan.kind == K_ARRAY:
         for i in range(count):
             phys = rv_phys(rv, start + i)
-            if append_rows(
+            rc = append_rows(
                 &b.children[0], &rv.children[0], phys * plan.array_size, plan.array_size
-            ) != 0:
-                return -1
+            )
+            if rc != 0:
+                return rc
     else:
         return -2
 
@@ -1329,9 +1337,11 @@ cdef int append_rows(ColBuild *b, RVec *rv, idx_t start, idx_t count) noexcept n
 cdef int append_map_entries(ColBuild *entries, RVec *rv, duckdb_v2_list_entry_t entry) noexcept nogil:
     """Append one map's key/value range to the synthetic, non-nullable entries struct."""
     cdef idx_t i
+    cdef int rc
     for i in range(2):
-        if append_rows(&entries.children[i], &rv.children[i], entry.offset, entry.length) != 0:
-            return -1
+        rc = append_rows(&entries.children[i], &rv.children[i], entry.offset, entry.length)
+        if rc != 0:
+            return rc
     entries.length += <int64_t>entry.length
     return 0
 
@@ -1628,6 +1638,7 @@ cdef int convert_chunk(
     cdef idx_t vec_count = 0
     cdef idx_t i
     cdef duckdb_v2_vector_handle vec = NULL
+    cdef int append_rc
 
     rc = duckdb_v2_data_chunk_get_size(chunk, &chunk_size, &err)
     if rc != DUCKDB_V2_ERROR_NONE:
@@ -1653,8 +1664,9 @@ cdef int convert_chunk(
         if rc != DUCKDB_V2_ERROR_NONE:
             state_capture_error(state, err, BD_CTX_GET_VIEW)
             return 5
-        if append_rows(&root.children[i], &state.rvec.children[i], 0, chunk_size) != 0:
-            state_set_error(state, BD_MSG_CONVERT)
+        append_rc = append_rows(&root.children[i], &state.rvec.children[i], 0, chunk_size)
+        if append_rc != 0:
+            state_set_error(state, BD_MSG_SEL_RANGE if append_rc == -4 else BD_MSG_CONVERT)
             return 12
 
     root.length += <int64_t>chunk_size
@@ -1872,7 +1884,7 @@ _VECTOR_TYPE_NAMES = {
 
 
 def convert_first_chunk(CApiResult result, object selection=None, bint as_constant=False,
-                        object constant_rows=None):
+                        object constant_rows=None, object selection_rows=None):
     """Convert one chunk to a RecordBatch; test hook that forces non-FLAT views."""
     import pyarrow
 
@@ -1884,9 +1896,11 @@ def convert_first_chunk(CApiResult result, object selection=None, bint as_consta
     cdef idx_t count = 0
     cdef idx_t chunk_size = 0
     cdef idx_t rows
+    cdef idx_t sel_count = 0
     cdef idx_t i
     cdef duckdb_v2_vector_handle vec = NULL
     cdef duckdb_v2_sel_t *sel = NULL
+    cdef int append_rc
     cdef ColBuild root
     cdef ArrowArray array
     cdef ArrowSchema schema
@@ -1915,11 +1929,14 @@ def convert_first_chunk(CApiResult result, object selection=None, bint as_consta
                     raise ValueError(
                         f"selection index {index} is outside the chunk's {chunk_size} rows"
                     )
-            rows = <idx_t>len(selection)
-            sel = <duckdb_v2_sel_t *>malloc(max(rows, 1) * sizeof(duckdb_v2_sel_t))
+            sel_count = <idx_t>len(selection)
+            # selection_rows asks for more logical rows than the vector covers, which is
+            # how a test reaches the out-of-range gather an engine contract breach would.
+            rows = sel_count if selection_rows is None else <idx_t>selection_rows
+            sel = <duckdb_v2_sel_t *>malloc(max(sel_count, 1) * sizeof(duckdb_v2_sel_t))
             if sel == NULL:
                 raise MemoryError("failed to allocate the selection vector")
-            for i in range(rows):
+            for i in range(sel_count):
                 sel[i] = <duckdb_v2_sel_t>selection[i]
         elif as_constant:
             rows = <idx_t>(chunk_size if constant_rows is None else constant_rows)
@@ -1938,9 +1955,15 @@ def convert_first_chunk(CApiResult result, object selection=None, bint as_consta
             check_v2(rc, err, "duckdb_v2_vector_get_view")
             if sel != NULL:
                 rvec.children[i].sel = sel
+                rvec.children[i].count = sel_count
             elif as_constant:
                 rvec.children[i].is_constant = 1
-            if append_rows(&root.children[i], &rvec.children[i], 0, rows) != 0:
+            append_rc = append_rows(&root.children[i], &rvec.children[i], 0, rows)
+            if append_rc == -4:
+                raise RuntimeError(
+                    "the selection vector does not cover the rows requested from it"
+                )
+            if append_rc != 0:
                 raise RuntimeError("failed to convert the chunk into Arrow buffers")
 
         root.length = <int64_t>rows

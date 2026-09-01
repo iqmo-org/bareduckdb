@@ -24,7 +24,10 @@ def test_import_and_query_with_empty_environment() -> None:
         # _missing_stdlib_info is a real Lib/ module (traceback.py imports it for
         # ModuleNotFoundError messages); CPython 3.15.0rc1 just omits it from
         # sys.stdlib_module_names, so it is not third-party despite the missing flag.
-        "allowed = ('bareduckdb', '__main__', '_virtualenv', 'cython_runtime', '_cython_', '_editable_', 'pre_commit_uv', '_distutils_hack', '_missing_stdlib_info');"
+        # _sysconfigdata_* is stdlib too, but its name is platform-dependent so it is
+        # never in that frozenset. A wheel install (no in-tree _libs/) reaches
+        # duckdb_artifact() -> is_musl() -> sysconfig, which imports it.
+        "allowed = ('bareduckdb', '__main__', '_virtualenv', 'cython_runtime', '_cython_', '_editable_', 'pre_commit_uv', '_distutils_hack', '_missing_stdlib_info', '_sysconfigdata');"
         "extra = {m for m in mods if not m.startswith(allowed) and m not in sys.stdlib_module_names};"
         "assert not extra, extra"
     )

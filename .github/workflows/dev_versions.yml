@@ -39,7 +39,7 @@ jobs:
             python-version: '3.15t'
     steps:
       - name: Checkout code
-        uses: actions/checkout@7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           submodules: false
@@ -55,7 +55,7 @@ jobs:
           cd ../..
 
       - name: Set up Python
-        uses: actions/setup-python@7.0.0
+        uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
@@ -235,7 +235,7 @@ jobs:
     steps:
       # Checkout on the glibc host
       - name: Checkout code
-        uses: actions/checkout@7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           submodules: false

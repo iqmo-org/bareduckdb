@@ -44,16 +44,6 @@ jobs:
           fetch-depth: 0
           submodules: false
 
-      - name: Initialize DuckDB submodule (headers only)
-        shell: bash
-        run: |
-          # Initialize the duckdb submodule with sparse checkout (headers only)
-          git submodule update --init external/duckdb
-          cd external/duckdb
-          git sparse-checkout init --cone
-          git sparse-checkout set src/include
-          cd ../..
-
       - name: Set up Python
         uses: actions/setup-python@v7.0.0
         with:
@@ -240,15 +230,6 @@ jobs:
           fetch-depth: 0
           submodules: false
 
-      - name: Initialize DuckDB submodule (headers only)
-        shell: bash
-        run: |
-          git submodule update --init external/duckdb
-          cd external/duckdb
-          git sparse-checkout init --cone
-          git sparse-checkout set src/include
-          cd ../..
-
       - name: Build and test in musllinux_1_2
         shell: bash
         # Same image cibuildwheel uses
@@ -267,13 +248,17 @@ jobs:
               readelf -d "$LIB" | grep -q "libc.musl" || { echo "ERROR: $LIB is not musl-linked"; exit 1; }
               echo "OK: $LIB is musl-linked"
 
-              # musl resolves the extension modules DT_NEEDED "libduckdb.so" from disk, via
-              # RUNPATH/LD_LIBRARY_PATH, and will not accept the ctypes preload in
-              # src/bareduckdb/__init__.py the way glibc does. Point the loader at the built
-              # library so it is found wherever the package is installed.
               SRC_DIR=$(cd "$(dirname "$LIB")" && pwd)
               # cd+pwd rather than realpath -m: busybox realpath has no -m.
-              export LD_LIBRARY_PATH="$SRC_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              DEST_DIR=$(uv run --no-sync python -c "import os, sysconfig; print(os.path.join(sysconfig.get_paths()[\"platlib\"], \"bareduckdb\", \"_libs\"))")
+              if [ "$DEST_DIR" != "$SRC_DIR" ]; then
+                mkdir -p "$DEST_DIR"
+                # Hard link, so musl dedupes it by inode against the preloaded copy and maps
+                # DuckDB once; cp is the cross-device fallback.
+                ln -f "$SRC_DIR/libduckdb.so" "$DEST_DIR/libduckdb.so" 2>/dev/null \
+                  || cp -f "$SRC_DIR/libduckdb.so" "$DEST_DIR/"
+                echo "Linked $SRC_DIR/libduckdb.so into $DEST_DIR"
+              fi
 
               uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream \
                   --ignore=tests/comparison --ignore=tests/benchmarks \

@@ -26,15 +26,6 @@ jobs:
           fetch-depth: 0
           submodules: false
 
-      - name: Initialize DuckDB submodule (headers only)
-        shell: bash
-        run: |
-          git submodule update --init external/duckdb
-          cd external/duckdb
-          git sparse-checkout init --cone
-          git sparse-checkout set src/include
-          cd ../..
-
       - name: Set up Python
         uses: actions/setup-python@v7.0.0
         with:

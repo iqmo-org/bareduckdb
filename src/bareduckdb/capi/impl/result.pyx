@@ -65,6 +65,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_data_chunk_get_vector,
     duckdb_v2_data_chunk_get_vector_count,
     duckdb_v2_data_chunk_handle,
+    duckdb_v2_error_info_destroy,
     duckdb_v2_error_info_handle,
     duckdb_v2_error_t,
     duckdb_v2_hugeint_t,
@@ -143,7 +144,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_vector_get_value,
     duckdb_v2_vector_handle,
 )
-from bareduckdb.capi.impl.atomics cimport bdv2_cas
+from bareduckdb.capi.impl.atomics cimport bdv2_cas, bdv2_unlock
 from bareduckdb.capi.impl.errors cimport (
     check_v2,
     logical_type_name,
@@ -247,6 +248,13 @@ cdef duckdb_v2_result_handle _execute_one(
     cdef bint use_names = False
     cdef duckdb_v2_logical_type_handle target_type = NULL
 
+    if parameters is None:
+        # Skip bind entirely
+        with nogil:
+            rc = duckdb_v2_statement_execute(conn, statement, NULL, NULL, 0, &result, &err)
+        check_v2(rc, err, "duckdb_v2_statement_execute")
+        return result
+
     with nogil:
         rc = duckdb_v2_statement_bind(conn, statement, &out_schema, &out_parameters, &err)
     check_v2(rc, err, "duckdb_v2_statement_bind")
@@ -255,11 +263,6 @@ cdef duckdb_v2_result_handle _execute_one(
             duckdb_v2_schema_destroy(&out_schema)
 
     try:
-        if parameters is None:
-            with nogil:
-                rc = duckdb_v2_statement_execute(conn, statement, NULL, NULL, 0, &result, &err)
-            check_v2(rc, err, "duckdb_v2_statement_execute")
-            return result
 
         use_names = isinstance(parameters, dict)
         items = list(parameters.items()) if use_names else list(parameters)
@@ -526,7 +529,7 @@ cdef duckdb_v2_error_t step_result_chunk(
             return rc
 
 cdef class CApiResult:
-    """A v2 query result: schema is cached eagerly, rows stream on demand."""
+    """A v2 query result: the schema resolves on first use, rows stream on demand."""
 
     def __cinit__(self):
         self._conn_obj = None
@@ -535,12 +538,78 @@ cdef class CApiResult:
         self._destroyed = 0
         self._consumed = 0
         self._finished = False
+        self._pending_chunk = NULL
+        self._schema_ready = False
+        self._schema_lock = 0
         self._batch_rows = <unsigned long long>DEFAULT_BATCH_ROWS
         self._column_names = []
         self._column_decoders = []
 
     cdef void _bind_owned(self, CApiConnectionImpl conn_obj, duckdb_v2_result_handle result) except *:
-        """Take ownership of a freshly executed result and cache its output schema."""
+        """Take ownership of a freshly executed result, leaving its schema unresolved."""
+        # Hold the connection object, not just its handle: it must outlive this result.
+        self._conn_obj = conn_obj
+        self._result = result
+
+    cdef duckdb_v2_schema_handle _ensure_schema(self) except NULL:
+        """Return the output schema, resolving it and the column metadata on first use."""
+        if not self._schema_ready:
+            # A spinlock rather than a Python lock, so no Python object guards an engine call.
+            while not bdv2_cas(&self._schema_lock, 0, 1):
+                pass
+            try:
+                if not self._schema_ready:
+                    self._resolve_schema()
+            finally:
+                bdv2_unlock(&self._schema_lock)
+        if self._schema == NULL:
+            raise RuntimeError("this result's schema was already handed to an Arrow export")
+        return self._schema
+
+    cdef void _resolve_schema(self) except *:
+        """Fetch the output schema, stepping first when the statement expanded into a group."""
+        cdef duckdb_v2_error_info_handle err = NULL
+        cdef duckdb_v2_error_t rc
+
+        if self._destroyed:
+            raise RuntimeError("result already destroyed")
+
+        with nogil:
+            rc = duckdb_v2_result_get_schema(self._result, &self._schema, &err)
+        if rc != DUCKDB_V2_ERROR_NONE:
+            # duckdb_v2.h:5490: an expanding statement has no metadata until stepping has
+            # prepared its row-producing fragment, so drop this error and step once.
+            if err != NULL:
+                with nogil:
+                    duckdb_v2_error_info_destroy(&err)
+                err = NULL
+            self._step_for_schema()
+            with nogil:
+                rc = duckdb_v2_result_get_schema(self._result, &self._schema, &err)
+        check_v2(rc, err, "duckdb_v2_result_get_schema")
+
+        self._build_column_metadata()
+        self._schema_ready = True
+
+    cdef void _step_for_schema(self) except *:
+        """Step until the group's row-producing fragment is prepared, buffering any chunk."""
+        cdef duckdb_v2_data_chunk_handle chunk = NULL
+        cdef duckdb_v2_result_step_status_t status
+        cdef duckdb_v2_error_info_handle err = NULL
+        cdef duckdb_v2_error_t rc
+
+        if self._finished or self._pending_chunk != NULL:
+            return
+
+        with nogil:
+            rc = step_result_chunk(self._result, &self._finished, &chunk, &status, &err)
+        check_v2(rc, err, "duckdb_v2_result_step")
+        if status == DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED:
+            raise RuntimeError("query was cancelled")
+        self._pending_chunk = chunk
+
+    cdef void _build_column_metadata(self) except *:
+        """Read the resolved schema into the column-name and per-column decoder lists."""
         cdef duckdb_v2_error_info_handle err = NULL
         cdef duckdb_v2_error_t rc
         cdef idx_t count = 0
@@ -548,33 +617,31 @@ cdef class CApiResult:
         cdef duckdb_v2_identifier_t name
         cdef duckdb_v2_logical_type_handle col_type
 
-        # Hold the connection object, not just its handle: it must outlive this result.
-        self._conn_obj = conn_obj
-        self._result = result
-
-        with nogil:
-            rc = duckdb_v2_result_get_schema(result, &self._schema, &err)
-        check_v2(rc, err, "duckdb_v2_result_get_schema")
-
         with nogil:
             rc = duckdb_v2_schema_get_count(self._schema, &count, &err)
         check_v2(rc, err, "duckdb_v2_schema_get_count")
 
+        names = []
+        decoders = []
         for i in range(count):
             with nogil:
                 rc = duckdb_v2_schema_get_field(self._schema, i, &name, &col_type, &err)
             check_v2(rc, err, "duckdb_v2_schema_get_field")
-            self._column_names.append(str_view_to_str(name))
-            self._column_decoders.append(_build_decoder(col_type))
+            names.append(str_view_to_str(name))
+            decoders.append(_build_decoder(col_type))
+        self._column_names = names
+        self._column_decoders = decoders
 
     @property
     def columns(self):
         """Return the output column names, in order."""
+        self._ensure_schema()
         return tuple(self._column_names)
 
     def rows(self):
         """Yield each result row as a tuple of Python scalars, consuming the stream."""
         cdef duckdb_v2_data_chunk_handle chunk
+        self._ensure_schema()
         while True:
             chunk = self._next_chunk()
             if chunk == NULL:
@@ -584,6 +651,12 @@ cdef class CApiResult:
                     yield row
             finally:
                 _destroy_chunk(chunk)
+
+    cdef duckdb_v2_data_chunk_handle _take_pending_chunk(self) noexcept:
+        """Hand over the buffered chunk, if schema resolution had to step to produce one."""
+        cdef duckdb_v2_data_chunk_handle chunk = self._pending_chunk
+        self._pending_chunk = NULL
+        return chunk
 
     cdef duckdb_v2_data_chunk_handle _next_chunk(self) except? NULL:
         """Step the stream one chunk, raising the engine's error text on failure."""
@@ -596,6 +669,8 @@ cdef class CApiResult:
             raise RuntimeError("result already destroyed")
         if self._consumed:
             raise RuntimeError("result was already consumed by an Arrow export")
+        if self._pending_chunk != NULL:
+            return self._take_pending_chunk()
         if self._finished:
             return NULL
 
@@ -648,9 +723,12 @@ cdef class CApiResult:
         self._destroy()
 
     cdef void _destroy(self) noexcept:
-        """Destroy the result and schema exactly once, whichever thread gets there first."""
+        """Destroy the result, schema, and buffered chunk once, whichever thread gets there first."""
         if not bdv2_cas(&self._destroyed, 0, 1):
             return
+        if self._pending_chunk != NULL:
+            with nogil:
+                duckdb_v2_data_chunk_destroy(&self._pending_chunk)
         if self._schema != NULL:
             with nogil:
                 duckdb_v2_schema_destroy(&self._schema)

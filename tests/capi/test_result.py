@@ -211,6 +211,15 @@ def test_unread_result_abandons_side_effects(conn):
     assert list(result.rows()) == [(0,)]
 
 
+def test_statement_expanding_into_a_group_executes(conn):
+    """A dynamic PIVOT expands into several engine statements, which cannot be bound."""
+    _run(conn, "CREATE TABLE piv(k VARCHAR, v INTEGER)")
+    _run(conn, "INSERT INTO piv VALUES ('a', 1), ('b', 2)")
+    result = execute(conn, "PIVOT piv ON k USING sum(v)")
+    assert result.columns == ("a", "b")
+    assert list(result.rows()) == [(1, 2)]
+
+
 def test_call_impl_routes_to_execute(conn):
     result = conn.call_impl(query="SELECT 42", mode="stream", batch_size=1)
     assert list(result.rows()) == [(42,)]

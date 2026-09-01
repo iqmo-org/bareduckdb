@@ -1558,6 +1558,7 @@ cdef enum:
 ctypedef struct StreamState:
     duckdb_v2_result_handle result
     duckdb_v2_schema_handle schema
+    duckdb_v2_data_chunk_handle pending
     ColPlan *plan
     RVec *rvec
     PyObject *conn_ref
@@ -1675,7 +1676,7 @@ cdef int stream_get_next(ArrowArrayStream *stream, ArrowArray *out) noexcept nog
     if state == NULL:
         return 22
     memset(out, 0, sizeof(ArrowArray))
-    if state.finished:
+    if state.finished and state.pending == NULL:
         out.release = NULL
         return 0
 
@@ -1684,20 +1685,23 @@ cdef int stream_get_next(ArrowArrayStream *stream, ArrowArray *out) noexcept nog
         failure = 12
 
     while not failure and rows < state.batch_rows:
-        err = NULL
-        rc = step_result_chunk(state.result, &state.finished, &chunk, &status, &err)
-        if rc != DUCKDB_V2_ERROR_NONE:
-            state_capture_error(state, err, BD_CTX_STEP)
-            failure = 5
-        elif status == DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED:
-            state_set_error(state, BD_MSG_CANCELLED)
-            failure = 5
-        elif chunk == NULL:
-            break
+        chunk = state.pending
+        if chunk != NULL:
+            state.pending = NULL
         else:
-            failure = convert_chunk(state, &root, chunk, &rows)
-            duckdb_v2_data_chunk_destroy(&chunk)
-            chunk = NULL
+            err = NULL
+            rc = step_result_chunk(state.result, &state.finished, &chunk, &status, &err)
+            if rc != DUCKDB_V2_ERROR_NONE:
+                state_capture_error(state, err, BD_CTX_STEP)
+                failure = 5
+            elif status == DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED:
+                state_set_error(state, BD_MSG_CANCELLED)
+                failure = 5
+        if failure or chunk == NULL:
+            break
+        failure = convert_chunk(state, &root, chunk, &rows)
+        duckdb_v2_data_chunk_destroy(&chunk)
+        chunk = NULL
 
     if not failure and rows > 0 and build_finish(&root, out) != 0:
         state_set_error(state, BD_MSG_FINALIZE)
@@ -1726,6 +1730,8 @@ cdef void stream_release(ArrowArrayStream *stream) noexcept nogil:
         return
     state = <StreamState *>stream.private_data
     if state != NULL:
+        if state.pending != NULL:
+            duckdb_v2_data_chunk_destroy(&state.pending)
         if state.result != NULL:
             duckdb_v2_result_destroy(&state.result)
         if state.schema != NULL:
@@ -1800,7 +1806,7 @@ def arrow_stream_from_result(CApiResult result, batch_rows=None, requested_schem
 
     result._claim_for_export("arrow export")
     rows = DEFAULT_BATCH_ROWS if not batch_rows else <unsigned long long>batch_rows
-    plan = build_root_plan(result._schema, &count)
+    plan = build_root_plan(result._ensure_schema(), &count)
 
     state = <StreamState *>malloc(sizeof(StreamState))
     if state == NULL:
@@ -1810,7 +1816,7 @@ def arrow_stream_from_result(CApiResult result, batch_rows=None, requested_schem
     state.plan = plan
     state.batch_rows = <idx_t>rows
     state.n_columns = count
-    state.finished = False
+    state.finished = result._finished
 
     state.rvec = rvec_new(plan)
     if state.rvec == NULL:
@@ -1834,6 +1840,7 @@ def arrow_stream_from_result(CApiResult result, batch_rows=None, requested_schem
     # Ownership moves here: the stream destroys the result and schema from now on.
     state.result = result._release_result_ownership()
     state.schema = result._release_schema_ownership()
+    state.pending = result._take_pending_chunk()
     if result._conn_obj is not None:
         state.conn_ref = <PyObject *>result._conn_obj
         Py_XINCREF(state.conn_ref)
@@ -1884,7 +1891,7 @@ def convert_first_chunk(CApiResult result, object selection=None, bint as_consta
     cdef ArrowArray array
     cdef ArrowSchema schema
 
-    plan = build_root_plan(result._schema, &count)
+    plan = build_root_plan(result._ensure_schema(), &count)
     chunk = result._next_chunk()
     if chunk == NULL:
         plan_free(plan)

@@ -489,6 +489,29 @@ def test_empty_result_from_a_filter_preserves_schema(conn):
     assert tbl.column_names == ["i"]
 
 
+def test_statement_expanding_into_a_group_exports_to_arrow(conn):
+    """A dynamic PIVOT has no schema until stepping prepares its row-producing fragment."""
+    list(execute(conn, "CREATE TABLE arrow_piv(k VARCHAR, v INTEGER)").rows())
+    list(execute(conn, "INSERT INTO arrow_piv VALUES ('a', 1), ('b', 2), ('a', 10)").rows())
+    tbl = table(conn, "PIVOT arrow_piv ON k USING sum(v)")
+    assert tbl.num_rows == 1
+    assert sorted(tbl.column_names) == ["a", "b"]
+    assert tbl.to_pydict() == {"a": [11], "b": [2]}
+
+
+def test_statement_expanding_into_a_group_through_the_public_api():
+    """The bareduckdb.connect() path must reach the same PIVOT result as the raw layer."""
+    import bareduckdb
+
+    with bareduckdb.connect() as public_conn:
+        public_conn.execute("CREATE TABLE pub_piv(k VARCHAR, v INTEGER)")
+        public_conn.execute("INSERT INTO pub_piv VALUES ('a', 1), ('b', 2), ('a', 10)")
+        tbl = public_conn.execute(
+            "PIVOT pub_piv ON k USING sum(v)", output_type="arrow_table"
+        ).arrow_table()
+    assert tbl.to_pydict() == {"a": [11], "b": [2]}
+
+
 def test_capsule_is_a_pycapsule(conn):
     capsule = arrow_stream_from_result(execute(conn, "SELECT 1 AS c"), 1_000_000)
     assert type(capsule).__name__ == "PyCapsule"

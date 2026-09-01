@@ -30,11 +30,19 @@ cdef class CApiResult:
     cdef long _destroyed
     cdef long _consumed
     cdef bint _finished
+    cdef duckdb_v2_data_chunk_handle _pending_chunk
+    cdef bint _schema_ready
+    cdef long _schema_lock
     cdef unsigned long long _batch_rows
     cdef list _column_names
     cdef list _column_decoders
 
     cdef void _bind_owned(self, CApiConnectionImpl conn_obj, duckdb_v2_result_handle result) except *
+    cdef duckdb_v2_schema_handle _ensure_schema(self) except NULL
+    cdef void _resolve_schema(self) except *
+    cdef void _step_for_schema(self) except *
+    cdef void _build_column_metadata(self) except *
+    cdef duckdb_v2_data_chunk_handle _take_pending_chunk(self) noexcept
     cdef duckdb_v2_data_chunk_handle _next_chunk(self) except? NULL
     cdef void _claim_for_export(self, str what) except *
     cdef duckdb_v2_result_handle _release_result_ownership(self) noexcept

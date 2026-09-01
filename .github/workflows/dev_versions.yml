@@ -120,7 +120,9 @@ jobs:
         run: |
           # Test that bareduckdb works with polars without pyarrow installed
           uv pip uninstall pyarrow
-          uv run --no-sync pytest tests/polars_only tests/polars_pushdown -v --cov=bareduckdb --cov-append
+          # -n 0: xdist reports a missing path as "0 items" collected and exits 5,
+          # hiding the mistake; without it this step swallowed a stale path silently.
+          uv run --no-sync pytest tests/polars_only -n 0 -v --cov=bareduckdb --cov-append
           uv pip install pyarrow
 
       - name: Run DuckDB comparison tests

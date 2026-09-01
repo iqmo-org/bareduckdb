@@ -196,7 +196,7 @@ jobs:
           uv run --no-sync coverage report --show-missing
 
       - name: Count Lines of Code (cloc)
-        uses: djdefi/cloc-action@v6
+        uses: djdefi/cloc-action@6
         if: matrix.os == 'ubuntu-latest'
         with:
           options: --exclude-dir=tests,external,.git,.github,benchmarks,notebooks

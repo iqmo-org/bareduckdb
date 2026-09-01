@@ -9,7 +9,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import psutil
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 try:
     from .data_setup import (
@@ -144,10 +147,11 @@ def pytest_runtest_call(item):
         yield
         return
 
-    process = psutil.Process()
-    rss_before_bytes = process.memory_info().rss
-    sampler = _RssSampler(process)
-    sampler.start()
+    process = psutil.Process() if psutil is not None else None
+    rss_before_bytes = process.memory_info().rss if process is not None else 0
+    sampler = _RssSampler(process) if process is not None else None
+    if sampler is not None:
+        sampler.start()
 
     ru_before = resource.getrusage(resource.RUSAGE_SELF)
     wall_before = time.perf_counter()
@@ -155,7 +159,8 @@ def pytest_runtest_call(item):
     try:
         yield
     finally:
-        sampler.stop()
+        if sampler is not None:
+            sampler.stop()
 
     wall_after = time.perf_counter()
     ru_after = resource.getrusage(resource.RUSAGE_SELF)
@@ -173,7 +178,7 @@ def pytest_runtest_call(item):
     }
 
     # Per-query memory: peak RSS observed while the test ran, minus the pre-test baseline.
-    rss_peak_delta_kb = max(0, sampler.peak_rss - rss_before_bytes) // 1024
+    rss_peak_delta_kb = max(0, sampler.peak_rss - rss_before_bytes) // 1024 if sampler is not None else 0
 
     item.benchmark_result = {
         "wall_time_s": wall_time,

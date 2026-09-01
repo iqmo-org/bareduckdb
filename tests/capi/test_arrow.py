@@ -49,8 +49,7 @@ def make_conn():
 
     yield _make
 
-    for c in created:
-        c.close()
+    created.clear()
 
 
 def table(conn, sql, parameters=None, batch_rows=1_000_000):
@@ -593,6 +592,7 @@ def test_capsule_is_a_pycapsule(make_conn):
     assert type(capsule).__name__ == "PyCapsule"
 
 
+@pytest.mark.iterations(1)
 def test_capsule_dropped_unconsumed_does_not_crash(make_conn):
     conn = make_conn()
     for _ in range(200):

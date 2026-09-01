@@ -9,6 +9,7 @@ import sqlalchemy
 import duckdb_engine
 from sqlalchemy import create_engine, text, Table, Column, Integer, String, MetaData, select
 from sqlalchemy.orm import declarative_base, Session
+from ..markers import XF_REGISTER_ARROW
 
 
 class TestSQLAlchemyBasics:
@@ -156,6 +157,7 @@ class TestSQLAlchemyORM:
 
 class TestDataFrameIntegration:
 
+    @XF_REGISTER_ARROW
     def test_register_pandas_dataframe(self):
 
         import pandas as pd
@@ -176,6 +178,7 @@ class TestDataFrameIntegration:
             assert row[0] == 15 
             assert row[1] == 30.0 
 
+    @XF_REGISTER_ARROW
     def test_pyarrow_table_registration(self):
 
         import pyarrow as pa

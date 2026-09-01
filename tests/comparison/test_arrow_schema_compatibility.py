@@ -8,17 +8,11 @@ import sys
 
 import bareduckdb
 import duckdb
-
-_XF_BIND_PARAMS = pytest.mark.xfail(
-    reason="binding UUID, timedelta, dict, list and Decimal parameters is not implemented "
-    "on DuckDB's C API v2 yet; see _python_to_value in capi/impl/result.pyx",
-    strict=True,
-)
-
+from ..markers import XF_BIND_PARAMS
 
 class TestArrowSchemaCompatibility:
 
-    @_XF_BIND_PARAMS
+    @XF_BIND_PARAMS
     def test_arrow_schema(self):
         params = [
             UUID('550e8400-e29b-41d4-a716-446655440000'),

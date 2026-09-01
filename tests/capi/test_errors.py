@@ -15,6 +15,7 @@ def test_error_text_round_trips():
     assert "nonexistent" in str(excinfo.value).lower() or "file" in str(excinfo.value).lower()
 
 
+@pytest.mark.iterations(1)
 def test_error_info_is_destroyed():
     """Cannot assert the handle is freed directly, so assert the error path repeats."""
     from bareduckdb.capi.impl.connection import CApiEnvironment

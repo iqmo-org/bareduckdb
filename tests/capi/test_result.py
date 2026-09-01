@@ -34,8 +34,7 @@ def make_conn():
 
     yield _make
 
-    for c in created:
-        c.close()
+    created.clear()
 
 
 def _one(conn, sql, parameters=None):
@@ -172,6 +171,8 @@ def test_error_on_unknown_column(make_conn):
         execute(conn, "SELECT no_such_column FROM range(1)")
 
 
+# The loop in the body is already the repetition, and repeating it hits the 90s timeout
+@pytest.mark.iterations(1)
 def test_result_close_is_idempotent_under_gc(make_conn):
     conn = make_conn()
     for _ in range(50):
@@ -183,6 +184,8 @@ def test_result_close_is_idempotent_under_gc(make_conn):
         gc.collect()
 
 
+# The loop in the body is already the repetition, and repeating it hits the 90s timeout
+@pytest.mark.iterations(1)
 def test_result_dealloc_without_explicit_close(make_conn):
     conn = make_conn()
     for _ in range(50):

@@ -1,6 +1,7 @@
 import pytest
 
 import bareduckdb
+from ..markers import XF_REGISTER_ARROW
 
 bareduckdb.register_as_duckdb()
 
@@ -48,6 +49,7 @@ def test_create_table_and_query(ipshell):
     assert result["name"].tolist() == ["Alice", "Bob"]
 
 
+@XF_REGISTER_ARROW
 def test_arrow_table_registration(ipshell):
     import bareduckdb
     import pyarrow as pa
@@ -66,6 +68,7 @@ def test_arrow_table_registration(ipshell):
     assert result["y"].tolist() == [20, 30]
 
 
+@XF_REGISTER_ARROW
 def test_pandas_dataframe_registration(ipshell):
     """Test registering pandas DataFrame via bareduckdb and querying with magic."""
     import bareduckdb

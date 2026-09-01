@@ -1,16 +1,11 @@
 from bareduckdb.core import ConnectionBase
 from pathlib import Path
 import pytest
+from ..markers import XF_REGISTER_ARROW
 
 vx = pytest.importorskip("vortex")
 
-_XF_REGISTER_ARROW = pytest.mark.xfail(
-    reason="register() needs a table-function surface, which DuckDB's C API v2 does not expose yet",
-    strict=True,
-)
-
-
-@_XF_REGISTER_ARROW
+@XF_REGISTER_ARROW
 def test_vortex_capsule(tmp_path: Path):
     with ConnectionBase(database=":memory:") as conn:
 
@@ -25,7 +20,7 @@ def test_vortex_capsule(tmp_path: Path):
         assert len(result) == 1 and result.to_pydict()=={"col1": ["hello world"]}
 
 
-@_XF_REGISTER_ARROW
+@XF_REGISTER_ARROW
 def test_vortex_dataset(tmp_path: Path):
     with ConnectionBase(database=":memory:") as conn:
 

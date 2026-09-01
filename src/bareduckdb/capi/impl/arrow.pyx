@@ -1,7 +1,7 @@
 # cython: language_level=3
 # cython: freethreading_compatible=True
 
-"""Zero-copy Arrow export for v2 results via nogil ArrowArrayStream callbacks."""
+"""Arrow export for v2 results via nogil ArrowArrayStream callbacks."""
 
 import logging
 

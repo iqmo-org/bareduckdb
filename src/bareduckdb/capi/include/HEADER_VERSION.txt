@@ -1,4 +1,9 @@
 # Source commit of external/duckdb from which duckdb_v2.h was vendored.
 # The 2.0 preview library does not ship this header; this vendored copy is the
 # build's source of truth and this SHA is the pin. Never edit duckdb_v2.h.
-173106cb93d1159e0530a7425842881348caf658
+#
+# This commit contains the C API v2 Part 2 merge, duckdb/duckdb#25184
+# (6d7abb1090e1079f252b15ba0366310bb87d8582), which added the
+# column_data_collection, scalar, aggregate, signature and properties modules.
+# duckdb_v2.h is byte-identical at that merge commit and at this one.
+e198179d46332e279c8f84bb51710c66be80f9e2

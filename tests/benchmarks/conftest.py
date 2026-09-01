@@ -1,13 +1,17 @@
 import pytest
 import os
 import platform
-import resource
 import threading
 import time
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    import resource
+except ImportError:  # Windows has no resource module
+    resource = None
 
 try:
     import psutil
@@ -37,6 +41,27 @@ BENCHMARK_OUTPUT_DIR = Path("benchmark-results")
 BENCHMARK_SUFFIX = None
 
 _RSS_SAMPLE_INTERVAL_S = 0.002
+
+_RUSAGE_FIELDS = (
+    "maxrss_delta_kb",
+    "maxrss_peak_kb",
+    "utime_s",
+    "stime_s",
+    "minflt",
+    "majflt",
+    "nvcsw",
+    "nivcsw",
+)
+
+_metric_warnings = []
+
+
+def _banner(lines):
+    """Format a block that cannot be missed in a CI log."""
+    width = max(len(line) for line in lines) + 4
+    bar = "!" * width
+    body = "\n".join(f"!! {line}" for line in lines)
+    return f"\n{bar}\n{body}\n{bar}\n"
 
 
 class _RssSampler:
@@ -81,9 +106,20 @@ def pytest_addoption(parser):
         help="Suffix to add to benchmark output filename (e.g., 'dev', 'release')",
     )
     parser.addoption(
+        "--benchmark-output",
+        default="",
+        help="Explicit JSONL output path, opened in append mode so interleaved repetitions of one arm share a file",
+    )
+    parser.addoption(
         "--registration-modes",
         default="parquet",
         help="Comma-separated list of data registration modes: parquet,arrow,polars,polars_lazy",
+    )
+    parser.addoption(
+        "--allow-missing-metrics",
+        action="store_true",
+        default=False,
+        help="Continue when psutil is missing instead of failing; the affected metrics are written as null",
     )
 
 
@@ -95,11 +131,44 @@ def pytest_generate_tests(metafunc):
         metafunc.parametrize("registration_mode", modes)
 
 
+def _check_metric_availability(config):
+    """Fail or warn loudly when a memory metric cannot be collected, never degrade silently."""
+    if psutil is None:
+        message = [
+            "psutil is NOT installed",
+        ]
+        if not config.getoption("--allow-missing-metrics"):
+            raise pytest.UsageError(_banner(message))
+        _metric_warnings.append("psutil missing: rss_peak_delta_kb is null in every record")
+
+    if resource is None:
+        _metric_warnings.append(
+            f"resource module missing on {platform.system()}: every rusage_* metric is null in every record"
+        )
+
+
+def pytest_report_header(config):
+    lines = [
+        f"benchmark metrics: psutil={'yes' if psutil is not None else 'MISSING'} "
+        f"resource={'yes' if resource is not None else 'MISSING'}"
+    ]
+    if _metric_warnings:
+        lines.append(_banner(_metric_warnings))
+    return lines
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    if _metric_warnings:
+        terminalreporter.write(_banner(["DEGRADED BENCHMARK METRICS"] + _metric_warnings), red=True, bold=True)
+
+
 def pytest_configure(config):
     """Set up library info and output file once at session start."""
 
     # TODO: Think about allowing parallel tasks - maybe file locking
     global _output_file
+
+    _check_metric_availability(config)
 
     use_duckdb = config.getoption("--use-duckdb")
 
@@ -120,17 +189,24 @@ def pytest_configure(config):
     _lib_info["duckdb_version"] = result[0] if result else "unknown"
     conn.close()
 
-    # Create output file with timestamp
-    BENCHMARK_OUTPUT_DIR.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    library = _lib_info["library"]
     suffix = config.getoption("--benchmark-suffix")
     global BENCHMARK_SUFFIX
     BENCHMARK_SUFFIX = suffix
 
-    suffix_part = f"-{suffix}" if suffix else ""
-    filename = BENCHMARK_OUTPUT_DIR / f"benchmark_{library}{suffix_part}_{timestamp}.jsonl"
-    _output_file = open(filename, "w")
+    explicit_output = config.getoption("--benchmark-output")
+    if explicit_output:
+        filename = Path(explicit_output)
+        filename.parent.mkdir(parents=True, exist_ok=True)
+        mode = "a"
+    else:
+        BENCHMARK_OUTPUT_DIR.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        library = _lib_info["library"]
+        suffix_part = f"-{suffix}" if suffix else ""
+        filename = BENCHMARK_OUTPUT_DIR / f"benchmark_{library}{suffix_part}_{timestamp}.jsonl"
+        mode = "w"
+
+    _output_file = open(filename, mode)
     _lib_info["output_file"] = str(filename)
 
 
@@ -153,7 +229,7 @@ def pytest_runtest_call(item):
     if sampler is not None:
         sampler.start()
 
-    ru_before = resource.getrusage(resource.RUSAGE_SELF)
+    ru_before = resource.getrusage(resource.RUSAGE_SELF) if resource is not None else None
     wall_before = time.perf_counter()
 
     try:
@@ -163,22 +239,28 @@ def pytest_runtest_call(item):
             sampler.stop()
 
     wall_after = time.perf_counter()
-    ru_after = resource.getrusage(resource.RUSAGE_SELF)
+    ru_after = resource.getrusage(resource.RUSAGE_SELF) if resource is not None else None
 
     wall_time = wall_after - wall_before
-    rusage_delta = {
-        "maxrss_delta_kb": (ru_after.ru_maxrss - ru_before.ru_maxrss) // _MAXRSS_DIVISOR,
-        "maxrss_peak_kb": ru_after.ru_maxrss // _MAXRSS_DIVISOR,
-        "utime_s": round(ru_after.ru_utime - ru_before.ru_utime, 6),
-        "stime_s": round(ru_after.ru_stime - ru_before.ru_stime, 6),
-        "minflt": ru_after.ru_minflt - ru_before.ru_minflt,
-        "majflt": ru_after.ru_majflt - ru_before.ru_majflt,
-        "nvcsw": ru_after.ru_nvcsw - ru_before.ru_nvcsw,
-        "nivcsw": ru_after.ru_nivcsw - ru_before.ru_nivcsw,
-    }
+
+    # None, not 0, when a metric could not be collected: an absent measurement must not
+    # average in as a real one. _check_metric_availability reports why.
+    if ru_before is None or ru_after is None:
+        rusage_delta = dict.fromkeys(_RUSAGE_FIELDS)
+    else:
+        rusage_delta = {
+            "maxrss_delta_kb": (ru_after.ru_maxrss - ru_before.ru_maxrss) // _MAXRSS_DIVISOR,
+            "maxrss_peak_kb": ru_after.ru_maxrss // _MAXRSS_DIVISOR,
+            "utime_s": round(ru_after.ru_utime - ru_before.ru_utime, 6),
+            "stime_s": round(ru_after.ru_stime - ru_before.ru_stime, 6),
+            "minflt": ru_after.ru_minflt - ru_before.ru_minflt,
+            "majflt": ru_after.ru_majflt - ru_before.ru_majflt,
+            "nvcsw": ru_after.ru_nvcsw - ru_before.ru_nvcsw,
+            "nivcsw": ru_after.ru_nivcsw - ru_before.ru_nivcsw,
+        }
 
     # Per-query memory: peak RSS observed while the test ran, minus the pre-test baseline.
-    rss_peak_delta_kb = max(0, sampler.peak_rss - rss_before_bytes) // 1024 if sampler is not None else 0
+    rss_peak_delta_kb = max(0, sampler.peak_rss - rss_before_bytes) // 1024 if sampler is not None else None
 
     item.benchmark_result = {
         "wall_time_s": wall_time,
@@ -204,15 +286,15 @@ def pytest_runtest_call(item):
 
         if sql_path:
             # e.g., "tests/benchmarks/cases/filters/string_comparison.sql" -> "filters_string_comparison"
+            # Match on path parts, not on a "tests/benchmarks/cases" substring, which
+            # never matches a Windows path.
             sql_path_obj = Path(sql_path)
             try:
-                if "tests/benchmarks/cases" in str(sql_path_obj):
-                    parts = sql_path_obj.parts
-                    cases_idx = parts.index("cases")
-                    path_parts = parts[cases_idx + 1:]
-                    path_parts = list(path_parts)
-                    path_parts[-1] = Path(path_parts[-1]).stem
-                    test_name = "_".join(path_parts)
+                parts = sql_path_obj.parts
+                cases_idx = len(parts) - 1 - parts[::-1].index("cases")
+                path_parts = list(parts[cases_idx + 1:])
+                path_parts[-1] = Path(path_parts[-1]).stem
+                test_name = "_".join(path_parts)
             except (ValueError, IndexError):
                 pass  # Keep the default test name if parsing fails
 
@@ -241,6 +323,8 @@ def pytest_runtest_call(item):
         "duckdb_version": _lib_info.get("duckdb_version", "unknown"),
         "wall_time_s": round(wall_time, 6),
         "rss_peak_delta_kb": rss_peak_delta_kb,
+        "rss_metric_available": sampler is not None,
+        "rusage_metric_available": ru_after is not None,
         **{f"rusage_{k}": v for k, v in rusage_delta.items()},
     }
 

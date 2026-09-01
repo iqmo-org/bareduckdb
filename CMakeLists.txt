@@ -195,8 +195,7 @@ foreach(_pyx IN LISTS BAREDUCKDB_PYX)
   if(SKBUILD_SABI_VERSION)
     python_add_library(${_name} MODULE WITH_SOABI
                        USE_SABI ${SKBUILD_SABI_VERSION} "${_generated_c}")
-    # Cython requires per-module state under the limited API. This mirrors
-    # setup.py:320/333/347, but only on the SABI build: see design section 3.4.
+    # Cython requires per-module state under the limited API
     target_compile_definitions(${_name} PRIVATE CYTHON_USE_MODULE_STATE=1)
   else()
     python_add_library(${_name} MODULE WITH_SOABI "${_generated_c}")

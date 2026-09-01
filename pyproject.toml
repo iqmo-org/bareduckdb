@@ -242,6 +242,7 @@ dev = [
     "pandas-stubs",
     "polars>=1.34.0;python_version < '3.14'",
     "pre-commit-uv>=4.2.0",
+    "psutil>=5.9.0",
     "pyarrow>=22.0",
     "pyarrow-stubs", # out of date, but good enough
     "pytest>=9.0.3",

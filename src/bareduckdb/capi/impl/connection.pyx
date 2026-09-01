@@ -254,7 +254,7 @@ cdef class CApiConnectionImpl:
     def close(self):
         """Disconnect and drop this connection's reference to the database.
 
-        Safe to call more than once, from any thread.
+        Disconnects exactly once
         """
         self._do_close()
 
@@ -262,8 +262,7 @@ cdef class CApiConnectionImpl:
         self._do_close()
 
     cdef void _do_close(self) noexcept:
-        """Disconnect exactly once
-        """
+        """Disconnect exactly once."""
         if not bdv2_cas(&self._close_claimed, 0, 1):
             return
         if self._conn != NULL:

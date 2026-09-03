@@ -51,8 +51,8 @@ jobs:
           echo "CC=gcc-14" >> $GITHUB_ENV
           echo "CXX=g++-14" >> $GITHUB_ENV
 
-      - name: Refresh lock for nightly deps
-        run: uv lock --upgrade
+      - name: Verify the lock matches pyproject
+        run: uv lock --check
 
       - name: Build current repo
         run: uv sync

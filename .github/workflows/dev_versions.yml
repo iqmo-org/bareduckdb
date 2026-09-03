@@ -6,7 +6,11 @@ name: Extensive Tests
 # - Downstream integration tests for common libraries
 # - Ensures pyarrow capsules (via polars) works without importing pyarrow
 on:
+  # branches: filters out tag pushes, which otherwise ran the whole matrix again.
   push:
+    branches: ['**']
+  # schedule:
+  #   - cron: '0 6 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -80,8 +84,14 @@ jobs:
             g++ --version
           fi
 
+      # Scheduled and manual runs re-resolve
       - name: Refresh lock for nightly deps
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: uv lock --upgrade
+
+      - name: Verify the lock matches pyproject
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        run: uv lock --check
 
       - name: Build
         shell: bash

@@ -7,8 +7,8 @@ XF_REGISTER_ARROW = pytest.mark.xfail(
     strict=True,
 )
 
-XF_BIND_PARAMS = pytest.mark.xfail(
-    reason="binding UUID, timedelta, dict, list and Decimal parameters is not implemented "
-    "on DuckDB's C API v2 yet; see _python_to_value in capi/impl/result.pyx",
+XF_ARROW_OUTPUT_VERSION = pytest.mark.xfail(
+    reason="the v2 Arrow export ignores arrow_output_version and produce_arrow_string_view, "
+    "so its schema still differs from duckdb's; parameter binding itself now works",
     strict=True,
 )

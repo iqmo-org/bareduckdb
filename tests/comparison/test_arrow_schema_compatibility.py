@@ -8,11 +8,11 @@ import sys
 
 import bareduckdb
 import duckdb
-from ..markers import XF_BIND_PARAMS
+from ..markers import XF_ARROW_OUTPUT_VERSION
 
 class TestArrowSchemaCompatibility:
 
-    @XF_BIND_PARAMS
+    @XF_ARROW_OUTPUT_VERSION
     def test_arrow_schema(self):
         params = [
             UUID('550e8400-e29b-41d4-a716-446655440000'),

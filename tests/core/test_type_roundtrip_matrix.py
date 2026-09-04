@@ -25,23 +25,26 @@ class Case:
 
 
 _XF_VARIANT = pytest.mark.xfail(
-    reason="VARIANT has no DuckDB -> Arrow conversion",
+    reason="build_plan() in arrow.pyx has no VARIANT branch, so export raises NotImplementedError",
     strict=True,
 )
 _XF_UNION_DENSE = pytest.mark.xfail(
-    reason="Dense Arrow UnionArray is not importable by DuckDB's Arrow layer",
+    reason="register() is not implemented on the C API v2 path, so no dense-union import can be exercised",
     strict=True,
 )
 _XF_BIGNUM_ARROW = pytest.mark.xfail(
-    reason="Arrow has no arbitrary-precision integer type; BIGNUM stays arrow.opaque bytes",
+    reason="Arrow has no arbitrary-precision integer type; arrow.pyx exports BIGNUM as arrow.opaque bytes "
+    "that fetchall decodes but Arrow consumers see as storage",
     strict=True,
 )
 _XF_BIT = pytest.mark.xfail(
-    reason="BIT degrades to untagged binary without arrow_lossless_conversion",
+    reason="Arrow has no bitstring type; arrow.pyx exports BIT as arrow.opaque bytes "
+    "that fetchall decodes but Arrow consumers see as storage",
     strict=True,
 )
 _XF_TIMETZ = pytest.mark.xfail(
-    reason="TIMETZ degrades to time64[us], dropping the UTC offset, without arrow_lossless_conversion",
+    reason="Arrow has no time-with-timezone type; arrow.pyx normalizes TIMETZ to UTC time64[us], "
+    "so the instant survives but the offset is not recoverable",
     strict=True,
 )
 
@@ -221,7 +224,7 @@ FETCH_ARROW_TYPES = {
     "varchar": "string_view",
     "uuid": "string",
     "blob": "binary_view",
-    "bit": "binary_view",
+    "bit": "extension<arrow.opaque[storage_type=binary_view, type_name=bit, vendor_name=DuckDB]>",
     "null": "int32",
     "list_int": "list<l: int32>",
     "fixed_size_list": "fixed_size_list<: int32>[3]",
@@ -393,16 +396,57 @@ def test_timestamptz_preserves_instant():
         conn.close()
 
 
-@pytest.mark.xfail(
-    reason="TIMETZ exports as time64[us]; the offset is discarded rather than applied, so the instant is wrong",
-    strict=True,
-)
-def test_timetz_preserves_instant():
+TIMETZ_LITERALS = [
+    "01:02:03+00",
+    "01:02:03+05",
+    "01:02:03-05",
+    "23:30:00+05",
+    "00:10:00-05:30",
+    "00:00:00+15:59:59",
+    "00:00:00-15:59:59",
+    "24:00:00+00",
+    "24:00:00-05",
+    "12:34:56.789012+02:30",
+]
+
+
+@pytest.mark.parametrize("literal", TIMETZ_LITERALS)
+def test_timetz_preserves_instant(literal):
+    """Arrow's offset-applied time64[us] must equal the engine's own UTC normalization."""
+    conn = bareduckdb.connect()
+    try:
+        engine_utc = conn.execute(
+            f"SELECT (('{literal}'::TIMETZ) AT TIME ZONE 'UTC')::VARCHAR AS c"
+        ).fetchall()[0][0]
+        hms, _, _ = engine_utc.partition("+")
+        expected = datetime.time.fromisoformat(hms)
+
+        value = conn.execute(f"SELECT '{literal}'::TIMETZ AS c").arrow_table().column(0).to_pylist()[0]
+        assert value == expected, f"{literal}: arrow gave {value}, engine says {expected} UTC"
+    finally:
+        conn.close()
+
+
+def test_timetz_offsets_are_not_collapsed():
     conn = bareduckdb.connect()
     try:
         east = conn.execute("SELECT '01:02:03+05'::TIMETZ AS c").fetchall()
         west = conn.execute("SELECT '01:02:03-05'::TIMETZ AS c").fetchall()
         assert east != west
+    finally:
+        conn.close()
+
+
+def test_bit_is_tagged_and_distinguishable_from_blob():
+    conn = bareduckdb.connect()
+    try:
+        bit_type = conn.execute("SELECT '101010'::BIT AS c").arrow_table().schema.field(0).type
+        blob_type = conn.execute("SELECT 'abc'::BLOB AS c").arrow_table().schema.field(0).type
+        assert bit_type != blob_type
+        assert getattr(bit_type, "extension_name", None) == "arrow.opaque"
+        assert bit_type.type_name == "bit"
+        assert bit_type.vendor_name == "DuckDB"
+        assert conn.execute("SELECT '101010'::BIT AS c").fetchall() == [("101010",)]
     finally:
         conn.close()
 

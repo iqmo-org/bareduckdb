@@ -119,6 +119,13 @@ _logger = logging.getLogger("bareduckdb.capi.arrow")
 DEFAULT_BATCH_ROWS = 1_000_000
 
 
+# DuckDB dtime_tz_t packing, mirrored from common/types/datetime.hpp.
+cdef int64_t TIMETZ_OFFSET_BITS = 24
+cdef uint64_t TIMETZ_OFFSET_MASK = 0xFFFFFF
+cdef int64_t TIMETZ_OFFSET_BIAS = 16 * 60 * 60 - 1
+cdef int64_t MICROS_PER_DAY = 86400000000
+
+
 # Message/context literals the callbacks report; C pointers, not Python objects.
 cdef const char *BD_HEX_DIGITS = b"0123456789abcdef"
 cdef const char *BD_EMPTY = b""
@@ -311,7 +318,7 @@ cdef enum:
     K_BINVIEW = 4      # BLOB / BIT / BIGNUM / GEOMETRY -> Arrow binary_view
     K_INTERVAL = 5     # months/days/micros -> months/days/nanos
     K_UUID = 6         # hugeint storage -> canonical UUID text
-    K_TIMETZ = 7       # packed micros+offset -> plain micros
+    K_TIMETZ = 7       # packed micros+offset -> UTC-normalized micros, wrapped into one day
     K_NULLCOL = 8      # SQLNULL -> all-null int32
     K_LIST = 9
     K_ARRAY = 10
@@ -583,7 +590,18 @@ cdef ColPlan *build_plan(duckdb_v2_logical_type_handle col_type, str name) excep
         elif type_id == DUCKDB_V2_LOGICAL_TYPE_ID_BLOB:
             _binview(plan)
         elif type_id == DUCKDB_V2_LOGICAL_TYPE_ID_BIT:
+            # Same storage and tag DuckDB's own Arrow layer emits for BIT over "vz".
             _binview(plan)
+            plan_set_metadata(
+                plan,
+                [
+                    ("ARROW:extension:name", "arrow.opaque"),
+                    (
+                        "ARROW:extension:metadata",
+                        '{"type_name":"bit","vendor_name":"DuckDB"}',
+                    ),
+                ],
+            )
         elif type_id == DUCKDB_V2_LOGICAL_TYPE_ID_GEOMETRY:
             _binview(plan)
         elif type_id == DUCKDB_V2_LOGICAL_TYPE_ID_BIGNUM:
@@ -1247,7 +1265,16 @@ cdef int append_rows(ColBuild *b, RVec *rv, idx_t start, idx_t count) noexcept n
         for i in range(count):
             phys = rv_phys(rv, start + i)
             packed = (<const uint64_t *>src)[phys]
-            micros = <int64_t>(packed >> 24)
+            # dtime_tz_t: micros in the high 40 bits, (MAX_OFFSET - seconds east of UTC) in the low 24.
+            micros = (
+                <int64_t>(packed >> TIMETZ_OFFSET_BITS)
+                - (TIMETZ_OFFSET_BIAS - <int64_t>(packed & TIMETZ_OFFSET_MASK)) * 1000000
+            )
+            # |offset| < 16h and micros < 25h, so one adjustment always lands in [0, 24h).
+            if micros < 0:
+                micros += MICROS_PER_DAY
+            elif micros >= MICROS_PER_DAY:
+                micros -= MICROS_PER_DAY
             memcpy(dst + i * 8, &micros, 8)
         b.data.length += count * 8
     elif plan.kind == K_STRVIEW or plan.kind == K_BINVIEW:

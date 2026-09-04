@@ -34,6 +34,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER,
     DUCKDB_V2_LOGICAL_TYPE_ID_INTERVAL,
     DUCKDB_V2_LOGICAL_TYPE_ID_LIST,
+    DUCKDB_V2_LOGICAL_TYPE_ID_MAP,
     DUCKDB_V2_LOGICAL_TYPE_ID_SMALLINT,
     DUCKDB_V2_LOGICAL_TYPE_ID_SQLNULL,
     DUCKDB_V2_LOGICAL_TYPE_ID_STRUCT,
@@ -105,11 +106,16 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_value_create_blob_with_connection,
     duckdb_v2_value_create_bool_with_connection,
     duckdb_v2_value_create_date_with_connection,
+    duckdb_v2_value_create_decimal_with_connection,
     duckdb_v2_value_create_double_with_connection,
     duckdb_v2_value_create_hugeint_with_connection,
+    duckdb_v2_value_create_interval_with_connection,
+    duckdb_v2_value_create_list_with_connection,
+    duckdb_v2_value_create_map_with_connection,
     duckdb_v2_value_create_null_with_connection,
     duckdb_v2_value_create_time_with_connection,
     duckdb_v2_value_create_timestamp_with_connection,
+    duckdb_v2_value_create_uuid_with_connection,
     duckdb_v2_value_create_varchar_with_connection,
     duckdb_v2_value_destroy,
     duckdb_v2_value_get_bigint,
@@ -403,6 +409,269 @@ cdef duckdb_v2_logical_type_handle _named_target_type(
     return NULL
 
 
+cdef duckdb_v2_logical_type_id_t _logical_type_id(duckdb_v2_logical_type_handle type_handle) except *:
+    """Return the logical type id of a borrowed logical type handle."""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_logical_type_id_t type_id
+
+    with nogil:
+        rc = duckdb_v2_logical_type_get_id(type_handle, &type_id, &err)
+    check_v2(rc, err, "duckdb_v2_logical_type_get_id")
+    return type_id
+
+
+cdef duckdb_v2_logical_type_handle _owned_child_type(
+    duckdb_v2_logical_type_handle type_handle, idx_t index
+) except NULL:
+    """Return an owned copy of one child logical type of a parameterized logical type."""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_identifier_t pname
+    cdef duckdb_v2_value_handle pvalue = NULL
+    cdef duckdb_v2_logical_type_handle child_type = NULL
+
+    with nogil:
+        rc = duckdb_v2_logical_type_get_param(type_handle, index, &pname, &pvalue, &err)
+    check_v2(rc, err, "duckdb_v2_logical_type_get_param(child type)")
+    try:
+        with nogil:
+            rc = duckdb_v2_value_get_type(pvalue, &child_type, &err)
+        check_v2(rc, err, "duckdb_v2_value_get_type")
+    finally:
+        with nogil:
+            duckdb_v2_value_destroy(&pvalue)
+    return child_type
+
+
+cdef duckdb_v2_logical_type_handle _declared_child_type(
+    duckdb_v2_logical_type_handle target_type,
+    duckdb_v2_logical_type_id_t container_id,
+    idx_t index,
+) except? NULL:
+    """Return an owned child type when the bound parameter's declared type is that container."""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef idx_t param_count = 0
+
+    if target_type == NULL or _logical_type_id(target_type) != container_id:
+        return NULL
+    with nogil:
+        rc = duckdb_v2_logical_type_get_param_count(target_type, &param_count, &err)
+    check_v2(rc, err, "duckdb_v2_logical_type_get_param_count")
+    if index >= param_count:
+        return NULL
+    return _owned_child_type(target_type, index)
+
+
+cdef duckdb_v2_logical_type_handle _primitive_type(
+    duckdb_v2_connection_handle conn, duckdb_v2_logical_type_id_t type_id
+) except NULL:
+    """Build an owned parameterless logical type from its id."""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_logical_type_handle out_type = NULL
+
+    with nogil:
+        rc = duckdb_v2_connection_create_type_from_id(conn, type_id, NULL, NULL, 0, &out_type, &err)
+    check_v2(rc, err, "duckdb_v2_connection_create_type_from_id")
+    return out_type
+
+
+cdef void _int_to_hugeint(object value, duckdb_v2_hugeint_t *out) except *:
+    """Split a Python int into v2's signed 128-bit (upper, lower) pair."""
+    if not (-(2 ** 127) <= value < 2 ** 127):
+        raise OverflowError(f"Python int {value} does not fit in a v2 HUGEINT")
+    out.lower = <uint64_t>(value & ((1 << 64) - 1))
+    out.upper = <int64_t>(value >> 64)
+
+
+cdef duckdb_v2_value_handle _decimal_to_value(
+    duckdb_v2_connection_handle conn, object val
+) except? NULL:
+    """Bind a decimal.Decimal as a DECIMAL whose width and scale come from its own digits."""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_value_handle out_value = NULL
+    cdef duckdb_v2_hugeint_t hv
+    cdef uint8_t c_width
+    cdef uint8_t c_scale
+
+    if not val.is_finite():
+        raise ValueError(f"cannot bind {val} as a DuckDB DECIMAL: DECIMAL has no NaN or infinity")
+    sign, digits, exponent = val.as_tuple()
+    coeff = 0
+    for digit in digits:
+        coeff = coeff * 10 + digit
+    if exponent >= 0:
+        coeff = coeff * 10 ** exponent
+        scale = 0
+    else:
+        scale = -exponent
+    if sign:
+        coeff = -coeff
+    width = max(len(str(abs(coeff))), scale, 1)
+    if width > 38:
+        raise ValueError(
+            f"cannot bind {val} as a DuckDB DECIMAL: it needs DECIMAL({width},{scale}) and "
+            "DuckDB's maximum DECIMAL width is 38"
+        )
+    _int_to_hugeint(coeff, &hv)
+    c_width = <uint8_t>width
+    c_scale = <uint8_t>scale
+    with nogil:
+        rc = duckdb_v2_value_create_decimal_with_connection(
+            conn, hv, c_width, c_scale, &out_value, &err
+        )
+    check_v2(rc, err, "duckdb_v2_value_create_decimal_with_connection")
+    return out_value
+
+
+cdef duckdb_v2_value_handle _uuid_to_value(
+    duckdb_v2_connection_handle conn, object val
+) except? NULL:
+    """Bind a uuid.UUID, applying the sign-bit flip _hugeint_to_uuid undoes on the read path."""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_value_handle out_value = NULL
+    cdef duckdb_v2_hugeint_t hv
+    cdef uint64_t upper_raw
+
+    full = val.int
+    upper_raw = <uint64_t>((full >> 64) ^ (1 << 63))
+    hv.upper = <int64_t>upper_raw
+    hv.lower = <uint64_t>(full & ((1 << 64) - 1))
+    with nogil:
+        rc = duckdb_v2_value_create_uuid_with_connection(conn, hv, &out_value, &err)
+    check_v2(rc, err, "duckdb_v2_value_create_uuid_with_connection")
+    return out_value
+
+
+cdef duckdb_v2_value_handle _timedelta_to_value(
+    duckdb_v2_connection_handle conn, object val
+) except? NULL:
+    """Bind a datetime.timedelta as an INTERVAL; a timedelta carries no months, so months is 0."""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_value_handle out_value = NULL
+    cdef duckdb_v2_interval_t iv
+
+    iv.months = 0
+    iv.days = <int32_t>val.days
+    iv.micros = <int64_t>(val.seconds * 1_000_000 + val.microseconds)
+    with nogil:
+        rc = duckdb_v2_value_create_interval_with_connection(conn, iv, &out_value, &err)
+    check_v2(rc, err, "duckdb_v2_value_create_interval_with_connection")
+    return out_value
+
+
+cdef duckdb_v2_value_handle _list_to_value(
+    duckdb_v2_connection_handle conn, object val, duckdb_v2_logical_type_handle target_type
+) except? NULL:
+    """Bind a Python list as a LIST, naming the element type only when the parameter declares one."""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_value_handle out_value = NULL
+    cdef duckdb_v2_value_handle *children = NULL
+    cdef duckdb_v2_logical_type_handle child_type = NULL
+    cdef idx_t count = <idx_t>len(val)
+    cdef idx_t i
+
+    child_type = _declared_child_type(target_type, DUCKDB_V2_LOGICAL_TYPE_ID_LIST, 0)
+    try:
+        # An empty list has nothing to resolve a child type from, so it needs one named outright.
+        if count == 0 and child_type == NULL:
+            child_type = _primitive_type(conn, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER)
+        if count > 0:
+            children = <duckdb_v2_value_handle *>malloc(count * sizeof(duckdb_v2_value_handle))
+            if children == NULL:
+                raise MemoryError("failed to allocate the v2 LIST element array")
+            for i in range(count):
+                children[i] = NULL
+            for i in range(count):
+                children[i] = _python_to_value(conn, val[i], child_type)
+        with nogil:
+            rc = duckdb_v2_value_create_list_with_connection(
+                conn, child_type, children, count, &out_value, &err
+            )
+        check_v2(rc, err, "duckdb_v2_value_create_list_with_connection")
+    finally:
+        if children != NULL:
+            for i in range(count):
+                if children[i] != NULL:
+                    with nogil:
+                        duckdb_v2_value_destroy(&children[i])
+            free(children)
+        if child_type != NULL:
+            with nogil:
+                duckdb_v2_logical_type_destroy(&child_type)
+    return out_value
+
+
+cdef duckdb_v2_value_handle _dict_to_value(
+    duckdb_v2_connection_handle conn, object val, duckdb_v2_logical_type_handle target_type
+) except? NULL:
+    """Bind a Python dict as a MAP, naming key and value types only when the parameter declares them."""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_value_handle out_value = NULL
+    cdef duckdb_v2_value_handle *keys = NULL
+    cdef duckdb_v2_value_handle *values = NULL
+    cdef duckdb_v2_logical_type_handle key_type = NULL
+    cdef duckdb_v2_logical_type_handle value_type = NULL
+    cdef idx_t count = <idx_t>len(val)
+    cdef idx_t i
+
+    items = list(val.items())
+    key_type = _declared_child_type(target_type, DUCKDB_V2_LOGICAL_TYPE_ID_MAP, 0)
+    try:
+        value_type = _declared_child_type(target_type, DUCKDB_V2_LOGICAL_TYPE_ID_MAP, 1)
+        # An empty map has nothing to resolve its two child types from, so both must be named outright.
+        if count == 0:
+            if key_type == NULL:
+                key_type = _primitive_type(conn, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR)
+            if value_type == NULL:
+                value_type = _primitive_type(conn, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER)
+        if count > 0:
+            keys = <duckdb_v2_value_handle *>malloc(count * sizeof(duckdb_v2_value_handle))
+            values = <duckdb_v2_value_handle *>malloc(count * sizeof(duckdb_v2_value_handle))
+            if keys == NULL or values == NULL:
+                raise MemoryError("failed to allocate the v2 MAP entry arrays")
+            for i in range(count):
+                keys[i] = NULL
+                values[i] = NULL
+            for i in range(count):
+                if items[i][0] is None:
+                    raise ValueError("cannot bind a dict with a None key as a DuckDB MAP: MAP keys must be non-NULL")
+                keys[i] = _python_to_value(conn, items[i][0], key_type)
+                values[i] = _python_to_value(conn, items[i][1], value_type)
+        with nogil:
+            rc = duckdb_v2_value_create_map_with_connection(
+                conn, key_type, value_type, keys, values, count, &out_value, &err
+            )
+        check_v2(rc, err, "duckdb_v2_value_create_map_with_connection")
+    finally:
+        if keys != NULL:
+            for i in range(count):
+                if keys[i] != NULL:
+                    with nogil:
+                        duckdb_v2_value_destroy(&keys[i])
+            free(keys)
+        if values != NULL:
+            for i in range(count):
+                if values[i] != NULL:
+                    with nogil:
+                        duckdb_v2_value_destroy(&values[i])
+            free(values)
+        if key_type != NULL:
+            with nogil:
+                duckdb_v2_logical_type_destroy(&key_type)
+        if value_type != NULL:
+            with nogil:
+                duckdb_v2_logical_type_destroy(&value_type)
+    return out_value
+
+
 cdef duckdb_v2_value_handle _python_to_value(
     duckdb_v2_connection_handle conn, object val, duckdb_v2_logical_type_handle target_type
 ) except? NULL:
@@ -515,6 +784,21 @@ cdef duckdb_v2_value_handle _python_to_value(
             rc = duckdb_v2_value_create_time_with_connection(conn, micros_val, &out_value, &err)
         check_v2(rc, err, "duckdb_v2_value_create_time_with_connection")
         return out_value
+
+    if isinstance(val, datetime.timedelta):
+        return _timedelta_to_value(conn, val)
+
+    if isinstance(val, decimal.Decimal):
+        return _decimal_to_value(conn, val)
+
+    if isinstance(val, uuid.UUID):
+        return _uuid_to_value(conn, val)
+
+    if isinstance(val, list):
+        return _list_to_value(conn, val, target_type)
+
+    if isinstance(val, dict):
+        return _dict_to_value(conn, val, target_type)
 
     raise TypeError(f"cannot bind Python {type(val).__name__} as a query parameter")
 
@@ -891,6 +1175,33 @@ cdef object _decode_value(duckdb_v2_value_handle value, tuple decoder):
                     duckdb_v2_value_destroy(&child)
         return out_dict
 
+    if kind == "map":
+        key_decoder = decoder[1]
+        value_decoder = decoder[2]
+        with nogil:
+            rc = duckdb_v2_value_get_child_count(value, &child_count, &err)
+        check_v2(rc, err, "duckdb_v2_value_get_child_count")
+        out_map = {}
+        # duckdb_v2.h:7150: a MAP's children alternate key, value.
+        for i in range(0, child_count, 2):
+            with nogil:
+                rc = duckdb_v2_value_get_child(value, i, &child, &err)
+            check_v2(rc, err, "duckdb_v2_value_get_child")
+            try:
+                map_key = _decode_value(child, key_decoder)
+            finally:
+                with nogil:
+                    duckdb_v2_value_destroy(&child)
+            with nogil:
+                rc = duckdb_v2_value_get_child(value, i + 1, &child, &err)
+            check_v2(rc, err, "duckdb_v2_value_get_child")
+            try:
+                out_map[map_key] = _decode_value(child, value_decoder)
+            finally:
+                with nogil:
+                    duckdb_v2_value_destroy(&child)
+        return out_map
+
     raise NotImplementedError(f"rows(): no v2 decode route implemented for decoder kind {kind!r}")
 
 
@@ -1141,5 +1452,20 @@ cdef object _build_decoder(duckdb_v2_logical_type_handle col_type):
                 with nogil:
                     duckdb_v2_value_destroy(&pvalue)
         return ("struct", fields)
+
+    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_MAP:
+        child_type = _owned_child_type(col_type, 0)
+        try:
+            key_decoder = _build_decoder(child_type)
+        finally:
+            with nogil:
+                duckdb_v2_logical_type_destroy(&child_type)
+        child_type = _owned_child_type(col_type, 1)
+        try:
+            value_decoder = _build_decoder(child_type)
+        finally:
+            with nogil:
+                duckdb_v2_logical_type_destroy(&child_type)
+        return ("map", key_decoder, value_decoder)
 
     return ("scalar", type_id, logical_type_name(col_type))

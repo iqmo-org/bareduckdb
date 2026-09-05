@@ -25,6 +25,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class InvalidInputException(Exception):  # noqa: N818
+    """Raised for an argument DuckDB would reject with its own InvalidInputException."""
+
+
+def _is_arrow_stream_capsule(obj: object) -> bool:
+    """Report whether obj is a bare PyCapsule, which the Cython layer validates itself."""
+    return type(obj).__name__ == "PyCapsule"
+
+
 class _LazyCollectSource:
     """Collects a lazy source (e.g. Polars LazyFrame) each time a stream is produced."""
 
@@ -118,6 +127,37 @@ class ConnectionBase:
                 read_only,
             )
 
+    @staticmethod
+    def _materialize(data: object) -> object:
+        """Collect a source into an in-memory object whose Arrow stream is implemented in C."""
+        module = type(data).__module__.split(".")[0]
+
+        if module == "pyarrow":
+            if hasattr(data, "read_all"):  # RecordBatchReader
+                return data.read_all()  # type: ignore[attr-defined]
+            if hasattr(data, "to_table"):  # dataset.Dataset, dataset.Scanner
+                return data.to_table()  # type: ignore[attr-defined]
+            return data
+
+        if module == "polars":
+            if hasattr(data, "collect"):  # LazyFrame
+                return data.collect()  # type: ignore[attr-defined]
+            return data
+
+        if module == "pandas":
+            import pyarrow as pa
+
+            return pa.Table.from_pandas(data, preserve_index=False)  # type: ignore[arg-type]
+
+        # The dispatcher reads the stream with no GIL, so a Python get_next has to be avoided.
+        if not hasattr(data, "__arrow_c_stream__") and hasattr(data, "collect"):
+            return ConnectionBase._materialize(data.collect())  # type: ignore[attr-defined]
+        if hasattr(data, "to_table"):
+            return data.to_table()  # type: ignore[attr-defined]
+        if hasattr(data, "read_all"):
+            return data.read_all()  # type: ignore[attr-defined]
+        return data
+
     def _register_arrow(
         self,
         name: str,
@@ -125,14 +165,20 @@ class ConnectionBase:
         statistics: "list[str] | Literal['numeric'] | str | bool | None" = None,
         replace: bool = True,
     ) -> None:
-        """Register data; not yet supported in C API v2."""
-        raise NotImplementedError("register(): this needs a table-function surface, which DuckDB's C API v2 does not expose yet")
+        """Register any supported source under name, collecting it first if it is lazy."""
+        if statistics is not None:
+            logger.debug("Ignoring statistics=%r for '%s': the import counts the rows itself", statistics, name)
+
+        collected = ConnectionBase._materialize(data)
+        if collected is not data:
+            logger.debug("Materialized %s into %s for '%s'", type(data).__name__, type(collected).__name__, name)
+        self._register_capsule(name, collected, replace=replace)
 
     def _register_capsule(self, name: str, capsule: object, replace: bool = True) -> None:
         """
         Register Arrow C Stream Interface capsule directly.
 
-        bareduckdb implements a CapsuleArrowStreamFactory to detect and gracefully handle capsule reuse.
+        The stream is moved into the registry and imported on the first query that reads the name.
 
         Args:
             name: Table name to register
@@ -160,15 +206,18 @@ class ConnectionBase:
 
         if hasattr(capsule, "__arrow_c_stream__"):
             data = capsule.__arrow_c_stream__()
-        else:
+        elif _is_arrow_stream_capsule(capsule):
             data = capsule
-            # TODO: Decide whether to allow, warn or raise
-            # raise ValueError(f"Registered object {name} does not provide __arrow_c_stream__")
+        else:
+            raise InvalidInputException(
+                f'Python Object "{name}" of type "{type(capsule).__name__}" not suitable for replacement scans.\n'
+                f'Make sure that "{name}" is either a pandas.DataFrame, polars.DataFrame, polars.LazyFrame, '
+                f"pyarrow Table, Dataset, RecordBatchReader, Scanner, or any object implementing __arrow_c_stream__"
+            )
 
-        # Assume it's a capsule already
-
-        self._registered_objects[name] = data
         self._impl.register_capsule(name, data, cardinality, replace=replace)
+        # Kept so the source outlives the registration; the C side never reads it.
+        self._registered_objects[name] = capsule
 
     def _call(
         self,
@@ -177,7 +226,7 @@ class ConnectionBase:
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
         parameters: Sequence[Any] | Mapping[str, Any] | None = None,
         data: Mapping[str, Any] | None = None,
-        batch_size: int = 1_000_000,
+        batch_size: int = 0,
     ) -> pa.Table | pa.RecordBatchReader | PyArrowCapsule:
         """
         Core execution method - executes query and returns result in requested format.
@@ -187,7 +236,7 @@ class ConnectionBase:
             output_type: Output format ("arrow_table", "arrow_reader", "arrow_capsule")
             parameters: Query parameters (positional list or named dict, keyword-only)
             data: dict of objects for replacement scanning
-            batch_size [1_000_000]: Arrow batch size
+            batch_size: strict maximum rows per Arrow batch; 0 selects DuckDB's own default
 
         Returns:
             Result in requested format (pa.Table, pa.RecordBatchReader, or capsule)
@@ -247,20 +296,32 @@ class ConnectionBase:
                 for name in _data_to_unregister:
                     self.unregister(name)
 
-    def unregister(self, name: str) -> None:
+    def unregister(self, name: str) -> ConnectionBase:
         """
         Unregister a previously registered table.
 
-        register() is not yet supported in C API v2, so nothing can be registered; this
-        only clears local bookkeeping and does not call into the backend.
+        An unknown name is a no-op, matching duckdb-python. The name becomes unresolvable
+        immediately; its memory is released once no result or exported Arrow stream can still
+        read it, which for a fully consumed query is this call itself.
 
         Args:
             name: Table name to unregister
+
+        Returns:
+            This connection, so calls chain.
         """
         logger.debug("Unregistering table: %s", name)
         with self._DUCKDB_INIT_LOCK:
-            if name in self._registered_objects:
-                del self._registered_objects[name]
+            known = self._registered_objects.pop(name, None) is not None
+            try:
+                retired = self._impl.unregister(name)
+            except RuntimeError:
+                # A closed connection has already dropped every registration.
+                logger.warning("unregister('%s') did not reach the backend", name, exc_info=True)
+                return self
+            if not known and not retired:
+                logger.debug("unregister('%s'): no registration by that name", name)
+        return self
 
     def close(self) -> None:
         logger.debug("Closing connection")

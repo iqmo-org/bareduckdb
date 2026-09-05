@@ -1,13 +1,11 @@
-"""
-Tests to verify DB-API 2.0 compatibility between bareduckdb and duckdb.
-
-These tests ensure that bareduckdb's DB-API 2.0 implementation matches
-the behavior of official duckdb-python.
-"""
+"""Verify DB-API 2.0 compatibility between bareduckdb and the official duckdb client."""
 
 import pytest
 
 import bareduckdb
+
+pytest.importorskip("duckdb", reason="the official duckdb client is not installed in this environment")
+
 import duckdb
 
 @pytest.fixture
@@ -28,7 +26,6 @@ def bare_conn():
 
 
 class TestDBAPIBasics:
-    """Test basic DB-API 2.0 methods and attributes."""
 
     def test_description_attribute(self, both_connections):
         bare_conn, duck_conn = both_connections
@@ -53,38 +50,32 @@ class TestDBAPIBasics:
         bare_conn.execute("SELECT * FROM range(10)")
         duck_conn.execute("SELECT * FROM range(10)")
 
-        # bareduckdb returns actual row count (more useful)
-        # official duckdb returns -1 (standard DB-API 2.0 for SELECT)
+        # bareduckdb returns the actual row count; official duckdb returns -1 per DB-API 2.0
         assert bare_conn.rowcount == 10
-        assert duck_conn.rowcount == -1  # DB-API 2.0: -1 for SELECT queries
+        assert duck_conn.rowcount == -1
 
     def test_fetchone(self, both_connections):
-        """Test fetchone() method."""
         bare_conn, duck_conn = both_connections
 
         bare_conn.execute("SELECT * FROM range(5)")
         duck_conn.execute("SELECT * FROM range(5)")
 
-        # Fetch first row
         bare_row = bare_conn.fetchone()
         duck_row = duck_conn.fetchone()
 
         assert bare_row == duck_row == (0,)
 
-        # Fetch second row
         bare_row = bare_conn.fetchone()
         duck_row = duck_conn.fetchone()
 
         assert bare_row == duck_row == (1,)
 
     def test_fetchmany(self, both_connections):
-        """Test fetchmany() method."""
         bare_conn, duck_conn = both_connections
 
         bare_conn.execute("SELECT * FROM range(10)")
         duck_conn.execute("SELECT * FROM range(10)")
 
-        # Fetch 3 rows
         bare_rows = bare_conn.fetchmany(3)
         duck_rows = duck_conn.fetchmany(3)
 
@@ -98,7 +89,6 @@ class TestDBAPIBasics:
         assert bare_rows == duck_rows == [(3,), (4,)]
 
     def test_fetchall(self, both_connections):
-        """Test fetchall() method."""
         bare_conn, duck_conn = both_connections
 
         bare_conn.execute("SELECT * FROM range(5)")

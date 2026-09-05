@@ -83,7 +83,7 @@ def test_nested_varint_decodes(sql, expected):
 
 
 @pytest.mark.xfail(
-    reason="Arrow has no arbitrary-precision integer type; arrow.pyx exports VARINT as arrow.opaque bytes",
+    reason="Arrow has no arbitrary-precision integer type; DuckDB exports VARINT as arrow.opaque bytes",
     strict=True,
 )
 def test_varint_arrow_table_roundtrip():

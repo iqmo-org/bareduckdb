@@ -105,7 +105,7 @@ class Connection(ConnectionAPI):
         statistics: "list[str] | Literal['numeric'] | str | bool | None" = None,
         *,
         replace: bool = True,
-    ) -> Any:
+    ) -> Connection:
         """
         Register data for querying.
 
@@ -115,12 +115,17 @@ class Connection(ConnectionAPI):
             statistics: Statistics specification for query optimization. When None,
                 the connection's default_statistics is used.
             replace: If True (default), replace existing registration with same name
+
+        Returns:
+            This connection, so calls chain.
         """
         self._register_arrow(name, data, statistics=statistics, replace=replace)  # type: ignore
-        return True
+        return self
 
-    def unregister(self, name: str) -> None:
+    def unregister(self, name: str) -> Connection:
+        """Unregister a name, returning this connection; an unknown name is a no-op."""
         super().unregister(name)
+        return self
 
     def cursor(self) -> Connection:
         """

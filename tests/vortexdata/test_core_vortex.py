@@ -1,11 +1,9 @@
 from bareduckdb.core import ConnectionBase
 from pathlib import Path
 import pytest
-from ..markers import XF_REGISTER_ARROW
 
 vx = pytest.importorskip("vortex")
 
-@XF_REGISTER_ARROW
 def test_vortex_capsule(tmp_path: Path):
     with ConnectionBase(database=":memory:") as conn:
 
@@ -20,7 +18,6 @@ def test_vortex_capsule(tmp_path: Path):
         assert len(result) == 1 and result.to_pydict()=={"col1": ["hello world"]}
 
 
-@XF_REGISTER_ARROW
 def test_vortex_dataset(tmp_path: Path):
     with ConnectionBase(database=":memory:") as conn:
 

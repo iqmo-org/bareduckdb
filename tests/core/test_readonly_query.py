@@ -4,6 +4,8 @@ import pytest
 
 import bareduckdb
 
+pa = pytest.importorskip("pyarrow", reason="pyarrow not available")
+
 
 def _populate(path):
     conn = bareduckdb.connect(str(path))
@@ -30,4 +32,25 @@ def test_readonly_rejects_writes(tmp_path):
     conn = bareduckdb.connect(str(path), read_only=True)
     with pytest.raises(Exception, match="(?i)read-only"):
         conn.execute("INSERT INTO t VALUES (4,'d')").fetchall()
+    conn.close()
+
+
+def test_readonly_register_arrow_and_query(tmp_path):
+    path = tmp_path / f"ro_{uuid.uuid4().hex[:8]}.db"
+    _populate(path)
+
+    conn = bareduckdb.connect(str(path), read_only=True)
+    conn.register("mem", pa.table({"j": list(range(10))}))
+    assert conn.execute("SELECT count(*), sum(j) FROM mem").fetchall() == [(10, 45)]
+    conn.close()
+
+
+def test_readonly_register_pandas_and_query(tmp_path):
+    pd = pytest.importorskip("pandas")
+    path = tmp_path / f"ro_{uuid.uuid4().hex[:8]}.db"
+    _populate(path)
+
+    conn = bareduckdb.connect(str(path), read_only=True)
+    conn.register("pdmem", pd.DataFrame({"x": [10, 20, 30]}))
+    assert conn.execute("SELECT sum(x) FROM pdmem").fetchall()[0][0] == 60
     conn.close()

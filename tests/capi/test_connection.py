@@ -71,17 +71,16 @@ def test_cursor_from_closed_connection_raises(env):
         conn.create_cursor()
 
 
-def test_register_capsule_raises_not_implemented(env):
+def test_register_capsule_needs_an_arrow_stream_capsule(env):
     conn = env.connect()
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(TypeError, match="arrow_array_stream"):
         conn.register_capsule("t", None)
     conn.close()
 
 
-def test_unregister_raises_not_implemented(env):
+def test_unregister_of_an_unknown_name_retires_nothing(env):
     conn = env.connect()
-    with pytest.raises(NotImplementedError):
-        conn.unregister("t")
+    assert conn.unregister("t") == 0
     conn.close()
 
 

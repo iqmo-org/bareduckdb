@@ -1,4 +1,4 @@
-"""Zero-copy Arrow export from v2 results, built on duckdb_v2_vector_get_view."""
+"""Arrow export from v2 results, through DuckDB's duckdb_v2_result_to_arrow_stream."""
 
 import gc
 import os
@@ -10,12 +10,12 @@ import pytest
 pa = pytest.importorskip("pyarrow")
 
 from bareduckdb.capi.impl.arrow import (  # noqa: E402
+    DEFAULT_BATCH_ROWS,
+    DEFAULT_STREAM_BATCH_ROWS,
+    DEFAULT_TABLE_BATCH_ROWS,
     arrow_stream_from_result,
     arrow_table_from_result,
-    convert_first_chunk,
-    pool_double_return_count,
     probe_vector_types,
-    probe_vector_views,
 )
 from bareduckdb.capi.impl.connection import CApiEnvironment  # noqa: E402
 from bareduckdb.capi.impl.result import execute  # noqa: E402
@@ -40,15 +40,7 @@ ORACLE_REQUIRED = os.environ.get("BAREDUCKDB_REQUIRE_ORACLE") == "1"
 
 @pytest.fixture
 def make_conn():
-    """Hand out a fresh connection per call.
-
-    pytest-run-parallel builds a fixture once and passes that one object to
-    every worker thread and every --iterations pass, but a v2 connection
-    carries a single live result at a time, so threads sharing one collide
-    with "connection has a live result". Tests call this at the top of the
-    body instead, which also gives each thread its own anonymous in-memory
-    database rather than sharing tables.
-    """
+    """Hand out a fresh connection per call, since a v2 connection carries a single live result and pytest-run-parallel would share one fixture object across threads."""
     created = []
     lock = threading.Lock()
 
@@ -63,7 +55,7 @@ def make_conn():
     created.clear()
 
 
-def table(conn, sql, parameters=None, batch_rows=1_000_000):
+def table(conn, sql, parameters=None, batch_rows=None):
     """Run a query and materialize it as a pyarrow.Table through the v2 Arrow layer."""
     return arrow_table_from_result(execute(conn, sql, parameters), batch_rows)
 
@@ -91,7 +83,7 @@ def test_oracle_agrees_on_a_simple_table(make_conn):
     assert ours.to_pydict() == theirs.to_pydict()
 
 
-# --- fixed-width columns ---
+# Fixed-width columns
 
 
 FIXED_WIDTH_CASES = [
@@ -112,9 +104,8 @@ FIXED_WIDTH_CASES = [
     ("timestamp_s", "SELECT '2020-01-01'::TIMESTAMP_S AS c", pa.timestamp("s"), None),
     ("timestamp_ms", "SELECT '2020-01-01'::TIMESTAMP_MS AS c", pa.timestamp("ms"), None),
     ("timestamp_ns", "SELECT '2020-01-01'::TIMESTAMP_NS AS c", pa.timestamp("ns"), None),
-    ("timestamp_tz", "SELECT '2020-01-01'::TIMESTAMPTZ AS c", pa.timestamp("us", "UTC"), None),
     ("hugeint", "SELECT (2**100)::HUGEINT AS c", pa.decimal128(38, 0), None),
-    ("decimal_10_2", "SELECT 1.23::DECIMAL(10,2) AS c", pa.decimal64(10, 2), None),
+    ("decimal_10_2", "SELECT 1.23::DECIMAL(10,2) AS c", pa.decimal128(10, 2), None),
     ("decimal_38_0", "SELECT 1::DECIMAL(38,0) AS c", pa.decimal128(38, 0), None),
     ("interval", "SELECT INTERVAL '1 month 2 days 3 seconds' AS c", pa.month_day_nano_interval(), None),
 ]
@@ -149,6 +140,13 @@ def test_multiple_fixed_width_columns(make_conn):
     assert tbl.column(1).to_pylist() == [i * 1.5 for i in range(5000)]
 
 
+def test_timestamptz_carries_the_session_zone(make_conn):
+    """DuckDB stamps the session TimeZone on the field rather than normalizing to UTC."""
+    conn = make_conn()
+    zone = table(conn, "SELECT current_setting('TimeZone') AS c").column(0).to_pylist()[0]
+    assert table(conn, "SELECT '2020-01-01'::TIMESTAMPTZ AS c").schema.field(0).type == pa.timestamp("us", zone)
+
+
 def test_interval_value_is_month_day_nano(make_conn):
     conn = make_conn()
     tbl = table(conn, "SELECT INTERVAL '1 month 2 days 3 seconds' AS c")
@@ -167,7 +165,7 @@ def test_negative_hugeint_value(make_conn):
     assert int(tbl.column(0).to_pylist()[0]) == -(2**100)
 
 
-# --- validity patterns ---
+# Validity patterns
 
 
 def test_validity_alternating(make_conn):
@@ -217,17 +215,8 @@ MISALIGNED_SQL = (
 )
 
 
-def test_an_unordered_filter_really_produces_misaligned_chunks(make_conn):
-    """Grounds the test below: non-final chunks here are 1755/1756 rows, not multiples of 8."""
-    conn = make_conn()
-    run(conn, "CREATE TABLE mis AS SELECT i FROM range(20000) t(i)")
-    sizes = batch_sizes(conn, MISALIGNED_SQL, 1)
-    misaligned = [size for size in sizes[:-1] if size % 8]
-    assert misaligned, f"expected a non-final chunk that is not a multiple of 8, got {sizes}"
-
-
 def test_validity_survives_misaligned_chunk_sizes(make_conn):
-    """Coalescing misaligned chunks must not shift the validity bits."""
+    """An unordered filter yields odd-sized engine chunks; coalescing must not shift validity."""
     conn = make_conn()
     run(conn, "CREATE TABLE mis AS SELECT i FROM range(20000) t(i)")
     expected = sorted(
@@ -244,7 +233,7 @@ def test_null_count_matches(make_conn):
     assert tbl.column(0).null_count == 2000
 
 
-# --- vector layouts: FLAT, CONSTANT, DICTIONARY, OTHER ---
+# Vector layouts: FLAT, CONSTANT, DICTIONARY, OTHER
 
 
 def observed_layouts(conn, sql):
@@ -282,154 +271,6 @@ def test_result_boundary_hands_out_only_known_representations(make_conn):
         assert observed_layouts(conn, sql) <= {"FLAT", "CONSTANT", "DICTIONARY"}, sql
 
 
-def test_constant_view_expands_to_every_row(make_conn):
-    conn = make_conn()
-    batch = convert_first_chunk(
-        execute(conn, "SELECT 42::INTEGER AS c FROM range(2048)"),
-        as_constant=True,
-        constant_rows=1000,
-    )
-    assert batch.num_rows == 1000
-    assert batch.column(0).to_pylist() == [42] * 1000
-
-
-def test_constant_null_view_expands_to_nulls(make_conn):
-    conn = make_conn()
-    batch = convert_first_chunk(
-        execute(conn, "SELECT NULL::INTEGER AS c FROM range(2048)"),
-        as_constant=True,
-        constant_rows=500,
-    )
-    assert batch.num_rows == 500
-    assert batch.column(0).null_count == 500
-
-
-def test_constant_string_view_expands(make_conn):
-    conn = make_conn()
-    batch = convert_first_chunk(
-        execute(conn, "SELECT 'a constant string value' AS c FROM range(2048)"),
-        as_constant=True,
-        constant_rows=300,
-    )
-    assert batch.column(0).to_pylist() == ["a constant string value"] * 300
-
-
-def test_dictionary_view_is_gathered_through_the_selection_vector(make_conn):
-    conn = make_conn()
-    selection = [7, 3, 3, 0, 2047, 1, 2, 2, 900]
-    batch = convert_first_chunk(
-        execute(conn, "SELECT i::INTEGER AS c FROM range(2048) t(i)"), selection=selection
-    )
-    assert batch.column(0).to_pylist() == selection
-
-
-def test_dictionary_view_of_strings_is_gathered(make_conn):
-    conn = make_conn()
-    selection = [5, 5, 1, 2047, 0]
-    batch = convert_first_chunk(
-        execute(conn, "SELECT repeat('v', i % 30) || i::VARCHAR AS c FROM range(2048) t(i)"),
-        selection=selection,
-    )
-    assert batch.column(0).to_pylist() == ["v" * (i % 30) + str(i) for i in selection]
-
-
-def test_dictionary_view_carries_validity_through_the_selection(make_conn):
-    conn = make_conn()
-    selection = [0, 1, 2, 3, 4, 5, 2046, 2047]
-    batch = convert_first_chunk(
-        execute(
-            conn,
-            "SELECT CASE WHEN i % 2 = 0 THEN NULL ELSE i::INTEGER END AS c FROM range(2048) t(i)",
-        ),
-        selection=selection,
-    )
-    assert batch.column(0).to_pylist() == [None if i % 2 == 0 else i for i in selection]
-
-
-def test_dictionary_view_of_a_struct_is_gathered(make_conn):
-    conn = make_conn()
-    selection = [10, 2, 2, 0]
-    batch = convert_first_chunk(
-        execute(conn, "SELECT {'a': i, 'b': i::VARCHAR} AS c FROM range(2048) t(i)"),
-        selection=selection,
-    )
-    assert batch.column(0).to_pylist() == [{"a": i, "b": str(i)} for i in selection]
-
-
-def test_dictionary_view_of_a_list_is_gathered(make_conn):
-    conn = make_conn()
-    selection = [4, 1, 1, 0]
-    batch = convert_first_chunk(
-        execute(conn, "SELECT [i, i + 1] AS c FROM range(2048) t(i)"), selection=selection
-    )
-    assert batch.column(0).to_pylist() == [[i, i + 1] for i in selection]
-
-
-def test_selection_index_outside_the_chunk_is_rejected(make_conn):
-    conn = make_conn()
-    with pytest.raises(ValueError, match="outside the chunk"):
-        convert_first_chunk(
-            execute(conn, "SELECT i FROM range(10) t(i)"), selection=[0, 99999]
-        )
-
-
-def test_more_rows_than_the_selection_vector_covers_is_rejected(make_conn):
-    """A gather past the end of a selection vector must raise, not read off the array."""
-    conn = make_conn()
-    with pytest.raises(RuntimeError, match="does not cover the rows requested"):
-        convert_first_chunk(
-            execute(conn, "SELECT i::INTEGER AS c FROM range(2048) t(i)"),
-            selection=[0, 1, 2],
-            selection_rows=64,
-        )
-
-
-def test_more_rows_than_a_string_selection_vector_covers_is_rejected(make_conn):
-    """The same guard on the varchar path, where a stray index gathers a pointer."""
-    conn = make_conn()
-    with pytest.raises(RuntimeError, match="does not cover the rows requested"):
-        convert_first_chunk(
-            execute(conn, "SELECT i::VARCHAR AS c FROM range(2048) t(i)"),
-            selection=[0, 1, 2],
-            selection_rows=64,
-        )
-
-
-def test_a_selection_vector_covering_every_requested_row_still_converts(make_conn):
-    """The guard does not narrow the gather it protects."""
-    conn = make_conn()
-    selection = [3, 1, 1, 0, 2047]
-    batch = convert_first_chunk(
-        execute(conn, "SELECT i::INTEGER AS c FROM range(2048) t(i)"),
-        selection=selection,
-        selection_rows=len(selection),
-    )
-    assert batch.column(0).to_pylist() == selection
-
-
-def test_more_rows_than_a_flat_view_covers_is_rejected(make_conn):
-    """A FLAT view is bounded too: sel == NULL does not make a long run safe.
-
-    The chunk is deliberately small so the over-read the guard prevents stays inside
-    DuckDB's full-capacity vector buffer, which makes the unguarded outcome garbage
-    rather than a segfault.
-    """
-    conn = make_conn()
-    with pytest.raises(RuntimeError, match="does not cover the rows requested"):
-        convert_first_chunk(
-            execute(conn, "SELECT i::INTEGER AS c FROM range(5) t(i)"), flat_rows=69
-        )
-
-
-def test_a_flat_view_covering_every_requested_row_still_converts(make_conn):
-    """The bound is exact: a run ending on the view's last row is not rejected."""
-    conn = make_conn()
-    batch = convert_first_chunk(
-        execute(conn, "SELECT i::INTEGER AS c FROM range(5) t(i)"), flat_rows=5
-    )
-    assert batch.column(0).to_pylist() == [0, 1, 2, 3, 4]
-
-
 NESTED_SHAPE_QUERIES = [
     "SELECT range(0, i % 4) AS l FROM range(10) t(i)",
     "SELECT [i, i+1, i+2]::INTEGER[3] AS a FROM range(7) t(i)",
@@ -441,53 +282,10 @@ NESTED_SHAPE_QUERIES = [
     "SELECT CASE WHEN i % 2 = 0 THEN NULL ELSE range(0, i) END AS l FROM range(8) t(i)",
 ]
 
-K_LIST, K_ARRAY, K_STRUCT, K_MAP = 9, 10, 11, 12
-
-
-def assert_child_counts_hold(node, chunk_size):
-    """A resolved node's count must be its own logical length, per nested kind."""
-    assert node["count"] == chunk_size, node
-    for child in node["children"]:
-        if node["kind"] == K_STRUCT:
-            assert_child_counts_hold(child, chunk_size)
-        elif node["kind"] == K_ARRAY:
-            # An ARRAY child holds array_size elements per parent row, so its count is a whole multiple of the parent's.
-            assert child["count"] % chunk_size == 0 and child["count"] >= chunk_size, child
-            assert_child_counts_hold(child, child["count"])
-        else:
-            # LIST and MAP children hold every element of every entry, end to end.
-            assert child["count"] >= 0, child
-            assert_child_counts_hold(child, child["count"])
-
-
 @pytest.mark.parametrize("sql", NESTED_SHAPE_QUERIES)
-def test_nested_child_views_report_their_own_length(make_conn, sql):
-    """The FLAT bound rests on this: no nested child under-reports what it holds."""
-    conn = make_conn()
-    shape = probe_vector_views(execute(conn, sql))
-    for column in shape["columns"]:
-        assert_child_counts_hold(column, shape["chunk_size"])
-
-
-@pytest.mark.parametrize("sql", NESTED_SHAPE_QUERIES)
-def test_nested_shapes_still_convert_under_the_flat_bound(make_conn, sql):
-    """The bound must not false-reject a legitimate nested child run."""
+def test_nested_shapes_convert(make_conn, sql):
     conn = make_conn()
     assert table(conn, sql).num_rows > 0
-
-
-def test_the_map_entries_node_reports_its_entry_count(make_conn):
-    """The synthetic MAP entries node used to keep a stale zero count."""
-    conn = make_conn()
-    shape = probe_vector_views(
-        execute(conn, "SELECT MAP([i, i+1], [i*2, i*3]) AS m FROM range(6) t(i)")
-    )
-    column = shape["columns"][0]
-    assert column["kind"] == K_MAP
-    entries = column["children"][0]
-    assert entries["kind"] == K_STRUCT
-    assert entries["count"] == 12
-    assert [child["count"] for child in entries["children"]] == [12, 12]
 
 
 def test_constant_and_dictionary_queries_still_convert_correctly(make_conn):
@@ -501,7 +299,7 @@ def test_constant_and_dictionary_queries_still_convert_correctly(make_conn):
     assert table(conn, "SELECT s FROM dictnulls WHERE i % 3 = 0").column(0).to_pylist() == expected
 
 
-# --- strings and blobs ---
+# Strings and blobs
 
 
 def test_short_string_is_inline(make_conn):
@@ -565,7 +363,7 @@ def test_long_blob_round_trip(make_conn):
     assert tbl.column(0).to_pylist() == [b"a" * 300]
 
 
-# --- nested types ---
+# Nested types
 
 
 def test_list_of_int(make_conn):
@@ -675,7 +473,7 @@ def test_sqlnull_column(make_conn):
     assert tbl.column(0).to_pylist() == [None]
 
 
-# --- schema, empty results, and stream mechanics ---
+# Schema, empty results, and stream mechanics
 
 
 def test_empty_result_preserves_schema(make_conn):
@@ -719,7 +517,7 @@ def test_statement_expanding_into_a_group_through_the_public_api():
 
 def test_capsule_is_a_pycapsule(make_conn):
     conn = make_conn()
-    capsule = arrow_stream_from_result(execute(conn, "SELECT 1 AS c"), 1_000_000)
+    capsule = arrow_stream_from_result(execute(conn, "SELECT 1 AS c"))
     assert type(capsule).__name__ == "PyCapsule"
 
 
@@ -727,7 +525,7 @@ def test_capsule_is_a_pycapsule(make_conn):
 def test_capsule_dropped_unconsumed_does_not_crash(make_conn):
     conn = make_conn()
     for _ in range(200):
-        capsule = arrow_stream_from_result(execute(conn, "SELECT i FROM range(5000) t(i)"), 1_000_000)
+        capsule = arrow_stream_from_result(execute(conn, "SELECT i FROM range(5000) t(i)"))
         del capsule
         gc.collect()
 
@@ -744,9 +542,9 @@ def test_capsule_partially_consumed_then_dropped(make_conn):
 def test_consuming_a_result_twice_raises(make_conn):
     conn = make_conn()
     result = execute(conn, "SELECT 1 AS c")
-    arrow_stream_from_result(result, 1_000_000)
+    arrow_stream_from_result(result)
     with pytest.raises(RuntimeError, match="already consumed"):
-        arrow_stream_from_result(result, 1_000_000)
+        arrow_stream_from_result(result)
 
 
 def test_to_arrow_after_stream_export_raises(make_conn):
@@ -785,7 +583,7 @@ def test_pa_table_accepts_the_result_directly(make_conn):
     assert pa.table(result).num_rows == 100
 
 
-# --- batch_rows ---
+# batch_rows
 
 
 def batch_sizes(conn, sql, batch_rows):
@@ -795,19 +593,26 @@ def batch_sizes(conn, sql, batch_rows):
 
 
 def test_batch_rows_coalesces_chunks(make_conn):
-    """DuckDB emits 2048-row chunks; a 10000-row target must coalesce them."""
+    """DuckDB emits 2048-row chunks; a 10000-row cap must coalesce them up to that cap."""
     conn = make_conn()
     sizes = batch_sizes(conn, "SELECT i FROM range(50000) t(i)", 10000)
     assert sum(sizes) == 50000
-    assert all(size >= 10000 for size in sizes[:-1]), sizes
-    assert len(sizes) <= 6, sizes
+    assert sizes == [10000] * 5, sizes
 
 
-def test_batch_rows_small_target_does_not_coalesce(make_conn):
+def test_batch_rows_is_a_strict_maximum(make_conn):
+    """No batch may exceed the cap, even though the engine's own chunks are 2048 rows."""
+    conn = make_conn()
+    sizes = batch_sizes(conn, "SELECT i FROM range(20000) t(i)", 1000)
+    assert sum(sizes) == 20000
+    assert max(sizes) == 1000, sizes
+
+
+def test_batch_rows_smaller_than_an_engine_chunk_splits_it(make_conn):
+    """The cap is honoured below the engine chunk size, which a floor could not do."""
     conn = make_conn()
     sizes = batch_sizes(conn, "SELECT i FROM range(20000) t(i)", 1)
-    assert sum(sizes) == 20000
-    assert len(sizes) >= 9, sizes
+    assert sizes == [1] * 20000
 
 
 def test_batch_rows_larger_than_result_gives_one_batch(make_conn):
@@ -816,10 +621,43 @@ def test_batch_rows_larger_than_result_gives_one_batch(make_conn):
     assert sizes == [5000]
 
 
-def test_batch_rows_zero_falls_back_to_a_default(make_conn):
+def test_batch_rows_default_matches_duckdb(make_conn):
+    """A falsy batch_rows selects DuckDB's own default, which DEFAULT_BATCH_ROWS names."""
     conn = make_conn()
-    sizes = batch_sizes(conn, "SELECT i FROM range(5000) t(i)", 0)
-    assert sum(sizes) == 5000
+    rows = DEFAULT_BATCH_ROWS + 1
+    assert batch_sizes(conn, f"SELECT i FROM range({rows}) t(i)", 0) == [DEFAULT_BATCH_ROWS, 1]
+    conn2 = make_conn()
+    assert batch_sizes(conn2, f"SELECT i FROM range({rows}) t(i)", None) == [DEFAULT_BATCH_ROWS, 1]
+
+
+def test_stream_default_matches_duckdbs(make_conn):
+    """__arrow_c_stream__ keeps DuckDB's own default; see BACKLOG.md item 4."""
+    conn = make_conn()
+    assert DEFAULT_STREAM_BATCH_ROWS == DEFAULT_BATCH_ROWS == 131_072
+    rows = DEFAULT_STREAM_BATCH_ROWS + 1
+    capsule = execute(conn, f"SELECT i FROM range({rows}) t(i)").__arrow_c_stream__()
+    reader = pa.RecordBatchReader._import_from_c_capsule(capsule)
+    assert [batch.num_rows for batch in reader] == [DEFAULT_STREAM_BATCH_ROWS, 1]
+
+
+def test_table_default_gives_one_chunk(make_conn):
+    """to_arrow materializes regardless, and a single chunk is what keeps to_numpy copy-free."""
+    conn = make_conn()
+    assert DEFAULT_TABLE_BATCH_ROWS == 16_777_216
+    assert DEFAULT_TABLE_BATCH_ROWS > DEFAULT_BATCH_ROWS
+    table = execute(conn, "SELECT i, i * 2 AS j FROM range(1000000) t(i)").to_arrow()
+    assert table.num_rows == 1_000_000
+    assert [column.num_chunks for column in table.columns] == [1, 1]
+
+
+def test_an_explicit_batch_rows_still_wins_over_both_defaults(make_conn):
+    conn = make_conn()
+    table = execute(conn, "SELECT i FROM range(30000) t(i)", batch_rows=10000).to_arrow()
+    assert table.column(0).num_chunks == 3
+    conn2 = make_conn()
+    capsule = execute(conn2, "SELECT i FROM range(30000) t(i)", batch_rows=10000).__arrow_c_stream__()
+    reader = pa.RecordBatchReader._import_from_c_capsule(capsule)
+    assert [batch.num_rows for batch in reader] == [10000] * 3
 
 
 def test_schema_is_stable_across_batches(make_conn):
@@ -831,7 +669,7 @@ def test_schema_is_stable_across_batches(make_conn):
         assert batch.schema == schema
 
 
-# --- errors ---
+# Errors
 
 
 def test_unsupported_type_raises_rather_than_guessing(make_conn):
@@ -845,10 +683,10 @@ def test_stream_from_a_closed_result_raises(make_conn):
     result = execute(conn, "SELECT 1 AS c")
     result.close()
     with pytest.raises(RuntimeError):
-        arrow_stream_from_result(result, 1_000_000)
+        arrow_stream_from_result(result)
 
 
-# --- result seam edge cases ---
+# Result seam edge cases
 
 
 def test_failed_drain_on_a_non_final_statement_does_not_leak(make_conn):
@@ -895,7 +733,7 @@ def test_result_outlives_the_python_connection_object(make_conn):
 
 @pytest.mark.parallel_threads(1)
 def test_concurrent_drains_share_the_buffer_pool_safely(make_conn):
-    """Free threading is the point: parallel drains must not corrupt the pooled buffers."""
+    """Free threading is the point: parallel drains must not corrupt each other."""
     conn = make_conn()
     import threading
 
@@ -921,20 +759,15 @@ def test_concurrent_drains_share_the_buffer_pool_safely(make_conn):
         finally:
             own.close()
 
-    before = pool_double_return_count()
     threads = [threading.Thread(target=drain, args=(c,)) for c in connections]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
     assert errors == []
-    assert pool_double_return_count() == before, (
-        "a buffer was returned to the recycled pool twice, which means two owners "
-        "held it at once"
-    )
 
 
-# --- timing sanity check (not a benchmark harness) ---
+# Timing sanity check, not a benchmark harness
 
 
 @pytest.mark.parallel_threads(1)

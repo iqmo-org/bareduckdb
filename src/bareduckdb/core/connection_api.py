@@ -200,12 +200,13 @@ class ConnectionAPI(ConnectionBase):
         data = data or {}
 
         if self.enable_replacement_scan:
+            # A registered name never enters the catalog, so SHOW TABLES alone would miss it.
+            existing_tables = set(self._registered_objects)
             try:
                 tables_result = self._call("SHOW TABLES", output_type="arrow_table")
-                existing_tables = {row["name"] for row in tables_result.to_pylist()}
+                existing_tables |= {row["name"] for row in tables_result.to_pylist()}
             except Exception as e:
                 logger.warning("Failed to get table list: %s", e)
-                existing_tables = set()
 
             table_refs = set(parse_result.get("table_refs", []))
             unknown_tables = table_refs - existing_tables
@@ -257,8 +258,8 @@ class ConnectionAPI(ConnectionBase):
             raise RuntimeError("No last result")
         return self._last_result
 
-    def arrow_table(self):
-        return self._last_result_get().arrow_table()
+    def arrow_table(self, timetz_utc: bool = False):
+        return self._last_result_get().arrow_table(timetz_utc=timetz_utc)
 
     def arrow_reader(self):
         return self._last_result_get().arrow_reader()

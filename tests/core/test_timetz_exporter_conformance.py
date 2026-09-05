@@ -1,7 +1,5 @@
-"""TIMETZ Arrow behaviour: pins ours, and characterizes DuckDB's two modes.
-"""
+"""TIMETZ Arrow behaviour: pins DuckDB's default, and characterizes its lossless mode."""
 
-import ctypes
 import datetime
 
 import pytest
@@ -9,8 +7,7 @@ import pytest
 pytest.importorskip("pyarrow")
 
 import bareduckdb
-
-UPSTREAM_SYMBOL = "duckdb_v2_result_to_arrow_stream"
+from bareduckdb.compat.result_compat import _decode_time_tz
 
 LITERALS = [
     "01:02:03+05",
@@ -22,15 +19,17 @@ LITERALS = [
 ]
 
 
-def _upstream_exporter_available():
-    """True when the linked DuckDB library exports Part 3's arrow stream entry point."""
-    try:
-        from bareduckdb._duckdb_runtime import resolve_duckdb_lib
+def _wall_clock(literal):
+    """The time of day the literal spells, with the offset ignored."""
+    hms = literal[: literal.index("+")] if "+" in literal else literal[: literal.rindex("-")]
+    return datetime.time.fromisoformat(hms)
 
-        getattr(ctypes.CDLL(str(resolve_duckdb_lib())), UPSTREAM_SYMBOL)
-    except Exception:
-        return False
-    return True
+
+def _lossless_conn():
+    """A connection with DuckDB's arrow_lossless_conversion turned on."""
+    conn = bareduckdb.connect()
+    conn.execute("SET arrow_lossless_conversion = true")
+    return conn
 
 
 def _engine_utc(conn, literal):
@@ -41,56 +40,70 @@ def _engine_utc(conn, literal):
 
 
 @pytest.mark.parametrize("literal", LITERALS)
-def test_our_exporter_normalizes_to_utc(literal):
-    """Characterization: our time64[us] equals the engine's own UTC normalization."""
+def test_default_exports_the_wall_clock(literal):
+    """DuckDB's default writes input.time().value, so Arrow carries the wall clock."""
     conn = bareduckdb.connect()
     try:
-        expected = _engine_utc(conn, literal)
         got = conn.execute(f"SELECT '{literal}'::TIMETZ AS c").arrow_table().column(0).to_pylist()[0]
-        assert got == expected, f"{literal}: arrow gave {got}, engine says {expected} UTC"
+        assert got == _wall_clock(literal), f"{literal}: arrow gave {got}"
     finally:
         conn.close()
 
 
-def test_our_exporter_does_not_collapse_opposite_offsets():
-    """The defect this guards against: +05 and -05 must not produce the same value."""
+def test_default_collapses_opposite_offsets():
+    """The documented cost of DuckDB's default: two different instants export identically."""
     conn = bareduckdb.connect()
     try:
         east = conn.execute("SELECT '01:02:03+05'::TIMETZ AS c").arrow_table().column(0).to_pylist()[0]
         west = conn.execute("SELECT '01:02:03-05'::TIMETZ AS c").arrow_table().column(0).to_pylist()[0]
-        assert east != west, f"both offsets gave {east}; the offset was discarded, not applied"
+        assert east == west
+        assert _engine_utc(conn, "01:02:03+05") != _engine_utc(conn, "01:02:03-05")
     finally:
         conn.close()
 
 
-@pytest.mark.skipif(not _upstream_exporter_available(), reason=f"no {UPSTREAM_SYMBOL}; arrives with duckdb PR #25340")
 @pytest.mark.parametrize("literal", LITERALS)
-def test_upstream_exporter_behaviour_is_recorded(literal):
-    """Runs once we adopt DuckDB's exporter, so its TIMETZ behaviour is an explicit choice.
-
-    Expect a failure in default mode: DuckDB writes the wall clock and drops the offset, which
-    is its documented trade-off, not a bug. Either set `arrow_lossless_conversion=true` and
-    decode `arrow.opaque[time_tz]` through result_compat, or accept the loss and update this.
-    """
-    from bareduckdb.capi.impl import arrow as _arrow
-
-    export = getattr(_arrow, "upstream_arrow_stream_from_result", None)
-    if export is None:
-        pytest.fail(
-            f"{UPSTREAM_SYMBOL} is exported by the linked library but no binding reaches it. "
-            "Wire it in arrow.pyx; leaving it unreachable silently skips this comparison."
-        )
-
-    import pyarrow as pa
-
-    conn = bareduckdb.connect()
+def test_lossless_mode_keeps_the_whole_value(literal):
+    """arrow_lossless_conversion routes TIMETZ through arrow.opaque[time_tz] over w:8."""
+    conn = _lossless_conn()
     try:
-        expected = _engine_utc(conn, literal)
-        capsule = export(conn.execute(f"SELECT '{literal}'::TIMETZ AS c"))
-        got = pa.RecordBatchReader._import_from_c_capsule(capsule).read_all().column(0).to_pylist()[0]
-        assert got == expected, (
-            f"{literal}: upstream arrow gave {got}, engine says {expected} UTC. "
-            "DuckDB writes input.time().value (scalar_data.hpp:55-58), dropping the offset."
+        field = conn.execute(f"SELECT '{literal}'::TIMETZ AS c").arrow_table().schema.field(0)
+        assert field.type.extension_name == "arrow.opaque"
+        assert field.type.type_name == "time_tz"
+        assert field.type.vendor_name == "DuckDB"
+
+        packed = conn.execute(f"SELECT '{literal}'::TIMETZ AS c").arrow_table().column(0).to_pylist()[0]
+        decoded = _decode_time_tz(packed)
+        assert decoded.replace(tzinfo=None) == _wall_clock(literal)
+        utc = (
+            datetime.datetime.combine(datetime.date(1970, 1, 1), decoded)
+            .astimezone(datetime.timezone.utc)
+            .time()
         )
+        assert utc == _engine_utc(conn, literal), f"{literal}: decoded {decoded}"
+    finally:
+        conn.close()
+
+
+def test_lossless_mode_separates_opposite_offsets():
+    """The instant survives in lossless mode, which is what the default cannot do."""
+    conn = _lossless_conn()
+    try:
+        east = conn.execute("SELECT '01:02:03+05'::TIMETZ AS c").arrow_table().column(0).to_pylist()[0]
+        west = conn.execute("SELECT '01:02:03-05'::TIMETZ AS c").arrow_table().column(0).to_pylist()[0]
+        assert east != west
+        assert _decode_time_tz(east).utcoffset() != _decode_time_tz(west).utcoffset()
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("literal", LITERALS)
+def test_lossless_mode_restores_the_row_api(literal):
+    """fetchall() reads the arrow.opaque tag, so lossless mode returns a tz-aware time."""
+    conn = _lossless_conn()
+    try:
+        got = conn.execute(f"SELECT '{literal}'::TIMETZ AS c").fetchall()[0][0]
+        assert got.tzinfo is not None
+        assert got.replace(tzinfo=None) == _wall_clock(literal)
     finally:
         conn.close()

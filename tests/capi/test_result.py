@@ -14,15 +14,7 @@ from bareduckdb.capi.impl.result import execute
 
 @pytest.fixture
 def make_conn():
-    """Hand out a fresh connection per call.
-
-    pytest-run-parallel builds a fixture once and passes that one object to
-    every worker thread and every --iterations pass, but a v2 connection
-    carries a single live result at a time, so threads sharing one collide
-    with "connection has a live result". Tests call this at the top of the
-    body instead, which also gives each thread its own anonymous in-memory
-    database rather than sharing tables.
-    """
+    """Hand out a fresh connection per call, since a v2 connection carries a single live result and pytest-run-parallel would share one fixture object across threads."""
     created = []
     lock = threading.Lock()
 
@@ -415,6 +407,44 @@ def test_statement_expanding_into_a_group_executes(make_conn):
     result = execute(conn, "PIVOT piv ON k USING sum(v)")
     assert result.columns == ("a", "b")
     assert list(result.rows()) == [(1, 2)]
+
+
+def test_resolving_a_group_schema_takes_no_chunk(make_conn):
+    """The schema resolves before the first chunk, so the Arrow export still sees every row."""
+    conn = make_conn()
+    _run(conn, "CREATE TABLE pivchunk(k VARCHAR, v INTEGER)")
+    _run(conn, "INSERT INTO pivchunk VALUES ('a', 1), ('b', 2), ('a', 10)")
+    result = execute(conn, "PIVOT pivchunk ON k USING sum(v)")
+    assert result.columns == ("a", "b")
+    assert result.schema_steps > 0
+    table = result.to_arrow()
+    assert table.num_rows == 1
+    assert {name: [int(v) for v in table.column(name).to_pylist()] for name in table.column_names} == {
+        "a": [11],
+        "b": [2],
+    }
+
+
+@pytest.mark.parametrize(
+    "sql", ["SELECT 42", "SELECT i FROM range(10) t(i)", "INSERT INTO stepfree_t VALUES (1)"]
+)
+def test_resolving_an_ordinary_schema_takes_no_step(make_conn, sql):
+    """Stepping executes the statement, so the happy path must never do it for the schema."""
+    conn = make_conn()
+    _run(conn, "CREATE TABLE stepfree_t(i INTEGER)")
+    result = execute(conn, sql)
+    assert result.columns is not None
+    assert result.schema_steps == 0
+
+
+def test_columns_after_an_arrow_export_says_what_happened(make_conn):
+    """The handle is gone, so this must name the export rather than step a NULL result."""
+    conn = make_conn()
+    pytest.importorskip("pyarrow")
+    result = execute(conn, "SELECT 1 AS a")
+    result.__arrow_c_stream__()
+    with pytest.raises(RuntimeError, match="Arrow export"):
+        result.columns
 
 
 def test_call_impl_routes_to_execute(make_conn):

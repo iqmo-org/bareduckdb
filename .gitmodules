@@ -2,3 +2,4 @@
 	# For headers. Needs to match the .so that we'll link against, for ABIs
 	path = external/duckdb
 	url = https://github.com/duckdb/duckdb.git
+	branch = v2.0-cyanoptera

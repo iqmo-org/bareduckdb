@@ -1,16 +1,20 @@
 """Helper utilities for DuckDB/BareDuckDB comparison tests."""
 
+from __future__ import annotations
+
 import tempfile
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import pytest
-
-duckdb = pytest.importorskip("duckdb")
-pa = pytest.importorskip("pyarrow")
-pq = pytest.importorskip("pyarrow.parquet")
+# importorskip() during conftest import aborts the whole run; each module importorskips "duckdb" at its own top level instead.
+try:
+    import duckdb
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+except ImportError:
+    duckdb = pa = pq = None
 
 def create_comprehensive_arrow_table() -> pa.Table:
     data = {}
@@ -28,8 +32,8 @@ def create_comprehensive_arrow_table() -> pa.Table:
 
     data["bool_col"] = pa.array([True, False, True, None, False], type=pa.bool_())
 
-    # Floating point 
-    # Note: float16 is not supported by DuckDB (Arrow type 'e')
+    # Floating point
+    # float16 is not supported by DuckDB (Arrow type 'e')
     data["float32_col"] = pa.array([1.5, -2.5, 3.5, None, 999999.99], type=pa.float32())
     data["float64_col"] = pa.array([1.5, -2.5, 3.5, None, 999999.99], type=pa.float64())
 
@@ -200,7 +204,7 @@ def create_comprehensive_arrow_table() -> pa.Table:
     ], type=pa.large_string())
 
     # Decimal types
-    # Note: decimal256 is not supported by DuckDB
+    # decimal256 is not supported by DuckDB
     data["decimal128_col"] = pa.array([
         Decimal("123.45"),
         Decimal("-678.90"),

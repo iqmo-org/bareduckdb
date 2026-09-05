@@ -4,6 +4,9 @@ Comparison tests for JupySQL integration between bareduckdb and official duckdb.
 
 import pytest
 
+pytest.importorskip("IPython")
+pytest.importorskip("sql")
+
 
 @pytest.fixture(scope="function")
 def fresh_shell(request):
@@ -19,8 +22,7 @@ def fresh_shell(request):
     except Exception:
         pass
 
-    # register_as_duckdb() aliases every bareduckdb.* submodule as duckdb.*, so the
-    # whole duckdb* module set has to be restored, not just "duckdb" itself.
+    # register_as_duckdb() aliases every bareduckdb.* submodule as duckdb.*, so restore the whole duckdb* module set.
     original_duckdb_modules = {
         k: v for k, v in sys.modules.items() if k == "duckdb" or k.startswith("duckdb.")
     }
@@ -49,8 +51,7 @@ def fresh_shell(request):
     yield shell
 
     if impl_name == "bareduckdb":
-        # Leaving the aliases behind makes a later "import duckdb" resolve the real
-        # package's "from ._version import ..." against bareduckdb._version instead.
+        # Stale aliases make a later "import duckdb" resolve the real package's imports against bareduckdb instead.
         for key in [k for k in sys.modules if k == "duckdb" or k.startswith("duckdb.")]:
             del sys.modules[key]
         sys.modules.update(original_duckdb_modules)

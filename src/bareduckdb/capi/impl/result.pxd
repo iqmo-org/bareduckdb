@@ -1,7 +1,7 @@
 # cython: language_level=3
 """C-level surface of the v2 result object, for the Arrow layer to cimport."""
 
-from bareduckdb.capi.impl.connection cimport CApiConnectionImpl
+from bareduckdb.capi.impl.connection cimport CApiConnectionImpl, bd_registry
 from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_data_chunk_handle,
     duckdb_v2_error_info_handle,
@@ -31,18 +31,22 @@ cdef class CApiResult:
     cdef duckdb_v2_data_chunk_handle _pending_chunk
     cdef long _schema_ready
     cdef long _schema_lock
+    cdef long _schema_steps
     cdef unsigned long long _batch_rows
     cdef list _column_names
     cdef list _column_decoders
+    # The registry whose collections this result may be scanning, and the borrow it holds on it.
+    cdef bd_registry *_reg
+    cdef long _borrow
 
     cdef void _bind_owned(self, CApiConnectionImpl conn_obj, duckdb_v2_result_handle result) except *
     cdef duckdb_v2_schema_handle _ensure_schema(self) except NULL
     cdef void _resolve_schema(self) except *
-    cdef void _step_for_schema(self) except *
+    cdef int _step_once_for_schema(self) except -1
     cdef void _build_column_metadata(self) except *
     cdef duckdb_v2_data_chunk_handle _take_pending_chunk(self) noexcept
     cdef duckdb_v2_data_chunk_handle _next_chunk(self) except? NULL
-    cdef void _claim_for_export(self, str what) except *
+    cdef void _claim_for_export(self) except *
     cdef duckdb_v2_result_handle _release_result_ownership(self) noexcept
-    cdef duckdb_v2_schema_handle _release_schema_ownership(self) noexcept
+    cdef bd_registry *_take_registry_borrow(self) noexcept
     cdef void _destroy(self) noexcept

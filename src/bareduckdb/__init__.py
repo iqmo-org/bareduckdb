@@ -17,12 +17,7 @@ else:
 
     _duckdb_lib_path = resolve_duckdb_lib()
     # Preload by absolute path so extension modules find it already loaded, not via RPATH.
-    # RTLD_LOCAL (the default): the loader matches an already-loaded DT_NEEDED dependency
-    # by realpath/inode regardless of local/global scope, so our own extension modules still
-    # resolve against this library. RTLD_GLOBAL would additionally export every DuckDB C++
-    # symbol into the process-wide global scope, where it can interpose symbols of the same
-    # name in an unrelated, ABI-incompatible libduckdb (e.g. the official duckdb wheel's
-    # statically-linked copy), causing a crash.
+    # RTLD_LOCAL deliberately: RTLD_GLOBAL would export DuckDB symbols into the process-wide scope and interpose the official duckdb wheel's statically-linked libduckdb.
     ctypes.CDLL(str(_duckdb_lib_path), mode=os.RTLD_LOCAL)
 
 # For Ibis compatibility
@@ -30,7 +25,7 @@ from . import functional
 from ._utils import pyarrow_available
 from ._version import __version__
 from .compat.connection_compat import Connection
-from .core.connection_base import ConnectionBase
+from .core.connection_base import ConnectionBase, InvalidInputException
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +61,7 @@ if _log_level:
     logging.basicConfig(level=getattr(logging, _log_level.upper(), logging.WARNING), format="[%(name)s] %(levelname)s: %(message)s")
 
 
-# PEP 249 / DB-API 2.0 MODULE ATTRIBUTES (work in progress)
+# PEP 249 module attributes.
 apilevel: str = "2.0"
 threadsafety: int = 1
 paramstyle: str = "qmark"
@@ -90,6 +85,7 @@ __implementation__: str = "cython"
 __all__ = [
     "ConnectionBase",
     "Connection",
+    "InvalidInputException",
     "__version__",
     "__duckdb_version__",  # pyright: ignore[reportUnsupportedDunderAll]  # provided by __getattr__ (PEP 562)
     "pyarrow_available",
@@ -99,10 +95,6 @@ __all__ = [
 
 
 class ConnectionException(Exception):  # noqa: N818
-    pass
-
-
-class InvalidInputException(Exception):  # noqa: N818
     pass
 
 

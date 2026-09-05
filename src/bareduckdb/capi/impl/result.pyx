@@ -19,8 +19,14 @@ from libc.stdint cimport (
 )
 from libc.stdlib cimport free, malloc
 
-from bareduckdb.capi.impl.connection cimport CApiConnectionImpl
+from bareduckdb.capi.impl.connection cimport (
+    CApiConnectionImpl,
+    bd_registry,
+    bd_registry_acquire,
+    bd_registry_release,
+)
 from bareduckdb.capi.impl.duckdb_v2 cimport (
+    DUCKDB_V2_ERROR_INPUT_INVALID,
     DUCKDB_V2_ERROR_NONE,
     DUCKDB_V2_LOGICAL_TYPE_ID_ARRAY,
     DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT,
@@ -57,6 +63,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED,
     DUCKDB_V2_RESULT_STEP_STATUS_CHUNK,
     DUCKDB_V2_RESULT_STEP_STATUS_FINISHED,
+    DUCKDB_V2_RESULT_STEP_STATUS_WAITING,
     DUCKDB_V2_RESULT_TYPE_QUERY_RESULT,
     idx_t,
     duckdb_v2_bool_t,
@@ -168,10 +175,6 @@ from bareduckdb.capi.impl.errors cimport (
 )
 
 
-# Materializing coalesces hard; a stream coalesces less, since a large target only delays the first batch. Both are floors.
-DEFAULT_BATCH_ROWS = 1_000_000
-DEFAULT_STREAM_BATCH_ROWS = 65_536
-
 _EPOCH_DATE = datetime.date(1970, 1, 1)
 _EPOCH_DATETIME = datetime.datetime(1970, 1, 1)
 _EPOCH_DATETIME_UTC = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
@@ -182,6 +185,33 @@ _EPOCH_DATETIME_UTC = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc
 def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_rows=None):
     """Execute every statement, draining earlier results; return the last one."""
     cdef duckdb_v2_connection_handle c_conn = conn._conn
+    cdef bytes query_bytes = query.encode("utf-8")
+    cdef const char *c_query = query_bytes
+    # Before the bind, not after: the dispatcher claims a name during execution, and an
+    # unregister in between could free the chunks the scan references.
+    cdef bd_registry *reg = conn._registry_or_null()
+    cdef bint transferred = False
+
+    with nogil:
+        bd_registry_acquire(reg)
+    try:
+        return _execute_bound(conn, c_conn, c_query, parameters, batch_rows, reg, &transferred)
+    finally:
+        if not transferred:
+            with nogil:
+                bd_registry_release(reg)
+
+
+cdef object _execute_bound(
+    CApiConnectionImpl conn,
+    duckdb_v2_connection_handle c_conn,
+    const char *c_query,
+    object parameters,
+    object batch_rows,
+    bd_registry *reg,
+    bint *transferred,
+):
+    """Run every statement with the registry borrow already held, and bind the last result to it."""
     cdef duckdb_v2_statement_iterator_handle iterator = NULL
     cdef duckdb_v2_sql_statement_handle current = NULL
     cdef duckdb_v2_sql_statement_handle upcoming = NULL
@@ -189,8 +219,6 @@ def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_ro
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef idx_t rows_changed = 0
-    cdef bytes query_bytes = query.encode("utf-8")
-    cdef const char *c_query = query_bytes
     cdef CApiResult py_result
     cdef duckdb_v2_result_type_t result_type
 
@@ -239,7 +267,7 @@ def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_ro
         with nogil:
             rc = duckdb_v2_result_get_result_type(current_result, &result_type, &err)
         if rc != DUCKDB_V2_ERROR_NONE:
-            # A statement that expands into a group (PIVOT) has no metadata until stepped, so leave it for the caller to step.
+            # A statement expanding into a group (PIVOT) has no metadata until the caller steps it.
             if err != NULL:
                 duckdb_v2_error_info_destroy(&err)
         elif result_type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT:
@@ -253,6 +281,10 @@ def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_ro
     if batch_rows is not None:
         py_result._batch_rows = <unsigned long long>batch_rows
     py_result._bind_owned(conn, current_result)
+    # The borrow moves onto the result, which drops it when it is destroyed or exported.
+    py_result._reg = reg
+    py_result._borrow = 1
+    transferred[0] = True
     return py_result
 
 
@@ -851,9 +883,12 @@ cdef class CApiResult:
         self._pending_chunk = NULL
         self._schema_ready = 0
         self._schema_lock = 0
+        self._schema_steps = 0
         self._batch_rows = 0
         self._column_names = []
         self._column_decoders = []
+        self._reg = NULL
+        self._borrow = 0
 
     cdef void _bind_owned(self, CApiConnectionImpl conn_obj, duckdb_v2_result_handle result) except *:
         """Take ownership of a freshly executed result, leaving its schema unresolved."""
@@ -864,7 +899,7 @@ cdef class CApiResult:
     cdef duckdb_v2_schema_handle _ensure_schema(self) except NULL:
         """Return the output schema, resolving it and the column metadata on first use."""
         if not bdv2_load_acquire(&self._schema_ready):
-            # A spinlock rather than a Python lock, taken with the GIL released since the section below drops it.
+            # A C spinlock, taken with the GIL released since the section below drops it.
             with nogil:
                 bdv2_lock(&self._schema_lock)
             try:
@@ -872,51 +907,67 @@ cdef class CApiResult:
                     self._resolve_schema()
             finally:
                 bdv2_unlock(&self._schema_lock)
-        if self._schema == NULL:
-            raise RuntimeError("this result's schema was already handed to an Arrow export")
         return self._schema
 
     cdef void _resolve_schema(self) except *:
-        """Fetch the output schema, stepping first when the statement expanded into a group."""
+        """Fetch the output schema, advancing one step at a time until its metadata exists."""
         cdef duckdb_v2_error_info_handle err = NULL
         cdef duckdb_v2_error_t rc
 
         if self._destroyed:
             raise RuntimeError("result already destroyed")
+        if self._result == NULL:
+            # get_schema on NULL reports INPUT_INVALID, which the loop below would misread.
+            raise RuntimeError("this result's schema was already handed to an Arrow export")
 
         with nogil:
             rc = duckdb_v2_result_get_schema(self._result, &self._schema, &err)
-        if rc != DUCKDB_V2_ERROR_NONE:
-            # duckdb_v2.h:5490: an expanding statement has no metadata until stepped, so drop this error and step once.
+        # INPUT_INVALID here means RequireMetadata; any other code falls through to check_v2.
+        while rc == DUCKDB_V2_ERROR_INPUT_INVALID:
             if err != NULL:
                 with nogil:
                     duckdb_v2_error_info_destroy(&err)
                 err = NULL
-            self._step_for_schema()
+            if not self._step_once_for_schema():
+                raise RuntimeError(
+                    "duckdb_v2_result_get_schema reports no metadata and this result has "
+                    "no further fragment to step for it"
+                )
             with nogil:
                 rc = duckdb_v2_result_get_schema(self._result, &self._schema, &err)
         check_v2(rc, err, "duckdb_v2_result_get_schema")
 
         self._build_column_metadata()
-        # Last, and with release semantics: every write above must be visible to a thread that sees the flag set.
+        # Released last: every write above must be visible to a thread that sees the flag.
         bdv2_store_release(&self._schema_ready, 1)
 
-    cdef void _step_for_schema(self) except *:
-        """Step until the group's row-producing fragment is prepared, buffering any chunk."""
+    cdef int _step_once_for_schema(self) except -1:
+        """Advance the result one step, keeping any chunk it produces. False when it cannot."""
         cdef duckdb_v2_data_chunk_handle chunk = NULL
         cdef duckdb_v2_result_step_status_t status
         cdef duckdb_v2_error_info_handle err = NULL
         cdef duckdb_v2_error_t rc
 
         if self._finished or self._pending_chunk != NULL:
-            return
+            return 0
 
+        self._schema_steps += 1
         with nogil:
-            rc = step_result_chunk(self._result, &self._finished, &chunk, &status, &err)
+            rc = duckdb_v2_result_step(self._result, &chunk, &status, &err)
         check_v2(rc, err, "duckdb_v2_result_step")
+
+        if status == DUCKDB_V2_RESULT_STEP_STATUS_WAITING:
+            with nogil:
+                rc = duckdb_v2_result_wait(self._result, &err)
+            check_v2(rc, err, "duckdb_v2_result_wait")
+            return 1
+        if status == DUCKDB_V2_RESULT_STEP_STATUS_CHUNK:
+            self._pending_chunk = chunk
+            return 1
+        self._finished = True
         if status == DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED:
             raise RuntimeError("query was cancelled")
-        self._pending_chunk = chunk
+        return 1
 
     cdef void _build_column_metadata(self) except *:
         """Read the resolved schema into the column-name and per-column decoder lists."""
@@ -947,6 +998,11 @@ cdef class CApiResult:
         """Return the output column names, in order."""
         self._ensure_schema()
         return tuple(self._column_names)
+
+    @property
+    def schema_steps(self):
+        """How many times resolving the schema had to step the result."""
+        return self._schema_steps
 
     def rows(self):
         """Yield each result row as a tuple of Python scalars, consuming the stream."""
@@ -992,12 +1048,12 @@ cdef class CApiResult:
             raise RuntimeError("query was cancelled")
         return chunk
 
-    cdef void _claim_for_export(self, str what) except *:
+    cdef void _claim_for_export(self) except *:
         """Take exclusive, one-shot ownership of this result for an Arrow export."""
         if self._destroyed:
             raise RuntimeError("result already destroyed")
         if not bdv2_cas(&self._consumed, 0, 1):
-            raise RuntimeError(f"{what}: this result was already consumed")
+            raise RuntimeError("arrow export: this result was already consumed")
 
     cdef duckdb_v2_result_handle _release_result_ownership(self) noexcept:
         """Hand the result handle to a caller that takes over destroying it."""
@@ -1005,36 +1061,56 @@ cdef class CApiResult:
         self._result = NULL
         return result
 
-    cdef duckdb_v2_schema_handle _release_schema_ownership(self) noexcept:
-        """Hand the schema handle to a caller that takes over destroying it."""
-        cdef duckdb_v2_schema_handle schema = self._schema
-        self._schema = NULL
-        return schema
+    cdef bd_registry *_take_registry_borrow(self) noexcept:
+        """Hand the registry borrow to a caller that takes over releasing it, or NULL."""
+        if not bdv2_cas(&self._borrow, 1, 0):
+            return NULL
+        return self._reg
 
-    def to_arrow(self, batch_rows=None):
+    def to_arrow(self, batch_rows=None, timetz_utc=False):
         """Materialize the whole result as a pyarrow.Table through one Arrow C stream.
 
-        batch_rows is a floor, not a cap: whole engine chunks are accumulated until it
-        is reached, so a batch can overshoot by up to one chunk. Defaults to
-        DEFAULT_BATCH_ROWS unless execute() was given one.
+        batch_rows is a strict maximum on the rows in one batch. execute(batch_rows=...)
+        supplies it when this call does not, and with neither the table is built in one chunk,
+        which is what keeps to_numpy and to_pandas off a copy.
+        timetz_utc normalizes TIMETZ to UTC and raises without arrow_lossless_conversion.
         """
-        from bareduckdb.capi.impl.arrow import arrow_table_from_result
+        from bareduckdb.capi.impl.arrow import DEFAULT_TABLE_BATCH_ROWS, arrow_table_from_result
 
         if batch_rows is None:
-            batch_rows = self._batch_rows or DEFAULT_BATCH_ROWS
-        return arrow_table_from_result(self, batch_rows)
+            batch_rows = self._batch_rows
+        if not batch_rows:
+            batch_rows = DEFAULT_TABLE_BATCH_ROWS
+        if not timetz_utc:
+            return arrow_table_from_result(self, batch_rows)
 
-    def __arrow_c_stream__(self, requested_schema=None):
+        from bareduckdb.core.arrow_timetz import require_lossless_timetz, timetz_to_utc
+
+        table = arrow_table_from_result(self, batch_rows)
+        require_lossless_timetz(table.schema)
+        return timetz_to_utc(table)
+
+    def __arrow_c_stream__(self, requested_schema=None, timetz_utc=False):
         """Export this result as an Arrow C Stream capsule, consuming it.
 
-        Defaults to DEFAULT_STREAM_BATCH_ROWS rather than DEFAULT_BATCH_ROWS, because a
-        stream is read batch by batch and a large target only delays the first batch.
-        execute(batch_rows=...) overrides it.
+        With no cap from execute(batch_rows=...) this asks for DEFAULT_STREAM_BATCH_ROWS,
+        which is DuckDB's own default.
+        timetz_utc normalizes TIMETZ to UTC and raises without arrow_lossless_conversion.
         """
-        from bareduckdb.capi.impl.arrow import arrow_stream_from_result
+        from bareduckdb.capi.impl.arrow import DEFAULT_STREAM_BATCH_ROWS, arrow_stream_from_result
 
         batch_rows = self._batch_rows or DEFAULT_STREAM_BATCH_ROWS
-        return arrow_stream_from_result(self, batch_rows, requested_schema)
+        if not timetz_utc:
+            return arrow_stream_from_result(self, batch_rows, requested_schema)
+
+        import pyarrow
+
+        from bareduckdb.core.arrow_timetz import require_lossless_timetz, timetz_to_utc_reader
+
+        capsule = arrow_stream_from_result(self, batch_rows, requested_schema)
+        reader = pyarrow.RecordBatchReader._import_from_c_capsule(capsule)
+        require_lossless_timetz(reader.schema)
+        return timetz_to_utc_reader(reader).__arrow_c_stream__()
 
     def close(self):
         """Destroy the underlying v2 result. Safe to call more than once, from any thread."""
@@ -1056,6 +1132,10 @@ cdef class CApiResult:
         if self._result != NULL:
             with nogil:
                 duckdb_v2_result_destroy(&self._result)
+        # After the result, so nothing can still be scanning a registered source's chunks.
+        if bdv2_cas(&self._borrow, 1, 0):
+            with nogil:
+                bd_registry_release(self._reg)
         self._conn_obj = None
 
 

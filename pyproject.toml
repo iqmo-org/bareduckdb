@@ -109,16 +109,7 @@ sdist.exclude = [
 build.verbose = true
 logging.level = "INFO"
 
-# Thin wheel: the DuckDB runtime library is NOT bundled. CMake still fetches it
-# at build time (headers and import library are needed to compile) and copies it
-# into src/bareduckdb/_libs/ for a dev checkout, but that directory is untracked
-# and matches the project's *.dll/*.so/*.dylib .gitignore rules, and
-# scikit-build-core's default wheel.packages walk reads .gitignore, so it is
-# naturally excluded from the wheel with no wheel.exclude entry needed.
-# bareduckdb._duckdb_runtime resolves the library at import time instead:
-# an env var, this same in-tree _libs/ directory (dev checkouts), a user cache
-# directory, or a download into that cache on first use. See that module and
-# README.md's C API v2 TODO section for the optional eager-install extra.
+# Thin wheel: libduckdb is not bundled. CMake copies the build-time fetch into the untracked src/bareduckdb/_libs/, which the *.dll/*.so/*.dylib .gitignore rules exclude from the wheel; _duckdb_runtime resolves it at import time from BAREDUCKDB_DUCKDB_LIB, _libs/, the user cache, or a download.
 
 [[tool.dynamic-metadata]]
 provider = "scikit_build_core.metadata.setuptools_scm"
@@ -137,23 +128,15 @@ enable = ["cpython-prerelease"]  # TODO: remove when 3.15 ships
 test-requires = ["uv"]
 
 [tool.cibuildwheel.linux]
-# Don't bundle PyArrow libraries - loaded dynamically.
-# Don't bundle libduckdb - thin wheel, resolved/downloaded at runtime by
-# bareduckdb._duckdb_runtime instead. Without this exclude, auditwheel repair
-# would vendor a copy of the build machine's libduckdb.so straight back into the
-# wheel, defeating the point.
-# Wildcards, so this keeps working as the pyarrow/duckdb soname versions move.
+# Exclude PyArrow (loaded dynamically) and libduckdb (thin wheel, resolved at runtime); wildcards survive soname version moves.
 repair-wheel-command = "auditwheel repair --exclude 'libarrow.so.*' --exclude 'libarrow_python.so.*' --exclude 'libduckdb.so*' -w {dest_dir} {wheel}"
 
 [tool.cibuildwheel.macos]
-# --exclude keeps delocate from bundling the build machine's libduckdb.dylib into
-# the wheel; see the linux section above for why.
+# --exclude keeps delocate from vendoring the build machine's libduckdb.dylib; see the linux section for why.
 repair-wheel-command = "delocate-wheel --require-archs {delocate_archs} --ignore-missing-dependencies --exclude libduckdb.dylib -w {dest_dir} -v {wheel}"
 
 [tool.cibuildwheel.windows]
-# delvewheel is unneeded: duckdb.dll is resolved/downloaded at runtime by
-# bareduckdb._duckdb_runtime rather than bundled, and there are no other
-# external DLL dependencies to vendor.
+# delvewheel is unneeded: duckdb.dll is resolved at runtime and there are no other external DLLs.
 repair-wheel-command = ""
 
 [[tool.cibuildwheel.overrides]]
@@ -271,7 +254,7 @@ downstream = [
 testpaths = ["tests"]
 asyncio_mode = "auto"
 timeout = 90
-# Ignore downstream tests by default (they require special installation)
+
 addopts = [
     "-v",
     "--durations=5",
@@ -282,9 +265,6 @@ addopts = [
     "--cov-report=term-missing",
     "--cov-report=html",
     "--cov-report=xml",
-    "--ignore=tests/downstream",
-    "--ignore=tests/experimental",
-    "--ignore=tests/comparison",
     "--ignore=tests/benchmarks",
 ]
 # For free-threaded Python: Convert GIL re-enablement warnings to errors

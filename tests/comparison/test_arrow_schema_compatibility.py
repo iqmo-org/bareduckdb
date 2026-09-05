@@ -7,12 +7,13 @@ from datetime import timedelta
 import sys
 
 import bareduckdb
+
+pytest.importorskip("duckdb", reason="the official duckdb client is not installed in this environment")
+
 import duckdb
-from ..markers import XF_ARROW_OUTPUT_VERSION
 
 class TestArrowSchemaCompatibility:
 
-    @XF_ARROW_OUTPUT_VERSION
     def test_arrow_schema(self):
         params = [
             UUID('550e8400-e29b-41d4-a716-446655440000'),

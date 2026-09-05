@@ -3,13 +3,15 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("duckdb", reason="the official duckdb client is not installed in this environment")
+
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
-import pytest
 
 import bareduckdb
-from ..markers import XF_REGISTER_ARROW
 from .conftest import (
     compare_parquet_files,
     create_comprehensive_arrow_table,
@@ -20,7 +22,6 @@ from .conftest import (
 class TestArrowDuckDBParquet:
     """Test Arrow → DuckDB → Parquet flow with both implementations."""
 
-    @XF_REGISTER_ARROW
     def test_comprehensive_type_support(self, tmp_path: Path):
         arrow_table = pa.table({
             "int32_col": pa.array([1000, -2000, 3000, None, 1000000], type=pa.int32()),
@@ -162,11 +163,7 @@ class TestArrowDuckDBParquet:
         assert duckdb_table.num_rows > 0, "Query produced no results"
         assert bareduckdb_table.num_rows > 0, "Query produced no results"
 
-    @XF_REGISTER_ARROW
     def test_all_arrow_types_roundtrip(self, tmp_path: Path):
-        """
-        Test that Parquet-compatible Arrow types roundtrip correctly.
-        """
         original_table = create_comprehensive_arrow_table()
 
         # Exclude columns that PyArrow min_max doesn't support or have nested string_view issues
@@ -177,7 +174,6 @@ class TestArrowDuckDBParquet:
             col for col in original_table.column_names
             if col not in excluded_columns
         ]
-        # Filter table to exclude unsupported columns before registration
         filtered_table = original_table.select(columns_to_keep)
 
         query = "SELECT * FROM arrow_table"
@@ -210,7 +206,6 @@ class TestArrowDuckDBParquet:
             f"Roundtrip data does not match!\n{comparison['data_diff']}"
         )
 
-    @XF_REGISTER_ARROW
     def test_aggregations_and_groupby(self, tmp_path: Path):
 
         arrow_table = pa.table({
@@ -255,7 +250,6 @@ class TestArrowDuckDBParquet:
         run_query_and_export(bareduckdb_conn, query, parameters, bareduckdb_path)
         bareduckdb_conn.close()
 
-        # Compare results
         comparison = compare_parquet_files(duckdb_path, bareduckdb_path)
 
         assert comparison["schemas_match"], (
@@ -266,11 +260,7 @@ class TestArrowDuckDBParquet:
             f"Aggregation data does not match!\n{comparison['data_diff']}"
         )
 
-    @XF_REGISTER_ARROW
     def test_joins(self, tmp_path: Path):
-        """
-        Test various JOIN types produce identical results.
-        """
         table1 = pa.table({
             "id": [1, 2, 3, 4, 5],
             "name": ["Alice", "Bob", "Charlie", "David", "Eve"],

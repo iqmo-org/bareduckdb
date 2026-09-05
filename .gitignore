@@ -245,3 +245,6 @@ testdata
 benchmark-results/
 notebooks/
 /data/
+
+plans
+capi20

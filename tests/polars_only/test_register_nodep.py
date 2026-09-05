@@ -7,6 +7,8 @@ import bareduckdb
 
 pl = pytest.importorskip("polars")
 
+pytestmark = pytest.mark.parallel_threads(1)
+
 
 @pytest.fixture
 def conn():

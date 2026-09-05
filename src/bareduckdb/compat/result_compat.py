@@ -241,8 +241,9 @@ class Result:
 
         import polars as pl
 
-        # Pass self to use __arrow_c_stream__() protocol, avoiding PyArrow import checks
-        return pl.from_arrow(self, rechunk=rechunk)  # pyright: ignore[reportReturnType]
+        # Passing self uses the __arrow_c_stream__ protocol, so pyarrow is never imported
+        frame = pl.DataFrame(self)
+        return frame.rechunk() if rechunk else frame
 
     def pl_lazy(self, batch_size: int | None = None) -> pl.LazyFrame:
         """

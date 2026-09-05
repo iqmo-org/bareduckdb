@@ -5,6 +5,8 @@ import pytest
 import bareduckdb
 from bareduckdb.core import ConnectionBase
 
+pytestmark = pytest.mark.parallel_threads(1)
+
 
 def test_cursor_shares_catalog():
     with ConnectionBase(":memory:") as conn:

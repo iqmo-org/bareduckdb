@@ -31,7 +31,7 @@ class ConnectionAPI(ConnectionBase):
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
         default_statistics: "Literal['numeric'] | bool | None" = "numeric",
         udtf_functions: Optional[dict[str, Callable]] = None,
-        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
+        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_capsule",
         enable_replacement_scan: bool = False,
         _from_impl: Any = None,
     ) -> None:
@@ -251,6 +251,16 @@ class ConnectionAPI(ConnectionBase):
                 query = query.replace(repl["original"], repl["replacement"])
 
         return query, data
+
+    def close(self) -> None:
+        """Drop the last result before closing.
+
+        The default output type is arrow_capsule, so an unconsumed result holds a live stream
+        over this connection's data. Left in place it keeps the database open past close(),
+        which on a file database blocks reopening it.
+        """
+        self._last_result = None
+        super().close()
 
     def _last_result_get(self):
         """Get last result or raise if none available."""

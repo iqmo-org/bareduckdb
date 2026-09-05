@@ -23,7 +23,7 @@ class Connection(ConnectionAPI):
         config: Optional[dict] = None,
         read_only: bool = False,
         *,
-        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
+        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_capsule",
         default_statistics: "Literal['numeric'] | bool | None" = "numeric",
         udtf_functions: Optional[dict] = None,
         enable_replacement_scan: bool = False,

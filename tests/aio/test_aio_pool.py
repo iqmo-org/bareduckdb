@@ -9,7 +9,7 @@ import pytest
 import bareduckdb
 from bareduckdb.aio import AsyncConnectionPool
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.parallel_threads(1)]
 
 
 async def test_pool_shares_catalog():

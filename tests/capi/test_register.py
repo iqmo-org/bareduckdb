@@ -9,8 +9,13 @@ import pytest
 import bareduckdb
 from bareduckdb.capi.impl.connection import CApiConnectionImpl
 
-# These assert single-connection behaviour against fixed names, so parallel bodies would clobber each other's registrations.
+
 pytestmark = pytest.mark.parallel_threads(1)
+
+
+def imports(conn) -> int:
+    """Imports run so far on this connection's registry."""
+    return conn._impl._registry_stats()["imports"]
 
 
 @pytest.fixture
@@ -79,12 +84,13 @@ def test_a_failed_import_reports_its_own_error_not_a_catalog_error(conn):
 
 
 def test_a_failed_import_is_terminal_for_that_registration(conn):
+    before = imports(conn)
     conn.register("t", pa.table({}))
     for _ in range(3):
         with pytest.raises(RuntimeError, match="no columns"):
             conn.execute("SELECT * FROM t").fetchall()
     # The stream is partly drained and cannot be retried, so only one import ever ran.
-    assert conn._impl._registry_stats()["imports"] == 1
+    assert imports(conn) - before == 1
     conn.register("t", table())
     assert conn.execute("SELECT count(*) FROM t").fetchall() == [(3,)]
 
@@ -129,10 +135,12 @@ def test_unregister_of_a_fully_consumed_name_frees_promptly(conn):
 
 
 def test_unregister_while_a_stream_is_live_retires_until_the_stream_goes(conn):
+    before = imports(conn)
     conn.register("t", table())
     reader = conn.execute("SELECT a FROM t ORDER BY a", output_type="arrow_reader").arrow_reader()
     conn.unregister("t")
-    assert conn._impl._registry_stats() == {"live": 0, "retired": 1, "imports": 1}
+    stats = conn._impl._registry_stats()
+    assert (stats["live"], stats["retired"], stats["imports"] - before) == (0, 1, 1)
     assert reader.read_all().column(0).to_pylist() == [0, 1, 2]
     del reader
     gc.collect()
@@ -141,10 +149,11 @@ def test_unregister_while_a_stream_is_live_retires_until_the_stream_goes(conn):
 
 
 def test_repeated_data_queries_do_not_retain_their_sources(conn):
+    before = imports(conn)
     for _ in range(20):
         assert conn.execute("SELECT count(*) FROM t", data={"t": table(1000)}).fetchall() == [(1000,)]
     stats = conn._impl._registry_stats()
-    assert stats == {"live": 0, "retired": 0, "imports": 20}
+    assert (stats["live"], stats["retired"], stats["imports"] - before) == (0, 0, 20)
 
 
 def test_unregister_of_an_unknown_name_is_a_no_op(conn):
@@ -157,10 +166,11 @@ def test_unregister_of_an_unknown_name_is_not_an_error_at_the_c_level(conn):
 
 
 def test_import_runs_once_across_repeated_queries(conn):
+    before = imports(conn)
     conn.register("t", table())
     for _ in range(4):
         assert conn.execute("SELECT count(*) FROM t").fetchall() == [(3,)]
-    assert conn._impl._registry_stats()["imports"] == 1
+    assert imports(conn) - before == 1
 
 
 @pytest.mark.parallel_threads(1)
@@ -274,7 +284,7 @@ def test_registered_column_names_and_types_round_trip(conn):
 
 
 def test_registration_joins_against_a_real_table(conn):
-    conn.execute("CREATE TABLE k(a INTEGER, label VARCHAR)")
+    conn.execute("CREATE OR REPLACE TABLE k(a INTEGER, label VARCHAR)")
     conn.execute("INSERT INTO k VALUES (1, 'one'), (2, 'two')")
     conn.register("t", table(3))
     rows = conn.execute("SELECT k.label FROM t JOIN k USING (a) ORDER BY k.label").fetchall()
@@ -282,7 +292,7 @@ def test_registration_joins_against_a_real_table(conn):
 
 
 def test_a_real_table_is_not_shadowed_by_a_registration(conn):
-    conn.execute("CREATE TABLE t(a INTEGER)")
+    conn.execute("CREATE OR REPLACE TABLE t(a INTEGER)")
     conn.execute("INSERT INTO t VALUES (99)")
     conn.register("t", table(3))
     # The replacement scan is only consulted for names the catalog could not resolve.

@@ -19,19 +19,35 @@ def _touch_lib(directory, name=LIB_NAME):
     return lib
 
 
-def test_cache_dir_for_includes_channel_version_and_artifact():
+def test_cache_dir_for_preview_is_keyed_on_the_branch():
+    """The preview channel selects by branch, not version, so the branch is what must key the cache."""
     cache_dir = rt.cache_dir_for("preview", "latest", "windows-amd64")
     name = cache_dir.name
     assert "preview" in name
-    assert "latest" in name
+    assert fetch.PREVIEW_BRANCH in name
     assert "windows-amd64" in name
     assert cache_dir.parent == rt.user_cache_root()
+
+
+def test_cache_dir_for_stable_is_keyed_on_the_version():
+    cache_dir = rt.cache_dir_for("stable", "1.9.0", "windows-amd64")
+    name = cache_dir.name
+    assert "stable" in name
+    assert "1.9.0" in name
+    assert "windows-amd64" in name
 
 
 def test_cache_dir_for_differs_across_versions():
     a = rt.cache_dir_for("preview", "latest", "windows-amd64")
     b = rt.cache_dir_for("stable", "1.9.0", "windows-amd64")
     assert a != b
+
+
+def test_preview_url_carries_the_branch():
+    """A stale /latest/ artifact is main, which has no C API v2 Part 3 symbols."""
+    url = rt.artifact_url("preview", "latest", "windows-amd64")
+    assert fetch.PREVIEW_BRANCH in url
+    assert "/latest/" not in url
 
 
 def test_env_var_directory_wins_over_cache(tmp_path, monkeypatch):

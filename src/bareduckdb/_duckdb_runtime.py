@@ -13,7 +13,7 @@ from . import _duckdb_fetch as fetch
 
 logger = logging.getLogger(__name__)
 
-# Not a true pin: C API v2 has no stable release; the preview URL 404s once CI rotates it.
+
 DUCKDB_CHANNEL = "preview"
 DUCKDB_VERSION = "latest"
 
@@ -40,9 +40,14 @@ def user_cache_root() -> Path:
     return Path(base) / "bareduckdb"
 
 
+def cache_key(channel: str, version: str) -> str:
+    """What identifies an artifact within a channel: the branch for preview, the version for stable."""
+    return fetch.PREVIEW_BRANCH if channel == "preview" else version
+
+
 def cache_dir_for(channel: str, version: str, artifact: str) -> Path:
     """Cache subdirectory for one channel/version/artifact combination."""
-    return user_cache_root() / f"duckdb_lib_{channel}_{version}_{artifact}"
+    return user_cache_root() / f"duckdb_lib_{channel}_{cache_key(channel, version)}_{artifact}"
 
 
 def _find_lib(directory: Path, lib_name: str) -> Path | None:
@@ -68,7 +73,7 @@ def _resolve_env_override(lib_name: str) -> Path | None:
 def artifact_url(channel: str, version: str, artifact: str) -> str:
     """URL of the DuckDB release artifact for one channel/version/artifact combination."""
     if channel == "preview":
-        return fetch.PREVIEW_URL.format(artifact=artifact)
+        return fetch.PREVIEW_URL.format(branch=fetch.PREVIEW_BRANCH, artifact=artifact)
     return fetch.STABLE_URL.format(version=version, artifact=artifact)
 
 

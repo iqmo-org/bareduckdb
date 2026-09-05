@@ -40,11 +40,15 @@ def main() -> int:
     if args.use_dir:
         lib_dir = Path(args.use_dir).resolve()
     else:
-        lib_dir = Path(args.cache_dir).resolve() / f"duckdb_lib_{args.channel}_{args.version}_{artifact}"
+        # Keyed on the branch for preview, the version for stable
+        key = _fetch.PREVIEW_BRANCH if args.channel == "preview" else args.version
+        lib_dir = Path(args.cache_dir).resolve() / f"duckdb_lib_{args.channel}_{key}_{artifact}"
         lib = lib_dir / lib_name
         if not lib.exists():
             url = (
-                _fetch.PREVIEW_URL.format(artifact=artifact) if args.channel == "preview" else _fetch.STABLE_URL.format(version=args.version, artifact=artifact)
+                _fetch.PREVIEW_URL.format(branch=_fetch.PREVIEW_BRANCH, artifact=artifact)
+                if args.channel == "preview"
+                else _fetch.STABLE_URL.format(version=args.version, artifact=artifact)
             )
             print(f"Fetching {url}")
             _fetch.extract(_fetch.download(url, lib_dir), lib_dir, url)

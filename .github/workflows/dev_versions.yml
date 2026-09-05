@@ -130,8 +130,15 @@ jobs:
         run: |
           # Test that bareduckdb works with polars without pyarrow installed
           uv pip uninstall pyarrow
-          # -n 0: xdist reports a missing path as "0 items" collected and exits 5,
-          # hiding the mistake; without it this step swallowed a stale path silently.
+          # Assert polars is importable first, and assert pyarrow is not, otherwise tests skipped
+          uv run --no-sync python -c "import polars; print('polars', polars.__version__)"
+          uv run --no-sync python -c "
+          import importlib.util, sys
+          if importlib.util.find_spec('pyarrow') is not None:
+              sys.exit('pyarrow is still installed; the uninstall above did not take effect')
+          print('pyarrow absent, as intended')
+          "
+          # -n 0: xdist reports a missing path as "0 items"
           uv run --no-sync pytest tests/polars_only -n 0 -v --cov=bareduckdb --cov-append
           uv pip install pyarrow
 

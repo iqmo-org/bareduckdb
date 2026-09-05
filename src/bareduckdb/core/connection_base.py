@@ -329,6 +329,16 @@ class ConnectionBase:
             self._registered_objects.clear()
             self._impl.close()
 
+    def cursor(self) -> ConnectionBase:
+        """Return a connection sharing this one's database, catalog and replacement-scan registry"""
+        with ConnectionBase._DUCKDB_INIT_LOCK:  # duckdb connection init is not thread-safe
+            cursor_impl = self._impl.create_cursor()
+        return ConnectionBase(
+            _from_impl=cursor_impl,
+            arrow_table_collector=self.arrow_table_collector,
+            default_statistics=self._default_statistics,
+        )
+
     def appender(
         self,
         table: str,

@@ -180,7 +180,7 @@ _EPOCH_DATETIME = datetime.datetime(1970, 1, 1)
 _EPOCH_DATETIME_UTC = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
 
 
-# --- execute(): parse -> bind -> execute, iterating the whole statement iterator ---
+# execute(): parse -> bind -> execute, iterating the whole statement iterator
 
 def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_rows=None):
     """Execute every statement, draining earlier results; return the last one."""
@@ -835,7 +835,7 @@ cdef duckdb_v2_value_handle _python_to_value(
     raise TypeError(f"cannot bind Python {type(val).__name__} as a query parameter")
 
 
-# --- CApiResult: owns one duckdb_v2_result and its schema ---
+# CApiResult: owns one duckdb_v2_result and its schema
 
 cdef duckdb_v2_error_t step_result_chunk(
     duckdb_v2_result_handle result,
@@ -1139,7 +1139,7 @@ cdef class CApiResult:
         self._conn_obj = None
 
 
-# --- Chunk / value decoding: the value-based "total fallback reader" route ---
+# Chunk / value decoding: the value-based "total fallback reader" route
 
 cdef void _destroy_chunk(duckdb_v2_data_chunk_handle chunk) noexcept:
     if chunk != NULL:
@@ -1475,7 +1475,7 @@ cdef object _micros_to_time(int64_t micros):
     return datetime.time(int(hours), int(minutes), int(seconds), int(microseconds))
 
 
-# --- Column decoder tree: built once per column from the result's output schema ---
+# Column decoder tree: built once per column from the result's output schema
 
 cdef object _build_decoder(duckdb_v2_logical_type_handle col_type):
     """Build a ("scalar", type_id) / ("list", child) / ("struct", [(name, child), ...]) plan."""

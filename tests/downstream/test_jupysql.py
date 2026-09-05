@@ -69,7 +69,6 @@ def fresh_shell(request):
 class TestJupySQLComparison:
 
     def test_basic_query(self, fresh_shell):
-        """Test basic SELECT query."""
         shell = fresh_shell
 
         shell.run_line_magic("load_ext", "sql")
@@ -81,7 +80,6 @@ class TestJupySQLComparison:
         assert type(result).__name__ == 'ResultSet'
 
     def test_range_query(self, fresh_shell):
-        """Test DuckDB range function."""
         shell = fresh_shell
 
         shell.run_line_magic("load_ext", "sql")
@@ -93,7 +91,6 @@ class TestJupySQLComparison:
         assert type(result).__name__ == 'ResultSet'
 
     def test_create_table(self, fresh_shell):
-        """Test CREATE TABLE DDL."""
         shell = fresh_shell
 
         shell.run_line_magic("load_ext", "sql")
@@ -126,7 +123,6 @@ class TestJupySQLComparison:
             assert "missing" in str(e)
 
     def test_aggregation_query(self, fresh_shell):
-        """Test aggregation queries work the same way."""
         shell = fresh_shell
 
         shell.run_line_magic("load_ext", "sql")
@@ -155,7 +151,6 @@ class TestJupySQLComparison:
         assert type(result).__name__ == 'ResultSet'
 
     def test_join_operation(self, fresh_shell):
-        """Test JOIN operations work the same way."""
         shell = fresh_shell
 
         shell.run_line_magic("load_ext", "sql")

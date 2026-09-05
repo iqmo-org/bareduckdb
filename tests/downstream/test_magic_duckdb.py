@@ -67,7 +67,6 @@ def test_arrow_table_registration(ipshell):
 
 
 def test_pandas_dataframe_registration(ipshell):
-    """Test registering pandas DataFrame via bareduckdb and querying with magic."""
     import bareduckdb
     import pandas as pd
 

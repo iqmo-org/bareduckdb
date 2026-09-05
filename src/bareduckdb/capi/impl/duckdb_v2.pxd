@@ -44,7 +44,7 @@ cdef extern from "arrow_c_data.h" nogil:
 cdef extern from "duckdb_v2.h" nogil:
     ctypedef uint64_t idx_t "idx_t"
 
-    # --- enums ---
+    # enums
 
     ctypedef enum duckdb_v2_error_t "DUCKDB_V2_ERROR":
         DUCKDB_V2_ERROR_NONE "DUCKDB_V2_ERROR_NONE"
@@ -201,7 +201,7 @@ cdef extern from "duckdb_v2.h" nogil:
         DUCKDB_V2_RESULT_STEP_STATUS_FINISHED "DUCKDB_V2_RESULT_STEP_STATUS_FINISHED"
         DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED "DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED"
 
-    # --- transparent structs ---
+    # transparent structs
 
     # Borrowed, length-delimited view. Never null-terminated; always honor len.
     ctypedef struct duckdb_v2_str_t "duckdb_v2_str":
@@ -265,7 +265,7 @@ cdef extern from "duckdb_v2.h" nogil:
         int32_t days
         int64_t micros
 
-    # --- caller-defined resources (header:370-430) ---
+    # caller-defined resources (header:370-430)
 
     # Both callbacks run on an engine thread: must not throw, unwind, or re-enter the API.
     ctypedef duckdb_v2_bool_t (*duckdb_v2_opaque_equals_fn)(void *a, void *b) noexcept nogil
@@ -276,7 +276,7 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_opaque_destroy_fn destroy
         duckdb_v2_opaque_equals_fn equals
 
-    # --- opaque handles: typedef struct _x {...} *x_handle in C ---
+    # opaque handles: typedef struct _x {...} *x_handle in C
 
     # header:180, an incomplete struct that is only ever passed by pointer.
     ctypedef struct _duckdb_extension_info "_duckdb_extension_info":
@@ -377,14 +377,14 @@ cdef extern from "duckdb_v2.h" nogil:
         void *internal_ptr
     ctypedef _duckdb_v2_statement_iterator *duckdb_v2_statement_iterator_handle "duckdb_v2_statement_iterator_handle"
 
-    # --- environment / library ---
+    # environment / library
 
     duckdb_v2_error_t duckdb_v2_library_version(duckdb_v2_str_t *out_version, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_create_environment(duckdb_v2_environment_handle *out_env, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_destroy_environment(duckdb_v2_environment_handle *env)
     duckdb_v2_error_t duckdb_v2_environment_database_count(duckdb_v2_environment_handle env, idx_t *out_count, duckdb_v2_error_info_handle *err)
 
-    # --- database ---
+    # database
 
     duckdb_v2_error_t duckdb_v2_open(
         duckdb_v2_environment_handle env,
@@ -397,7 +397,7 @@ cdef extern from "duckdb_v2.h" nogil:
     duckdb_v2_error_t duckdb_v2_close(duckdb_v2_database_handle *db)
     duckdb_v2_error_t duckdb_v2_database_option_set(duckdb_v2_database_handle db, duckdb_v2_option_handle option, duckdb_v2_error_info_handle *err)
 
-    # --- connection ---
+    # connection
 
     duckdb_v2_error_t duckdb_v2_connect(duckdb_v2_database_handle db, duckdb_v2_connection_handle *out_conn, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_disconnect(duckdb_v2_connection_handle *conn)
@@ -409,7 +409,7 @@ cdef extern from "duckdb_v2.h" nogil:
     )
     duckdb_v2_error_t duckdb_v2_connection_interrupt(duckdb_v2_connection_handle conn, duckdb_v2_error_info_handle *err)
 
-    # --- options ---
+    # options
 
     duckdb_v2_error_t duckdb_v2_option_create(
         duckdb_v2_identifier_t name,
@@ -419,7 +419,7 @@ cdef extern from "duckdb_v2.h" nogil:
     )
     duckdb_v2_error_t duckdb_v2_option_destroy(duckdb_v2_option_handle *option)
 
-    # --- parsing and statements ---
+    # parsing and statements
 
     duckdb_v2_error_t duckdb_v2_parse_sql(
         duckdb_v2_connection_handle conn,
@@ -451,7 +451,7 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_error_info_handle *err
     )
 
-    # --- results ---
+    # results
 
     duckdb_v2_error_t duckdb_v2_result_destroy(duckdb_v2_result_handle *result)
     duckdb_v2_error_t duckdb_v2_result_step(
@@ -471,7 +471,7 @@ cdef extern from "duckdb_v2.h" nogil:
     )
     duckdb_v2_error_t duckdb_v2_result_get_schema(duckdb_v2_result_handle result, duckdb_v2_schema_handle *out_schema, duckdb_v2_error_info_handle *err)
 
-    # --- schemas ---
+    # schemas
 
     duckdb_v2_error_t duckdb_v2_schema_get_count(duckdb_v2_schema_handle schema, idx_t *out_count, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_schema_get_field(
@@ -483,7 +483,7 @@ cdef extern from "duckdb_v2.h" nogil:
     )
     duckdb_v2_error_t duckdb_v2_schema_destroy(duckdb_v2_schema_handle *schema)
 
-    # --- data chunks ---
+    # data chunks
 
     duckdb_v2_error_t duckdb_v2_data_chunk_create(
         const duckdb_v2_logical_type_handle *types,
@@ -501,7 +501,7 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_error_info_handle *err
     )
 
-    # --- vectors ---
+    # vectors
 
     duckdb_v2_error_t duckdb_v2_vector_set_size(duckdb_v2_vector_handle vector, idx_t size, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_vector_get_vector_type(duckdb_v2_vector_handle vector, duckdb_v2_vector_type_t *out_type, duckdb_v2_error_info_handle *err)
@@ -509,10 +509,10 @@ cdef extern from "duckdb_v2.h" nogil:
     # Repoints vector at source's data rather than copying it.
     duckdb_v2_error_t duckdb_v2_vector_reference(duckdb_v2_vector_handle vector, duckdb_v2_vector_handle source, duckdb_v2_error_info_handle *err)
 
-    # --- arenas ---
+    # arenas (no stable functions at this pin)
 
 
-    # --- logical types ---
+    # logical types
 
     duckdb_v2_error_t duckdb_v2_logical_type_copy(duckdb_v2_logical_type_handle type, duckdb_v2_logical_type_handle *out_type, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_logical_type_destroy(duckdb_v2_logical_type_handle *type)
@@ -555,7 +555,7 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_error_info_handle *err
     )
 
-    # --- error info ---
+    # error info
 
     duckdb_v2_error_t duckdb_v2_error_info_get_code(duckdb_v2_error_info_handle info, duckdb_v2_error_t *out_code)
     duckdb_v2_error_t duckdb_v2_error_info_get_text(duckdb_v2_error_info_handle info, duckdb_v2_str_t *out_text)
@@ -565,7 +565,7 @@ cdef extern from "duckdb_v2.h" nogil:
     duckdb_v2_error_t duckdb_v2_error_info_set_text(duckdb_v2_error_info_handle info, duckdb_v2_str_t text)
     duckdb_v2_error_t duckdb_v2_error_info_destroy(duckdb_v2_error_info_handle *info)
 
-    # --- values: constructors (connection-scoped) and lifecycle ---
+    # values: constructors (connection-scoped) and lifecycle
 
     duckdb_v2_error_t duckdb_v2_value_destroy(duckdb_v2_value_handle *value)
     duckdb_v2_error_t duckdb_v2_value_is_null(duckdb_v2_value_handle value, duckdb_v2_bool_t *out_is_null, duckdb_v2_error_info_handle *err)
@@ -684,7 +684,7 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_error_info_handle *err
     )
 
-    # --- values: typed getters, children, and the value's own logical type ---
+    # values: typed getters, children, and the value's own logical type
 
     duckdb_v2_error_t duckdb_v2_value_get_bool(duckdb_v2_value_handle value, duckdb_v2_bool_t *out, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_value_get_utinyint(duckdb_v2_value_handle value, uint8_t *out, duckdb_v2_error_info_handle *err)
@@ -723,10 +723,10 @@ cdef extern from "duckdb_v2.h" nogil:
     duckdb_v2_error_t duckdb_v2_value_get_child(duckdb_v2_value_handle value, idx_t index, duckdb_v2_value_handle *out_child, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_value_get_logical_type(duckdb_v2_value_handle value, duckdb_v2_logical_type_handle *out_type, duckdb_v2_error_info_handle *err)
 
-    # --- identifiers (header MODULE: identifier) ---
+    # identifiers (header MODULE: identifier; no stable functions at this pin)
 
 
-    # --- qualified names (header MODULE: qname) ---
+    # qualified names (header MODULE: qname)
 
     duckdb_v2_error_t duckdb_v2_qname_parse(duckdb_v2_str_t text, duckdb_v2_qname_handle *name, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_qname_create(
@@ -744,7 +744,7 @@ cdef extern from "duckdb_v2.h" nogil:
     )
     duckdb_v2_error_t duckdb_v2_qname_destroy(duckdb_v2_qname_handle *name)
 
-    # --- arrow import and export (header MODULE: arrow) ---
+    # arrow import and export (header MODULE: arrow)
     # The Arrow structs are the arrow_c_data.h ones declared above.
 
     duckdb_v2_error_t duckdb_v2_result_to_arrow_stream(
@@ -779,7 +779,7 @@ cdef extern from "duckdb_v2.h" nogil:
     )
     duckdb_v2_error_t duckdb_v2_arrow_importer_destroy(duckdb_v2_arrow_importer_handle *importer)
 
-    # --- replacement scans (header MODULE: replacement scan) ---
+    # replacement scans (header MODULE: replacement scan)
 
     # Runs on the binder's thread: noexcept, no GIL, report failure through `err`.
     ctypedef void (*duckdb_v2_replacement_scan_callback_fn)(
@@ -824,7 +824,7 @@ cdef extern from "duckdb_v2.h" nogil:
     duckdb_v2_error_t duckdb_v2_replacement_scan_register(duckdb_v2_replacement_scan_handle scan, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_replacement_scan_destroy(duckdb_v2_replacement_scan_handle *scan)
 
-    # --- function signatures (header MODULE: function_signature) ---
+    # function signatures (header MODULE: function_signature)
 
     duckdb_v2_error_t duckdb_v2_function_signature_add_parameter(
         duckdb_v2_function_signature_handle sig,
@@ -834,7 +834,7 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_error_info_handle *err
     )
 
-    # --- table functions (header MODULE: table_function) ---
+    # table functions (header MODULE: table_function)
 
     # All run on an engine thread: noexcept, no GIL, report failure through `err`.
     ctypedef void (*duckdb_v2_table_function_bind_callback_fn)(

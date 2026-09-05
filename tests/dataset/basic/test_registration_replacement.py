@@ -88,7 +88,6 @@ class TestRegistrationReplacement:
     def test_replacement_preserves_other_tables(self, unique_table_name):
         conn = self.make_connection(self.thread_index, self.iteration_index)
 
-        # Use the unique table name for table_a, generate another unique name for table_b
         table_name_a = unique_table_name
         table_name_b = f"{unique_table_name}_b"
 

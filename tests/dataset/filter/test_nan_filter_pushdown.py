@@ -165,22 +165,28 @@ class TestNaNFilterPushdown:
 
         assert len(result) == 2, f"Expected 2 NaN values, got {len(result)}"
 
-    @pytest.mark.skipif(not bareduckdb.features["holder_scan"], reason="requires holder_scan experimental feature")
-    def test_explain_shows_filter_pushdown(self, float_table_with_nan, unique_table_name, make_connection, connect_config, thread_index, iteration_index):
-
+    @pytest.mark.xfail(
+        reason="the referencing Arrow scan takes no filter pushdown, so the predicate stays in a "
+        "separate FILTER operator; this asserts the pushdown we want, not what we have",
+        strict=True,
+    )
+    def test_explain_shows_filter_pushdown(self, float_table_with_nan, unique_table_name, make_connection, connect_config, explain_text, scan_block, thread_index, iteration_index):
 
         conn = make_connection(thread_index, iteration_index)
         conn.register(unique_table_name, float_table_with_nan)
 
-        explain = conn.sql(f"EXPLAIN SELECT * FROM {unique_table_name} WHERE a = 'NaN'::FLOAT").fetchall()
-        plan = explain[0][1]
+        plan = explain_text(conn, f"SELECT * FROM {unique_table_name} WHERE a = 'NaN'::FLOAT")
 
-        assert "PYTHON_DATA_SCAN" in plan, "Plan should use PYTHON_DATA_SCAN"
-        assert "Filters:" in plan, "Plan should show filter pushdown"
+        assert "Filters:" in scan_block(plan), "the scan should carry the pushed-down predicate"
 
-    @pytest.mark.skip(reason="RecordBatchReader not supported by dataset backend")
-    def test_explain_without_pushdown_shows_separate_filter(self, float_table_with_nan, make_connection, connect_config, thread_index, iteration_index):
-
+    def test_explain_without_pushdown_shows_a_separate_filter(self, float_table_with_nan, unique_table_name, make_connection, connect_config, explain_text, scan_block, thread_index, iteration_index):
+        """The predicate is evaluated in a FILTER operator above the scan, with no `Filters:` inside it."""
         conn = make_connection(thread_index, iteration_index)
-        
-        pass
+        conn.register(unique_table_name, float_table_with_nan)
+
+        query = f"SELECT * FROM {unique_table_name} WHERE a = 'NaN'::FLOAT"
+        plan = explain_text(conn, query)
+
+        assert "Filters:" not in scan_block(plan)
+        assert "Filter" in plan, "the predicate has to be evaluated somewhere"
+        assert len(conn.sql(query).fetchall()) == 2

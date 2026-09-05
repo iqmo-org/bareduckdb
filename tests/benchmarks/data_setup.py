@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 
+import os
 import re
 from pathlib import Path
 
 DATA_DIR = Path("testdata")
 CASES_DIR = Path(__file__).parent / "cases"
+
+# Set by run_benchmarks.sh once the data has been generated up front
+REQUIRE_PREGENERATED_ENV = "BENCHMARK_REQUIRE_PREGENERATED_DATA"
+
+_WARM_CHUNK_BYTES = 8 * 1024 * 1024
 
 # Mapping of SQL placeholder names to actual parquet files
 DATA_FILE_MAP = {
@@ -86,7 +92,7 @@ def discover_sql_cases() -> list[tuple[str, Path]]:
     for sql_file in sorted(CASES_DIR.rglob("*.sql")):
         # test_id: category/name (without .sql)
         rel = sql_file.relative_to(CASES_DIR)
-        test_id = str(rel.with_suffix("")).replace("/", "_")
+        test_id = "_".join(rel.with_suffix("").parts)
         cases.append((test_id, sql_file))
     return cases
 
@@ -136,14 +142,48 @@ PARQUET_DEFINITIONS = {
 }
 
 
+def warm_data(data_dir: Path | None = None):
+    """Read every benchmark parquet file so each arm starts from the same page cache state."""
+    if data_dir is None:
+        data_dir = DATA_DIR
+
+    for filename in PARQUET_DEFINITIONS:
+        filepath = data_dir / filename
+        if not filepath.exists():
+            print(f"WARNING: {filepath} does not exist, cannot warm it")
+            continue
+        total = 0
+        with filepath.open("rb") as handle:
+            while chunk := handle.read(_WARM_CHUNK_BYTES):
+                total += len(chunk)
+        print(f"Warmed {filepath} ({total / 1e6:.1f} MB)")
+
+
+def missing_data_files(data_dir: Path | None = None) -> list[Path]:
+    """Return the benchmark parquet files that do not exist yet."""
+    if data_dir is None:
+        data_dir = DATA_DIR
+    return [data_dir / filename for filename in PARQUET_DEFINITIONS if not (data_dir / filename).exists()]
+
+
 def setup_data(data_dir: Path | None = None, force: bool = False):
+    if data_dir is None:
+        data_dir = DATA_DIR
+
+    if os.environ.get(REQUIRE_PREGENERATED_ENV) == "1":
+        missing = missing_data_files(data_dir)
+        if missing or force:
+            raise RuntimeError(
+                f"{REQUIRE_PREGENERATED_ENV}=1 but data generation was requested "
+                f"(force={force}, missing={[str(p) for p in missing]}). Generating data inside a "
+                "measured arm biases that arm's page cache; generate it before any arm runs."
+            )
+        return
+
     try:
         import bareduckdb as db
     except ImportError:
         import duckdb as db
-
-    if data_dir is None:
-        data_dir = DATA_DIR
 
     data_dir.mkdir(exist_ok=True)
 
@@ -177,8 +217,11 @@ if __name__ == "__main__":
     if "--clean" in sys.argv:
         clean_data()
         setup_data(force=True)
+    elif "--warm" in sys.argv:
+        warm_data()
     elif "--help" in sys.argv or "-h" in sys.argv:
         print(__doc__)
+        print("Usage: data_setup.py [--clean | --warm]")
         print("Data files to create:")
         for filename, query in PARQUET_DEFINITIONS.items():
             print(f"  {DATA_DIR / filename}")

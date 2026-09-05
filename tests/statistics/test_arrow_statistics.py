@@ -117,7 +117,7 @@ class TestNullHandling:
 
         assert len(stats) == 1
         _, type_tag, null_count, num_rows, _, _, _, _, _, _, _ = stats[0]
-        assert type_tag == "null"  # All nulls
+        assert type_tag == "null"
         assert null_count == 3
         assert num_rows == 3
 
@@ -149,7 +149,7 @@ class TestMultipleColumns:
 
     def test_specific_columns(self):
         table = pa.table({'a': [1, 2, 3], 'b': ['x', 'y', 'z'], 'c': [1.0, 2.0, 3.0]})
-        stats = _compute_statistics_arrow(table, ['a', 'c'])  # Only a and c
+        stats = _compute_statistics_arrow(table, ['a', 'c'])
 
         assert len(stats) == 2
         indices = [s[0] for s in stats]
@@ -164,7 +164,7 @@ class TestEdgeCases:
         table = pa.table({'x': pa.array([], type=pa.int64())})
         stats = _compute_statistics_arrow(table, ['x'])
 
-        assert len(stats) == 0  # No stats for empty table
+        assert len(stats) == 0
 
     def test_single_value(self):
         table = pa.table({'x': [42]})
@@ -190,8 +190,7 @@ class TestEdgeCases:
 
 
 class TestTimestampResolutions:
-    """DuckDB stores TIMESTAMP_S/_MS/_NS at their own resolution, so bounds
-    computed in microseconds have to be widened back out."""
+    """DuckDB stores TIMESTAMP_S/_MS/_NS at their own resolution, so microsecond bounds must be widened back out."""
 
     VALUES = [
         datetime.datetime(1960, 3, 7, 12, 30, 45, 123456),

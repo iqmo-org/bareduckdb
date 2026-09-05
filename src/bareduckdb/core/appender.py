@@ -5,33 +5,13 @@ from typing import TYPE_CHECKING, Any, Sequence
 if TYPE_CHECKING:
     from .connection_base import ConnectionBase
 
-from .impl.appender import AppenderImpl  # type: ignore[import-untyped]
-
 
 class Appender:
     """
     Allows row-by-row appending to a DuckDB table.
 
-    Not thread safe - use a lock if needed.
-
-    Example:
-        with conn.appender("my_table") as app:
-            app.append_row(1, "hello", 3.14)
-            app.append_row(2, "world", 2.71)
-
-    Supported Python types:
-        - None -> NULL
-        - bool -> BOOLEAN
-        - int -> BIGINT or HUGEINT where needed
-        - float -> DOUBLE
-        - str -> VARCHAR
-        - bytes/bytearray -> BLOB
-        - datetime.date -> DATE
-        - datetime.datetime -> TIMESTAMP
-        - datetime.time -> TIME
-        - datetime.timedelta -> INTERVAL
-        - decimal.Decimal -> VARCHAR: DuckDB parses to DECIMAL
-        - uuid.UUID -> VARCHAR: DuckDB parses to UUID
+    Not yet ported to C API v2: instantiating this class raises NotImplementedError
+    until the v2 appender lands.
     """
 
     __slots__ = ("_impl",)
@@ -52,7 +32,7 @@ class Appender:
             schema: Schema name (optional, defaults to current schema)
             catalog: Catalog name (optional, for multi-catalog databases)
         """
-        self._impl = AppenderImpl(connection._impl, table, schema, catalog)
+        raise NotImplementedError("appender is not yet ported to C API v2")
 
     def append_row(self, *values: Any) -> Appender:
         """

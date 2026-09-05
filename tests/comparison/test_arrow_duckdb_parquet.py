@@ -3,10 +3,13 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("duckdb", reason="the official duckdb client is not installed in this environment")
+
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
-import pytest
 
 import bareduckdb
 from .conftest import (
@@ -161,9 +164,6 @@ class TestArrowDuckDBParquet:
         assert bareduckdb_table.num_rows > 0, "Query produced no results"
 
     def test_all_arrow_types_roundtrip(self, tmp_path: Path):
-        """
-        Test that Parquet-compatible Arrow types roundtrip correctly.
-        """
         original_table = create_comprehensive_arrow_table()
 
         # Exclude columns that PyArrow min_max doesn't support or have nested string_view issues
@@ -174,7 +174,6 @@ class TestArrowDuckDBParquet:
             col for col in original_table.column_names
             if col not in excluded_columns
         ]
-        # Filter table to exclude unsupported columns before registration
         filtered_table = original_table.select(columns_to_keep)
 
         query = "SELECT * FROM arrow_table"
@@ -251,7 +250,6 @@ class TestArrowDuckDBParquet:
         run_query_and_export(bareduckdb_conn, query, parameters, bareduckdb_path)
         bareduckdb_conn.close()
 
-        # Compare results
         comparison = compare_parquet_files(duckdb_path, bareduckdb_path)
 
         assert comparison["schemas_match"], (
@@ -263,9 +261,6 @@ class TestArrowDuckDBParquet:
         )
 
     def test_joins(self, tmp_path: Path):
-        """
-        Test various JOIN types produce identical results.
-        """
         table1 = pa.table({
             "id": [1, 2, 3, 4, 5],
             "name": ["Alice", "Bob", "Charlie", "David", "Eve"],

@@ -20,15 +20,20 @@ This guide explains how to run GitHub Actions workflows locally using [nektos/ac
 To run the complete dev_versions workflow:
 
 ```bash
-../act/bin/act -W .github/workflows/dev_versions.yml --matrix python-version:3.14t --matrix os:ubuntu-latest -P  ubuntu-latest=catthehacker/ubuntu:act-24.04 --reuse
+../act/bin/act -W .github/workflows/dev_versions.yml --matrix python-version:3.15t --matrix os:ubuntu-latest -P  ubuntu-latest=catthehacker/ubuntu:act-24.04 --reuse
 ```
+
+`--matrix` values have to exist in the workflow. `dev_versions.yml` currently defines
+`python-version` as `3.14` and `3.15t` only, across `ubuntu-latest`, `macos-latest` and
+`windows-latest`; `3.12` and `3.14t` are not in it. Re-read the matrix before copying a
+command from here.
 
 ### 3. Run Specific Jobs
 
-To run just the core tests without nightly builds:
+`dev_versions.yml` has two jobs, `dev_versions` and `musl`. To run just the first:
 
 ```bash
-../act/bin/act -W .github/workflows/dev_versions.yml --matrix python-version:3.12 -P  ubuntu-latest=catthehacker/ubuntu:act-latest dev_versions --artifact-server-path /tmp/artifacts --reuse
+../act/bin/act -W .github/workflows/dev_versions.yml --matrix python-version:3.14 -P  ubuntu-latest=catthehacker/ubuntu:act-latest -j dev_versions --artifact-server-path /tmp/artifacts --reuse
 ```
 
 ## Common Options

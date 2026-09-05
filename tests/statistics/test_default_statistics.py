@@ -13,11 +13,7 @@ def table():
 
 @pytest.fixture
 def spy(monkeypatch):
-    """Capture the statistics argument reaching register_table.
-
-    The list accumulates across --iterations repeats of a test body, so tests
-    asserting on it must be marked ``iterations(1)``.
-    """
+    """Capture the statistics argument reaching register_table; the list accumulates across --iterations repeats, so tests asserting on it need ``iterations(1)``."""
     seen = []
     real = bareduckdb.dataset.register_table
 

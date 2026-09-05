@@ -1,6 +1,5 @@
 """Types Arrow cannot represent natively, with and without arrow_lossless_conversion"""
 
-import datetime
 import decimal
 import uuid
 
@@ -16,6 +15,8 @@ LOSSLESS_INIT_SQL = (
     "set produce_arrow_string_view=True;"
     "set arrow_lossless_conversion=True;"
 )
+
+# TIMETZ is covered separately in test_timetz_exporter_conformance.py.
 
 
 @pytest.fixture
@@ -34,27 +35,10 @@ def _arrow_type(conn, sql):
 
 BIT_VALUES = ["0", "1", "101010", "11111111", "1010101010101010"]
 
-TIMETZ_VALUES = [
-    ("01:02:03+00", datetime.time(1, 2, 3, tzinfo=datetime.timezone.utc)),
-    ("01:02:03+05", datetime.time(1, 2, 3, tzinfo=datetime.timezone(datetime.timedelta(hours=5)))),
-    ("01:02:03-05", datetime.time(1, 2, 3, tzinfo=datetime.timezone(datetime.timedelta(hours=-5)))),
-    ("00:00:00+15:59", datetime.time(0, 0, tzinfo=datetime.timezone(datetime.timedelta(minutes=959)))),
-    ("00:00:00-15:59", datetime.time(0, 0, tzinfo=datetime.timezone(datetime.timedelta(minutes=-959)))),
-    (
-        "23:59:59.123456+02:30",
-        datetime.time(23, 59, 59, 123456, tzinfo=datetime.timezone(datetime.timedelta(minutes=150))),
-    ),
-]
-
 
 @pytest.mark.parametrize("bits", BIT_VALUES)
 def test_bit_decodes_when_lossless(lossless_conn, bits):
     assert _fetchall(lossless_conn, f"SELECT '{bits}'::BIT AS c") == [(bits,)]
-
-
-@pytest.mark.parametrize("literal, expected", TIMETZ_VALUES)
-def test_timetz_keeps_offset_when_lossless(lossless_conn, literal, expected):
-    assert _fetchall(lossless_conn, f"SELECT '{literal}'::TIMETZ AS c") == [(expected,)]
 
 
 @pytest.mark.parametrize("value", [0, 1, -1, 2**100, -(2**100), 2**126])
@@ -81,15 +65,8 @@ def conn_default():
 
 
 def test_default_degrades_bit_to_binary(conn_default):
-    assert _arrow_type(conn_default, "SELECT '101010'::BIT AS c") == pa.binary_view()
+    assert _arrow_type(conn_default, "SELECT '101010'::BIT AS c") == pa.binary()
     assert _fetchall(conn_default, "SELECT '101010'::BIT AS c") == [(b"\x02\xea",)]
-
-
-def test_default_drops_timetz_offset(conn_default):
-    assert _arrow_type(conn_default, "SELECT '01:02:03+05'::TIMETZ AS c") == pa.time64("us")
-    east = _fetchall(conn_default, "SELECT '01:02:03+05'::TIMETZ AS c")
-    west = _fetchall(conn_default, "SELECT '01:02:03-05'::TIMETZ AS c")
-    assert east == west == [(datetime.time(1, 2, 3),)]
 
 
 def test_default_widens_hugeint_to_decimal(conn_default):

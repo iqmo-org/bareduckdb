@@ -6,7 +6,11 @@ name: Extensive Tests
 # - Downstream integration tests for common libraries
 # - Ensures pyarrow capsules (via polars) works without importing pyarrow
 on:
+  # branches: filters out tag pushes, which otherwise ran the whole matrix again.
   push:
+    branches: ['**']
+  # schedule:
+  #   - cron: '0 6 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -26,42 +30,32 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            python-version: '3.12'
+            python-version: '3.14'
           - os: ubuntu-latest
             python-version: '3.15t'
           # - os: macos-latest
           #   python-version: '3.12'
           - os: macos-latest
-            python-version: '3.14t'
+            python-version: '3.15t'
           - os: windows-latest
-            python-version: '3.15'
+            python-version: '3.14'
           - os: windows-latest
             python-version: '3.15t'
     steps:
       - name: Checkout code
-        uses: actions/checkout@main
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           submodules: false
 
-      - name: Initialize DuckDB submodule (headers only)
-        shell: bash
-        run: |
-          # Initialize the duckdb submodule with sparse checkout (headers only)
-          git submodule update --init external/duckdb
-          cd external/duckdb
-          git sparse-checkout init --cone
-          git sparse-checkout set src/include
-          cd ../..
-
       - name: Set up Python
-        uses: actions/setup-python@main
+        uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
 
       - name: Install UV
-        uses: astral-sh/setup-uv@v10.0.0
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           cache-suffix: -dev-versions-${{ matrix.python-version }}
@@ -90,8 +84,14 @@ jobs:
             g++ --version
           fi
 
+      # Scheduled and manual runs re-resolve
       - name: Refresh lock for nightly deps
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: uv lock --upgrade
+
+      - name: Verify the lock matches pyproject
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        run: uv lock --check
 
       - name: Build
         shell: bash
@@ -119,6 +119,8 @@ jobs:
           NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu)
           THREADS=$((NPROC - 1))
           THREADS=$((THREADS < 1 ? 1 : THREADS))  # Ensure at least 1 thread
+          # Capped for OOM issues / DEFAULT_TABLE_BATCH_ROWS
+          THREADS=$((THREADS > 4 ? 4 : THREADS))
           echo "NPROC: $NPROC"
           echo "THREADS: $THREADS"
           uv run --no-sync pytest tests/ -n 0 --parallel-threads=$THREADS --iterations=10 --tb=short -v -m "not asyncio" --ignore=tests/experimental --ignore=tests/comparison --ignore=tests/downstream --ignore=tests/benchmarks --cov=bareduckdb --cov-append
@@ -130,7 +132,16 @@ jobs:
         run: |
           # Test that bareduckdb works with polars without pyarrow installed
           uv pip uninstall pyarrow
-          uv run --no-sync pytest tests/polars_only tests/polars_pushdown -v --cov=bareduckdb --cov-append
+          # Assert polars is importable first, and assert pyarrow is not, otherwise tests skipped
+          uv run --no-sync python -c "import polars; print('polars', polars.__version__)"
+          uv run --no-sync python -c "
+          import importlib.util, sys
+          if importlib.util.find_spec('pyarrow') is not None:
+              sys.exit('pyarrow is still installed; the uninstall above did not take effect')
+          print('pyarrow absent, as intended')
+          "
+          # -n 0: xdist reports a missing path as "0 items"
+          uv run --no-sync pytest tests/polars_only -n 0 -v --cov=bareduckdb --cov-append
           uv pip install pyarrow
 
       - name: Run DuckDB comparison tests
@@ -204,7 +215,7 @@ jobs:
           uv run --no-sync coverage report --show-missing
 
       - name: Count Lines of Code (cloc)
-        uses: djdefi/cloc-action@main
+        uses: djdefi/cloc-action@d4a7e15e4ff5219692f79ba71685af08955dcfc0 # 6
         if: matrix.os == 'ubuntu-latest'
         with:
           options: --exclude-dir=tests,external,.git,.github,benchmarks,notebooks
@@ -229,26 +240,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { python: cp312, pydir: cp312-cp312 }
-          - { python: cp314t, pydir: cp314-cp314t }
+          - { python: cp314, pydir: cp314-cp314 }
           - { python: cp315t, pydir: cp315-cp315t }
 
     steps:
       # Checkout on the glibc host
       - name: Checkout code
-        uses: actions/checkout@main
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           submodules: false
-
-      - name: Initialize DuckDB submodule (headers only)
-        shell: bash
-        run: |
-          git submodule update --init external/duckdb
-          cd external/duckdb
-          git sparse-checkout init --cone
-          git sparse-checkout set src/include
-          cd ../..
 
       - name: Build and test in musllinux_1_2
         shell: bash
@@ -267,6 +268,18 @@ jobs:
               LIB=$(find src/bareduckdb/_libs -name "libduckdb.so")
               readelf -d "$LIB" | grep -q "libc.musl" || { echo "ERROR: $LIB is not musl-linked"; exit 1; }
               echo "OK: $LIB is musl-linked"
+
+              SRC_DIR=$(cd "$(dirname "$LIB")" && pwd)
+              # cd+pwd rather than realpath -m: busybox realpath has no -m.
+              DEST_DIR=$(uv run --no-sync python -c "import os, sysconfig; print(os.path.join(sysconfig.get_paths()[\"platlib\"], \"bareduckdb\", \"_libs\"))")
+              if [ "$DEST_DIR" != "$SRC_DIR" ]; then
+                mkdir -p "$DEST_DIR"
+                # Hard link, so musl dedupes it by inode against the preloaded copy and maps
+                # DuckDB once; cp is the cross-device fallback.
+                ln -f "$SRC_DIR/libduckdb.so" "$DEST_DIR/libduckdb.so" 2>/dev/null \
+                  || cp -f "$SRC_DIR/libduckdb.so" "$DEST_DIR/"
+                echo "Linked $SRC_DIR/libduckdb.so into $DEST_DIR"
+              fi
 
               uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream \
                   --ignore=tests/comparison --ignore=tests/benchmarks \

@@ -4,6 +4,9 @@ Comparison tests for JupySQL integration between bareduckdb and official duckdb.
 
 import pytest
 
+pytest.importorskip("IPython")
+pytest.importorskip("sql")
+
 
 @pytest.fixture(scope="function")
 def fresh_shell(request):
@@ -19,7 +22,10 @@ def fresh_shell(request):
     except Exception:
         pass
 
-    original_duckdb = sys.modules.get('duckdb')
+    # register_as_duckdb() aliases every bareduckdb.* submodule as duckdb.*, so restore the whole duckdb* module set.
+    original_duckdb_modules = {
+        k: v for k, v in sys.modules.items() if k == "duckdb" or k.startswith("duckdb.")
+    }
 
     if impl_name == "bareduckdb":
         import bareduckdb
@@ -45,10 +51,10 @@ def fresh_shell(request):
     yield shell
 
     if impl_name == "bareduckdb":
-        if 'duckdb' in sys.modules:
-            del sys.modules['duckdb']
-        if original_duckdb is not None:
-            sys.modules['duckdb'] = original_duckdb
+        # Stale aliases make a later "import duckdb" resolve the real package's imports against bareduckdb instead.
+        for key in [k for k in sys.modules if k == "duckdb" or k.startswith("duckdb.")]:
+            del sys.modules[key]
+        sys.modules.update(original_duckdb_modules)
 
     try:
         from sql.connection.connection import ConnectionManager
@@ -63,7 +69,6 @@ def fresh_shell(request):
 class TestJupySQLComparison:
 
     def test_basic_query(self, fresh_shell):
-        """Test basic SELECT query."""
         shell = fresh_shell
 
         shell.run_line_magic("load_ext", "sql")
@@ -75,7 +80,6 @@ class TestJupySQLComparison:
         assert type(result).__name__ == 'ResultSet'
 
     def test_range_query(self, fresh_shell):
-        """Test DuckDB range function."""
         shell = fresh_shell
 
         shell.run_line_magic("load_ext", "sql")
@@ -87,7 +91,6 @@ class TestJupySQLComparison:
         assert type(result).__name__ == 'ResultSet'
 
     def test_create_table(self, fresh_shell):
-        """Test CREATE TABLE DDL."""
         shell = fresh_shell
 
         shell.run_line_magic("load_ext", "sql")
@@ -120,7 +123,6 @@ class TestJupySQLComparison:
             assert "missing" in str(e)
 
     def test_aggregation_query(self, fresh_shell):
-        """Test aggregation queries work the same way."""
         shell = fresh_shell
 
         shell.run_line_magic("load_ext", "sql")
@@ -149,7 +151,6 @@ class TestJupySQLComparison:
         assert type(result).__name__ == 'ResultSet'
 
     def test_join_operation(self, fresh_shell):
-        """Test JOIN operations work the same way."""
         shell = fresh_shell
 
         shell.run_line_magic("load_ext", "sql")

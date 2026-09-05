@@ -23,7 +23,7 @@ class Connection(ConnectionAPI):
         config: Optional[dict] = None,
         read_only: bool = False,
         *,
-        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
+        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_capsule",
         default_statistics: "Literal['numeric'] | bool | None" = "numeric",
         udtf_functions: Optional[dict] = None,
         enable_replacement_scan: bool = False,
@@ -105,7 +105,7 @@ class Connection(ConnectionAPI):
         statistics: "list[str] | Literal['numeric'] | str | bool | None" = None,
         *,
         replace: bool = True,
-    ) -> Any:
+    ) -> Connection:
         """
         Register data for querying.
 
@@ -115,12 +115,17 @@ class Connection(ConnectionAPI):
             statistics: Statistics specification for query optimization. When None,
                 the connection's default_statistics is used.
             replace: If True (default), replace existing registration with same name
+
+        Returns:
+            This connection, so calls chain.
         """
         self._register_arrow(name, data, statistics=statistics, replace=replace)  # type: ignore
-        return True
+        return self
 
-    def unregister(self, name: str) -> None:
+    def unregister(self, name: str) -> Connection:
+        """Unregister a name, returning this connection; an unknown name is a no-op."""
         super().unregister(name)
+        return self
 
     def cursor(self) -> Connection:
         """
@@ -129,11 +134,9 @@ class Connection(ConnectionAPI):
         The cursor will see secrets, extensions, and configuration from the
         parent connection, while maintaining independent query state.
         """
-        # Create a new ConnectionImpl sharing the same database
         cursor_impl = self._impl.create_cursor()
 
-        # Wrap it in a Connection object
-        # Note: Connection uses output_type, not arrow_table_collector
+        # Connection takes output_type, not arrow_table_collector
         cursor_conn = Connection(
             _from_impl=cursor_impl,
             output_type=self._default_output_type,
@@ -233,13 +236,7 @@ class Connection(ConnectionAPI):
         import_extension(name, force_install=force_install, con=self)  # pyright: ignore[reportPrivateUsage]
 
     def load_extension(self, extension: str) -> None:
-        """
-        Load an installed DuckDB extension.
-
-        Note:
-            - Extension must be installed first using install_extension()
-            - This loads the extension into the current connection
-        """
+        """Load an installed extension into the current connection; install_extension() must run first."""
         sql = f"LOAD {extension}"
         logger.info("Loading extension: %s", sql)
         self.execute(sql)

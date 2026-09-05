@@ -7,6 +7,9 @@ from datetime import timedelta
 import sys
 
 import bareduckdb
+
+pytest.importorskip("duckdb", reason="the official duckdb client is not installed in this environment")
+
 import duckdb
 
 class TestArrowSchemaCompatibility:

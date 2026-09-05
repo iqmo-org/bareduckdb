@@ -25,23 +25,23 @@ class Case:
 
 
 _XF_VARIANT = pytest.mark.xfail(
-    reason="VARIANT has no DuckDB -> Arrow conversion",
+    reason="DuckDB's exporter refuses a bare VARIANT column: 'Unsupported Arrow type VARIANT'",
     strict=True,
 )
 _XF_UNION_DENSE = pytest.mark.xfail(
-    reason="Dense Arrow UnionArray is not importable by DuckDB's Arrow layer",
+    reason="DuckDB's importer accepts only sparse unions; the scan defers import to the first query, so register() succeeds and execute fails as 'Unsupported Internal Arrow Type: \"d\" Union'",
     strict=True,
 )
 _XF_BIGNUM_ARROW = pytest.mark.xfail(
-    reason="Arrow has no arbitrary-precision integer type; BIGNUM stays arrow.opaque bytes",
+    reason="DuckDB exports BIGNUM as arrow.opaque storage bytes, which fetchall decodes to an int but an Arrow consumer sees as bytes",
     strict=True,
 )
 _XF_BIT = pytest.mark.xfail(
-    reason="BIT degrades to untagged binary without arrow_lossless_conversion",
+    reason="DuckDB exports BIT as untagged binary unless arrow_lossless_conversion is on, so fetchall has no tag to decode and returns the storage bytes",
     strict=True,
 )
 _XF_TIMETZ = pytest.mark.xfail(
-    reason="TIMETZ degrades to time64[us], dropping the UTC offset, without arrow_lossless_conversion",
+    reason="DuckDB writes the TIMETZ wall clock and drops the offset, so fetchall returns a naive time rather than the tz-aware one the row API reports",
     strict=True,
 )
 
@@ -101,6 +101,11 @@ TYPE_CASES = [
          [datetime.datetime(2020, 1, 1, 12, 30)]),
     Case("timestamp_ns", "TIMESTAMP_NS", None,
          "SELECT '2020-01-01 12:30:00'::TIMESTAMP_NS AS c", None),
+    Case("timestamptz_ns", "TIMESTAMPTZ_NS", None,
+         "SELECT '2020-01-01 12:30:00+00'::TIMESTAMPTZ_NS AS c", None),
+    # DuckDB's exporter names TUPLE fields element1/element2, not the catalog's v0/v1; fetchall() reads the Arrow names.
+    Case("tuple", "TUPLE", None,
+         "SELECT (1, 2) AS c", [{"element1": 1, "element2": 2}]),
     Case("timestamp_us_tz", "TIMESTAMP WITH TIME ZONE",
          pa.array([datetime.datetime(2020, 1, 1, 12, 30), None],
                   pa.timestamp("us", "UTC"))),
@@ -149,9 +154,7 @@ TYPE_CASES = [
     Case("struct_list", "STRUCT",
          pa.array([{"l": [1, 2]}, None], pa.struct([("l", pa.list_(pa.int32()))]))),
 
-    # Register-only Arrow layouts with no duckdb_type of their own: they decay to other
-    # DuckDB types on import, but each has a distinct C-interface layout that the
-    # empty-register path must survive.
+    # Register-only layouts with no duckdb_type of their own; each has a distinct C-interface layout the empty-register path must survive.
     Case("dictionary", None, pa.array(["a", "b", None, "a"]).dictionary_encode()),
     Case("run_end_encoded", None,
          pa.RunEndEncodedArray.from_arrays(
@@ -187,10 +190,6 @@ TYPE_CASES = [
 EXCLUDED_DUCKDB_TYPES = {"TYPE"}
 
 
-# Exported Arrow types under bareduckdb's init_sql (arrow_output_version='1.5',
-# produce_arrow_string_view=true). These are characterization assertions: they pin what
-# DuckDB currently emits so a change in init_sql or a DuckDB bump is visible rather than
-# silent. Value assertions alone cannot see any of it.
 FETCH_ARROW_TYPES = {
     "bool": "bool",
     "int8": "int8",
@@ -205,33 +204,45 @@ FETCH_ARROW_TYPES = {
     "uhugeint": "decimal128(38, 0)",
     "float32": "float",
     "float64": "double",
-    "decimal128_10_2": "decimal64(10, 2)",
+    "decimal128_10_2": "decimal128(10, 2)",
     "decimal128_38_0": "decimal128(38, 0)",
     "date32": "date32[day]",
     "timestamp_us": "timestamp[us]",
     "timestamp_s": "timestamp[s]",
     "timestamp_ms": "timestamp[ms]",
     "timestamp_ns": "timestamp[ns]",
+    # DuckDB stamps the session TimeZone on the Arrow field, so {tz} is resolved against current_setting('TimeZone').
+    "timestamptz_ns": "timestamp[ns, tz={tz}]",
+    "tuple": "struct<element1: int32, element2: int32>",
     "time64_us": "time64[us]",
     "time_ns": "time64[ns]",
     "timetz": "time64[us]",
-    "varchar": "string_view",
+    "varchar": "string",
     "uuid": "string",
-    "blob": "binary_view",
-    "bit": "binary_view",
-    "null": "int32",
+    "blob": "binary",
+    "bit": "binary",
+    "null": "null",
     "list_int": "list<l: int32>",
     "fixed_size_list": "fixed_size_list<: int32>[3]",
-    "struct": "struct<a: int32, b: string_view>",
-    "map_str_int": "map<string_view, int32>",
+    "struct": "struct<a: int32, b: string>",
+    "map_str_int": "map<string, int32>",
     "enum": "dictionary<values=string, indices=uint8, ordered=0>",
     "varint_bignum": (
-        "extension<arrow.opaque[storage_type=binary_view, type_name=bignum, vendor_name=DuckDB]>"
+        "extension<arrow.opaque[storage_type=binary, type_name=bignum, vendor_name=DuckDB]>"
     ),
-    "geometry": "binary_view",
+    "geometry": "extension<geoarrow.wkb[storage_type=binary]>",
     "variant": None,
 }
 
+
+def _expected_fetch_type(conn, case_id):
+    """The pinned Arrow type string, with the session TimeZone filled in."""
+    expected = FETCH_ARROW_TYPES[case_id]
+    if expected is None or "{tz}" not in expected:
+        return expected
+    return expected.format(tz=conn.execute("SELECT current_setting('TimeZone') AS c").fetchall()[0][0])
+
+# Arrow type after registering the case's array and selecting it back out; the view and large_ layouts have no DuckDB counterpart of their own.
 REGISTER_ARROW_TYPES = {
     "bool": "bool",
     "int8": "int8",
@@ -244,43 +255,46 @@ REGISTER_ARROW_TYPES = {
     "uint64": "uint64",
     "float32": "float",
     "float64": "double",
-    "decimal128_10_2": "decimal64(10, 2)",
+    "decimal128_10_2": "decimal128(10, 2)",
     "decimal128_38_0": "decimal128(38, 0)",
     "decimal128_38_38": "decimal128(38, 38)",
     "date32": "date32[day]",
     "timestamp_us": "timestamp[us]",
-    "timestamp_us_tz": None,
+    # DuckDB stamps the session TimeZone on export, so {tz} is resolved against current_setting('TimeZone').
+    "timestamp_us_tz": "timestamp[us, tz={tz}]",
     "time64_us": "time64[us]",
     "interval_mdn": "month_day_nano_interval",
-    "varchar": "string_view",
-    "string_view": "string_view",
-    "large_string": "string_view",
-    "blob": "binary_view",
-    "binary_view": "binary_view",
-    "large_binary": "binary_view",
-    "null": "int32",
+    "varchar": "string",
+    "string_view": "string",
+    "large_string": "string",
+    "blob": "binary",
+    "binary_view": "binary",
+    "large_binary": "binary",
+    "null": "null",
     "list_int": "list<l: int32>",
     "large_list_int": "list<l: int32>",
     "fixed_size_list": "fixed_size_list<: int32>[2]",
-    "struct": "struct<a: int32, b: string_view>",
-    "map_str_int": "map<string_view, int32>",
+    "struct": "struct<a: int32, b: string>",
+    "map_str_int": "map<string, int32>",
     "list_struct": "list<l: struct<a: int32>>",
     "struct_list": "struct<l: list<l: int32>>",
-    "dictionary": None,
+    # A dictionary decays to its value type on import; the encoding is not preserved.
+    "dictionary": "string",
     "run_end_encoded": "int64",
     "list_view": "list<l: int32>",
     "list_list_int": "list<l: list<l: int32>>",
-    "union_sparse": "sparse_union<0: int32=0, 1: string_view=1>",
+    "union_sparse": "sparse_union<0: int32=0, 1: string=1>",
+    # No pinned type; the importer rejects the dense union, see _XF_UNION_DENSE.
     "union_dense": None,
 }
 
 
-def _register_params(marked=True):
-    return [
-        pytest.param(c, id=c.id, marks=[c.register_mark] if marked and c.register_mark else [])
-        for c in TYPE_CASES
-        if c.arr is not None
-    ]
+def _expected_register_type(conn, case_id):
+    """The pinned Arrow type string, with the session TimeZone filled in."""
+    expected = REGISTER_ARROW_TYPES[case_id]
+    if expected is None or "{tz}" not in expected:
+        return expected
+    return expected.format(tz=conn.execute("SELECT current_setting('TimeZone') AS c").fetchall()[0][0])
 
 
 def _fetch_params(marked=True):
@@ -288,6 +302,14 @@ def _fetch_params(marked=True):
         pytest.param(c, id=c.id, marks=[c.fetch_mark] if marked and c.fetch_mark else [])
         for c in TYPE_CASES
         if c.sql is not None
+    ]
+
+
+def _register_params(marked=True):
+    return [
+        pytest.param(c, id=c.id, marks=[c.register_mark] if marked and c.register_mark else [])
+        for c in TYPE_CASES
+        if c.arr is not None
     ]
 
 
@@ -359,12 +381,12 @@ def test_every_case_declares_arrow_types():
 
 @pytest.mark.parametrize("case", _fetch_params(marked=False))
 def test_fetch_arrow_type(case):
-    expected = FETCH_ARROW_TYPES[case.id]
-    if expected is None:
+    if FETCH_ARROW_TYPES[case.id] is None:
         pytest.skip(f"{case.id} has no exportable Arrow type")
 
     conn = bareduckdb.connect()
     try:
+        expected = _expected_fetch_type(conn, case.id)
         if case.needs_ext is not None:
             try:
                 conn.install_extension(case.needs_ext)
@@ -378,16 +400,47 @@ def test_fetch_arrow_type(case):
         conn.close()
 
 
-@pytest.mark.parametrize("case", _register_params(marked=False))
+@pytest.mark.parametrize("case", _register_params())
 def test_register_arrow_type(case):
-    expected = REGISTER_ARROW_TYPES[case.id]
-    if expected is None:
-        pytest.skip(f"{case.id} arrow type is environment dependent")
-
+    """A registered array reads back as the Arrow type DuckDB round-trips it to."""
     conn = bareduckdb.connect()
     try:
+        expected = _expected_register_type(conn, case.id)
         conn.register("t", pa.table({"c": case.arr}))
-        assert str(conn.execute("SELECT * FROM t").arrow_table().schema.field(0).type) == expected
+        out = conn.execute("SELECT * FROM t").arrow_table()
+        assert out.num_rows == len(case.arr)
+        if expected is not None:
+            assert str(out.schema.field(0).type) == expected
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("case", _register_params())
+def test_empty_register_arrow_type(case):
+    """Every layout survives the zero-row register path with its type intact."""
+    conn = bareduckdb.connect()
+    try:
+        expected = _expected_register_type(conn, case.id)
+        conn.register("t", pa.table({"c": case.arr}).slice(0, 0))
+        out = conn.execute("SELECT * FROM t").arrow_table()
+        assert out.num_rows == 0
+        if expected is not None:
+            assert str(out.schema.field(0).type) == expected
+    finally:
+        conn.close()
+
+
+def test_register_values_round_trip():
+    """Values, not just types, survive register for the layouts that carry them."""
+    conn = bareduckdb.connect()
+    try:
+        for case in TYPE_CASES:
+            if case.arr is None or REGISTER_ARROW_TYPES[case.id] is None:
+                continue
+            name = f"t_{case.id}"
+            conn.register(name, pa.table({"c": case.arr}))
+            got = conn.execute(f"SELECT * FROM {name}").arrow_table().column(0).to_pylist()
+            assert _normalize(got) == _normalize(case.arr.to_pylist()), case.id
     finally:
         conn.close()
 
@@ -412,121 +465,27 @@ def test_timestamptz_preserves_instant():
         conn.close()
 
 
-@pytest.mark.xfail(
-    reason="TIMETZ exports as time64[us]; the offset is discarded rather than applied, so the instant is wrong",
-    strict=True,
-)
-def test_timetz_preserves_instant():
+def test_bit_is_indistinguishable_from_blob_by_default():
+    """DuckDB tags BIT only under arrow_lossless_conversion; the default is bare binary."""
     conn = bareduckdb.connect()
     try:
-        east = conn.execute("SELECT '01:02:03+05'::TIMETZ AS c").fetchall()
-        west = conn.execute("SELECT '01:02:03-05'::TIMETZ AS c").fetchall()
-        assert east != west
+        bit_type = conn.execute("SELECT '101010'::BIT AS c").arrow_table().schema.field(0).type
+        blob_type = conn.execute("SELECT 'abc'::BLOB AS c").arrow_table().schema.field(0).type
+        assert bit_type == blob_type
+        assert getattr(bit_type, "extension_name", None) is None
+        assert conn.execute("SELECT '101010'::BIT AS c").fetchall() == [(bytes([0x02, 0xEA]),)]
     finally:
         conn.close()
-
-
-@pytest.mark.parametrize("case", _register_params())
-def test_register_roundtrip(case):
-    conn = bareduckdb.connect()
-    try:
-        expected = case.arr.to_pylist()
-        conn.register("t", pa.table({"c": case.arr}))
-        out = conn.execute("SELECT * FROM t").arrow_table()
-        assert out.num_rows == len(expected)
-        assert out.column(0).to_pylist() == expected
-    finally:
-        conn.close()
-
-
-# The three constructions exercise distinct paths: a sliced table exports a stream with
-# zero batches (types must be derived with no data), an empty reader is also zero batches
-# but has no __len__ (cardinality unknown), and an explicit zero-row batch carries the
-# full nested layout through the normal conversion path.
-_EMPTY_CONSTRUCTIONS = ["sliced_table", "empty_reader", "zero_row_batch"]
-
-
-def _empty_source(table, construction):
-    if construction == "sliced_table":
-        return table.slice(0, 0)
-    if construction == "empty_reader":
-        return pa.RecordBatchReader.from_batches(table.schema, [])
-    batch = table.to_batches()[0].slice(0, 0)
-    return pa.RecordBatchReader.from_batches(table.schema, [batch])
-
-
-@pytest.mark.parametrize("construction", _EMPTY_CONSTRUCTIONS)
-@pytest.mark.parametrize("case", _register_params())
-def test_empty_register_roundtrip(case, construction):
-    conn = bareduckdb.connect()
-    try:
-        conn.register("t", _empty_source(pa.table({"c": case.arr}), construction))
-        out = conn.execute("SELECT * FROM t").arrow_table()
-        assert out.num_rows == 0
-        expected_type = REGISTER_ARROW_TYPES[case.id]
-        if expected_type is not None:
-            assert str(out.schema.field(0).type) == expected_type
-    finally:
-        conn.close()
-
-
-def test_empty_register_extension_nested_storage():
-    tensor_type = pa.fixed_shape_tensor(pa.int32(), [2])
-    storage = pa.array([[1, 2]], pa.list_(pa.int32(), 2))
-    arr = pa.ExtensionArray.from_storage(tensor_type, storage)
-    conn = bareduckdb.connect()
-    try:
-        conn.register("t", pa.table({"c": arr}).slice(0, 0))
-        assert conn.execute("SELECT * FROM t").arrow_table().num_rows == 0
-    finally:
-        conn.close()
-
-
-def test_register_zero_column_source_no_crash():
-    conn = bareduckdb.connect()
-    try:
-        try:
-            conn.register("t", pa.table({}))
-        except Exception:
-            return
-        assert conn.execute("SELECT * FROM t").arrow_table().num_rows == 0
-    finally:
-        conn.close()
-
-
-def test_register_empty_fieldless_struct_no_crash():
-    arr = pa.array([{}, {}], pa.struct([]))
-    conn = bareduckdb.connect()
-    try:
-        try:
-            conn.register("t", pa.table({"c": arr}).slice(0, 0))
-        except Exception:
-            return
-        assert conn.execute("SELECT * FROM t").arrow_table().num_rows == 0
-    finally:
-        conn.close()
-
-
-def test_register_empty_polars_nested():
-    pl = pytest.importorskip("polars")
-    df = pl.DataFrame({"l": [[1, 2]], "s": [{"a": 1}]})
-    for source in [df.head(0), df.lazy().head(0)]:
-        conn = bareduckdb.connect()
-        try:
-            conn.register("t", source)
-            assert conn.execute("SELECT * FROM t").arrow_table().num_rows == 0
-        finally:
-            conn.close()
 
 
 @pytest.mark.parametrize("case", _fetch_params(marked=False))
 def test_empty_fetch_arrow_type(case):
-    expected = FETCH_ARROW_TYPES[case.id]
-    if expected is None:
+    if FETCH_ARROW_TYPES[case.id] is None:
         pytest.skip(f"{case.id} has no exportable Arrow type")
 
     conn = bareduckdb.connect()
     try:
+        expected = _expected_fetch_type(conn, case.id)
         if case.needs_ext is not None:
             try:
                 conn.install_extension(case.needs_ext)

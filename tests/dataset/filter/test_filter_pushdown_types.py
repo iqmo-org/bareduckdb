@@ -48,7 +48,6 @@ class TestDateFilterPushdown:
     def test_date_null_filter(self, make_connection, connect_config, thread_index, iteration_index):
 
         conn = make_connection(thread_index, iteration_index)
-        """Test NULL filtering on DATE columns."""
         table = pa.table({
             'a': pa.array([date(2000, 1, 1), date(2000, 10, 1), None], type=pa.date32()),
         })

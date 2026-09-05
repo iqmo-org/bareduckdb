@@ -1,4 +1,7 @@
-"""arrow_reader must stream or say why it cannot, never silently materialize
+"""arrow_reader must stream or say why it cannot, never silently materialize.
+
+The default output type is arrow_capsule, so these pass output_type="arrow_table" explicitly
+to get the materialized result whose contract they are pinning.
 """
 
 import pytest
@@ -16,28 +19,28 @@ def test_arrow_reader_streams_when_asked_for():
 
 def test_arrow_reader_raises_when_result_was_materialized():
     with bareduckdb.connect() as conn:
-        result = conn.execute(QUERY)
+        result = conn.execute(QUERY, output_type="arrow_table")
         with pytest.raises(RuntimeError, match="arrow_reader"):
             result.arrow_reader()
 
 
 def test_fetch_record_batch_alias_raises_the_same_way():
     with bareduckdb.connect() as conn:
-        result = conn.execute(QUERY)
+        result = conn.execute(QUERY, output_type="arrow_table")
         with pytest.raises(RuntimeError, match="arrow_reader"):
             result.fetch_record_batch()
 
 
 def test_arrow_alias_raises_the_same_way():
     with bareduckdb.connect() as conn:
-        result = conn.execute(QUERY)
+        result = conn.execute(QUERY, output_type="arrow_table")
         with pytest.raises(RuntimeError, match="arrow_reader"):
             result.arrow()
 
 
 def test_error_message_names_the_fix():
     with bareduckdb.connect() as conn:
-        result = conn.execute(QUERY)
+        result = conn.execute(QUERY, output_type="arrow_table")
         with pytest.raises(RuntimeError) as excinfo:
             result.arrow_reader()
         assert "output_type='arrow_reader'" in str(excinfo.value)

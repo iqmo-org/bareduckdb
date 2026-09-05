@@ -3,6 +3,7 @@ import bareduckdb
 import gc
 
 
+@pytest.mark.usefixtures("extension_repository_available")
 def test_cursor_shares_secrets():
     conn = bareduckdb.connect()
     conn.install_extension("httpfs")
@@ -12,6 +13,7 @@ def test_cursor_shares_secrets():
     assert 'my_secret' in result['name'].to_pylist()
 
 
+@pytest.mark.usefixtures("extension_repository_available")
 def test_cursor_shares_extensions():
     conn = bareduckdb.connect()
     conn.install_extension("httpfs")
@@ -42,6 +44,7 @@ def test_cursor_independent_query_state():
     assert int(cursor_result['id'][0]) == 2
 
 
+@pytest.mark.usefixtures("extension_repository_available")
 def test_cursor_survives_parent_close():
     conn = bareduckdb.connect()
     conn.install_extension("httpfs")
@@ -52,6 +55,7 @@ def test_cursor_survives_parent_close():
     assert 'test' in result['name'].to_pylist()
 
 
+@pytest.mark.usefixtures("extension_repository_available")
 def test_cursor_survives_parent_gc():
     def create_cursor_only():
         parent = bareduckdb.connect()
@@ -98,6 +102,7 @@ def test_multiple_cursors():
     assert result['id'].to_pylist() == [1, 2, 3]
 
 
+@pytest.mark.usefixtures("extension_repository_available")
 def test_cursor_from_cursor():
     conn = bareduckdb.connect()
     conn.install_extension("httpfs")

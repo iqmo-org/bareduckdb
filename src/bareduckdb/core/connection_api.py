@@ -31,7 +31,7 @@ class ConnectionAPI(ConnectionBase):
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
         default_statistics: "Literal['numeric'] | bool | None" = "numeric",
         udtf_functions: Optional[dict[str, Callable]] = None,
-        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
+        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_capsule",
         enable_replacement_scan: bool = False,
         _from_impl: Any = None,
     ) -> None:
@@ -200,12 +200,13 @@ class ConnectionAPI(ConnectionBase):
         data = data or {}
 
         if self.enable_replacement_scan:
+            # A registered name never enters the catalog, so SHOW TABLES alone would miss it.
+            existing_tables = set(self._registered_objects)
             try:
                 tables_result = self._call("SHOW TABLES", output_type="arrow_table")
-                existing_tables = {row["name"] for row in tables_result.to_pylist()}
+                existing_tables |= {row["name"] for row in tables_result.to_pylist()}
             except Exception as e:
                 logger.warning("Failed to get table list: %s", e)
-                existing_tables = set()
 
             table_refs = set(parse_result.get("table_refs", []))
             unknown_tables = table_refs - existing_tables
@@ -251,14 +252,24 @@ class ConnectionAPI(ConnectionBase):
 
         return query, data
 
+    def close(self) -> None:
+        """Drop the last result before closing.
+
+        The default output type is arrow_capsule, so an unconsumed result holds a live stream
+        over this connection's data. Left in place it keeps the database open past close(),
+        which on a file database blocks reopening it.
+        """
+        self._last_result = None
+        super().close()
+
     def _last_result_get(self):
         """Get last result or raise if none available."""
         if not self._last_result:
             raise RuntimeError("No last result")
         return self._last_result
 
-    def arrow_table(self):
-        return self._last_result_get().arrow_table()
+    def arrow_table(self, timetz_utc: bool = False):
+        return self._last_result_get().arrow_table(timetz_utc=timetz_utc)
 
     def arrow_reader(self):
         return self._last_result_get().arrow_reader()

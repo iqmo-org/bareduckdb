@@ -1,21 +1,4 @@
-"""
-Python result wrapper
-
-Result wraps a result that has already been produced. It holds no query and no
-connection, so it cannot re-execute and cannot change how the data was fetched.
-
-The fetch mode is chosen earlier, by the output_type passed to execute() or set
-on the connection:
-
-- output_type="arrow_table"   -> a materialized pa.Table
-- output_type="arrow_reader"  -> a streaming pa.RecordBatchReader
-- output_type="arrow_capsule" -> an Arrow C stream capsule
-
-Consumption methods therefore convert what is already there; they do not select
-a mode. arrow_table() can materialize a reader, but arrow_reader() cannot stream
-a table, and raises rather than returning a reader over memory that is already
-fully populated.
-"""
+"""Wraps an already-produced result; the fetch mode was fixed by output_type at execute(), so consumption methods convert what is there rather than select a mode."""
 
 from __future__ import annotations
 
@@ -159,7 +142,6 @@ class Result:
     Container that normalizes stream/table results and handles transformations
     """
 
-    # Instance attributes
     _table: pa.Table | None  # cached materialized table: None until needed
     _reader: PyArrowCapsule | pa.RecordBatchReader | None
     _offset: int  # fetch offset
@@ -259,8 +241,9 @@ class Result:
 
         import polars as pl
 
-        # Pass self to use __arrow_c_stream__() protocol, avoiding PyArrow import checks
-        return pl.from_arrow(self, rechunk=rechunk)  # pyright: ignore[reportReturnType]
+        # Passing self uses the __arrow_c_stream__ protocol, so pyarrow is never imported
+        frame = pl.DataFrame(self)
+        return frame.rechunk() if rechunk else frame
 
     def pl_lazy(self, batch_size: int | None = None) -> pl.LazyFrame:
         """
@@ -281,7 +264,6 @@ class Result:
 
         self._read = True
 
-        # Fail fast if not using arrow_reader output type
         if self._table is not None:
             raise RuntimeError("pl_lazy() requires output_type='arrow_reader'")
 
@@ -290,7 +272,6 @@ class Result:
 
         reader = self.arrow_reader(batch_size=batch_size)
 
-        # Try to read first batch to get schema
         try:
             first_batch = reader.read_next_batch()
             first_df = pl.from_arrow(first_batch)
@@ -318,7 +299,6 @@ class Result:
                 df = first_df
                 first_batch_yielded = True
 
-                # Apply filters in Polars
                 if with_columns is not None:
                     df = df.select(with_columns)
                 if predicate is not None:
@@ -334,7 +314,6 @@ class Result:
                 if len(df) > 0:
                     yield df
 
-            # Yield remaining batches
             for record_batch in iter(reader.read_next_batch, None):
                 df = pl.from_arrow(record_batch)
 
@@ -356,15 +335,7 @@ class Result:
         return register_io_source(source_generator, schema=polars_schema)  # type: ignore
 
     def _fetch_rows(self, size: int | None = None) -> list[tuple[Any, ...]]:
-        """
-        Fetch rows starting from current offset.
-
-        Args:
-            size: Number of rows to fetch, or None for all remaining rows
-
-        Returns:
-            List of row tuples
-        """
+        """Fetch up to `size` rows from the current offset, or all remaining rows if size is None."""
         table = self.arrow_table()
 
         if self._offset >= len(table):
@@ -407,40 +378,33 @@ class Result:
 
     @property
     def description(self) -> list[tuple[Any, ...]]:
-        """
-        DB-API 2.0: Column description.
-
-        Returns a sequence of 7-item tuples describing each result column:
-        (name, type_code, display_size, internal_size, precision, scale, null_ok)
-
-        Returns None if the result has not been materialized yet.
-        """
+        """DB-API 2.0 column description: 7-item tuples (name, type_code, display_size, internal_size, precision, scale, null_ok)."""
         return [(field.name, field.type, None, None, None, None, None) for field in self.arrow_table().schema]
 
     @property
     def rowcount(self) -> int:
-        """
-        DB-API 2.0: Row count.
-
-        Returns the number of rows in the result set.
-        Returns -1 if the result has not been materialized yet.
-        """
+        """DB-API 2.0 row count."""
         return len(self.arrow_table())
 
     @property
     def columns(self) -> list[str]:
-        """
-        Return column names.
-
-        Returns an empty list if the result has not been materialized yet.
-        """
+        """Return column names."""
 
         return [field.name for field in self.arrow_table().schema]  # pyright: ignore[reportUnknownVariableType]
 
     # Aliases for compatibility w/ duckdb API
     arrow = arrow_reader
 
-    arrow_table = _result_table
+    def arrow_table(self, timetz_utc: bool = False) -> pa.Table:
+        """Materialize the result, optionally normalizing lossless TIMETZ columns to UTC."""
+        table = self._result_table()
+        if not timetz_utc:
+            return table
+        from ..core.arrow_timetz import require_lossless_timetz, timetz_to_utc
+
+        require_lossless_timetz(table.schema)
+        return timetz_to_utc(table)
+
     fetch_arrow_table = arrow_table
     to_arrow = arrow_table
     to_arrow_table = arrow_table

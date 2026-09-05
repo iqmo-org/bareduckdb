@@ -1,7 +1,5 @@
 """Registration behavior that must hold identically on every platform."""
 
-import sys
-
 import pytest
 
 import bareduckdb
@@ -9,8 +7,7 @@ from bareduckdb.core import ConnectionBase
 
 pa = pytest.importorskip("pyarrow")
 
-# These assert single-connection behavior against fixed view names, so running the same
-# test body in several threads would have them clobber each other's registrations
+# These assert single-connection behavior on fixed view names, so parallel threads would clobber each other's registrations
 pytestmark = pytest.mark.parallel_threads(1)
 
 CAT_TABLE = {"id": [1, 2, 3, 4], "cat": ["A", "B", "A", "B"], "val": [10, 20, 30, 40]}
@@ -102,15 +99,8 @@ def test_registering_a_reader_from_this_connection(conn):
 
     reader = conn._call("SELECT * FROM src", output_type="arrow_reader")
     conn._register_arrow("live", reader)
-    if sys.platform == "win32":
-        # Registration drains the reader before any query starts, so the
-        # copy is queryable like any other registration
-        assert _rows(conn, "SELECT count(*) c FROM live") == [{"c": 100}]
-    else:
-        # A live streaming reader from this same connection cannot be scanned by a
-        # later query on that connection - it would deadlock, so the scan reports it
-        with pytest.raises(RuntimeError, match="Deadlock"):
-            conn._call("SELECT count(*) FROM live")
+    # Registration drains the reader before any query starts, so the copy is queryable like any other registration
+    assert _rows(conn, "SELECT count(*) c FROM live") == [{"c": 100}]
 
 
 def test_consumed_capsule_is_rejected(conn):
@@ -172,7 +162,6 @@ def test_registrations_are_isolated_per_connection():
         second.close()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="statistics require holder_scan")
 def test_statistics_are_accepted_where_supported():
     conn = bareduckdb.connect()
     try:
@@ -183,10 +172,9 @@ def test_statistics_are_accepted_where_supported():
 
 
 def test_features_reports_what_this_build_supports():
-    assert set(bareduckdb.features) == {"holder_scan", "sql_parsing"}
-    assert all(isinstance(v, bool) for v in bareduckdb.features.values())
-    if sys.platform == "win32":
-        assert bareduckdb.features == {"holder_scan": False, "sql_parsing": False}
+    assert set(bareduckdb.features) == {"backend", "holder_scan", "sql_parsing"}
+    assert bareduckdb.features["backend"] == "capi"
+    assert all(isinstance(v, bool) for k, v in bareduckdb.features.items() if k != "backend")
 
 
 @pytest.mark.parametrize("n", [1, 2047, 2048, 2049, 4096, 4097, 10_000])
@@ -263,9 +251,59 @@ def test_identifiers_needing_quotes(conn):
     conn.unregister('odd "name"')
 
 
-def test_unregister_unknown_name_raises(conn):
-    with pytest.raises(RuntimeError):
-        conn.unregister("never_registered")
+def test_unregister_of_an_unknown_name_is_a_no_op(conn):
+    """duckdb-python ignores an unknown name, and returns the connection either way."""
+    assert conn.unregister("never_registered") is conn
+    conn._register_arrow("t", pa.table(CAT_TABLE))
+    assert conn.unregister("t") is conn
+    assert conn.unregister("t") is conn
+
+
+def test_register_returns_the_connection_so_calls_chain():
+    conn = bareduckdb.connect()
+    try:
+        assert conn.register("a", pa.table({"x": [1]})) is conn
+        conn.register("b", pa.table({"x": [2]})).register("c", pa.table({"x": [3]}))
+        assert conn.execute("SELECT a.x + b.x + c.x s FROM a, b, c").fetchone() == (6,)
+        assert conn.unregister("a") is conn
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("bad", [{"a": 1}, 5, "hello", object()])
+def test_registering_an_unsupported_object_raises_invalid_input(bad):
+    conn = bareduckdb.connect()
+    try:
+        with pytest.raises(bareduckdb.InvalidInputException) as excinfo:
+            conn.register("y", bad)
+        message = str(excinfo.value)
+        assert '"y"' in message
+        assert f'"{type(bad).__name__}"' in message
+        assert "pyarrow" in message
+    finally:
+        conn.close()
+
+
+def test_preprocessing_treats_a_registered_name_as_existing():
+    """A registered name never enters the catalog, so SHOW TABLES alone would miss it."""
+    conn = bareduckdb.connect(enable_replacement_scan=True)
+    try:
+        conn.register("t", pa.table(CAT_TABLE))
+        # parse_sql reports no table refs on this backend, so stub it to reach the branch.
+        class _StubbedParse:
+            def __init__(self, impl):
+                self._impl = impl
+
+            def __getattr__(self, attribute):
+                return getattr(self._impl, attribute)
+
+            def parse_sql(self, query):
+                return {"statement_type": "SELECT", "table_refs": ["t"], "function_calls": [], "error": False}
+
+        conn._impl = _StubbedParse(conn._impl)
+        assert conn._preprocess("SELECT * FROM t", None) == ("SELECT * FROM t", {})
+    finally:
+        conn.close()
 
 
 def test_repeated_reregistration_stays_correct(conn):

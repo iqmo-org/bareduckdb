@@ -70,10 +70,11 @@ def _msvc_env():
     for line in proc.stdout.splitlines():
         if "=" in line:
             key, value = line.split("=", 1)
-            env[key] = value
+            env[key.upper()] = value
     cl = shutil.which("cl", path=env.get("PATH", ""))
     if not env.get("INCLUDE") or cl is None:
-        pytest.fail(f"vcvarsall ran but did not yield a usable MSVC environment\n{proc.stderr}")
+        missing = [name for name, value in (("INCLUDE", env.get("INCLUDE")), ("cl.exe on PATH", cl)) if not value]
+        pytest.fail(f"vcvarsall ran but did not yield a usable MSVC environment: missing {missing} of {len(env)} variables\n{proc.stderr}")
 
     _msvc_env_cache = env
     _msvc_cl_cache = cl

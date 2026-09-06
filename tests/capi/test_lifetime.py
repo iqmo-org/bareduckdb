@@ -107,6 +107,7 @@ def test_closing_a_connection_closes_its_database():
 def test_dropping_a_connection_closes_its_database():
     """The refusal's precondition: a dropped connection leaves no database open."""
     env = CApiEnvironment()
+    gc.collect()
     before = env.database_count()
     conn = CApiConnectionImpl(None)
     assert env.database_count() == before + 1
@@ -119,6 +120,7 @@ def test_dropping_a_connection_closes_its_database():
 def test_dropping_the_last_cursor_closes_the_shared_database():
     """Cursors share one database handle, which closes only when the last one drops."""
     env = CApiEnvironment()
+    gc.collect()
     before = env.database_count()
     conn = CApiConnectionImpl(None)
     cursor = conn.create_cursor()

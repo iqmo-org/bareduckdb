@@ -175,14 +175,19 @@ class Result:
         if self._table is not None:
             return self._table
         elif self._read:
-            raise RuntimeError("Can't materialize a Reader or Capsule if it's already been retrieved")
+            raise RuntimeError("Can't materialize a Reader or Capsule: already been retrieved")
         else:
-            self._table = pa.table(self)  # type: ignore
+            # explicit reader - closing it releases the stream
+            reader = pa.RecordBatchReader._import_from_c_capsule(self.__arrow_c_stream__())
+            try:
+                self._table = reader.read_all()
+            finally:
+                reader.close()
             self._reader = None
             return self._table  # type: ignore
 
     def arrow_reader(self, batch_size: int | None = None) -> pa.RecordBatchReader:
-        """Return the streaming reader, or raise if the result was materialized."""
+        """Return the streaming reader or raise if the result was materialized"""
         with self._result_lock:
             if self._reader is not None:
                 self._read = True

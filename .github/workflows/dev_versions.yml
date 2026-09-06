@@ -232,6 +232,7 @@ jobs:
   musl:
     name: 'Musl Tests - ${{ matrix.python }} - musllinux_1_2'
     runs-on: ubuntu-latest
+    needs: dev_versions
 
     permissions:
       contents: read

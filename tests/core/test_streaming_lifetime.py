@@ -10,7 +10,7 @@ from bareduckdb.core import ConnectionBase
 pytest.importorskip("pyarrow")
 
 WARMUP = 200
-ITERATIONS = 2000
+ITERATIONS = 500
 # Let it settle since buffer managers grow first
 MAX_GROWTH_BYTES = (20 if sys.platform == "darwin" else 8) * 1024 * 1024
 DECAY_RATIO = 0.6

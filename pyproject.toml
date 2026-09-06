@@ -186,6 +186,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "src/bareduckdb/install_duckdb.py" = ["T201"]
 "tools/fetch_duckdb.py" = ["T201"]
+"tests/**/*.py" = ["S101"]
 
 [tool.uv]
 default-groups = ["dev"]

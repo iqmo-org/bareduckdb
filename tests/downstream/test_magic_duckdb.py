@@ -2,10 +2,11 @@ import pytest
 
 import bareduckdb
 
-bareduckdb.register_as_duckdb()
-
 pytest.importorskip("magic_duckdb")
 pytest.importorskip("IPython")
+
+# After the importorskips, so a collected-but-skipped module does not alias duckdb for the session.
+bareduckdb.register_as_duckdb()
 
 
 def test_basic_query_with_magic(ipshell):

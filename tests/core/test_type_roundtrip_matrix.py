@@ -46,6 +46,13 @@ _XF_TIMETZ = pytest.mark.xfail(
 )
 
 
+# ENUM index width is chosen from the label count, so an above-uint8 enum needs 257+ labels.
+_ENUM_UINT16_LABELS = 300
+_ENUM_UINT16_SETUP = "CREATE TYPE mood16 AS ENUM ({})".format(
+    ",".join(f"'v{i}'" for i in range(_ENUM_UINT16_LABELS))
+)
+
+
 TYPE_CASES = [
     Case("bool", "BOOLEAN", pa.array([True, False, None], pa.bool_()),
          "SELECT TRUE AS c", [True]),
@@ -87,6 +94,9 @@ TYPE_CASES = [
     Case("decimal128_38_38", "DECIMAL",
          pa.array([decimal.Decimal("0." + "1" * 38), None],
                   pa.decimal128(38, 38))),
+    Case("decimal128_1_0", "DECIMAL",
+         pa.array([decimal.Decimal("7"), None], pa.decimal128(1, 0)),
+         "SELECT 7::DECIMAL(1,0) AS c", [decimal.Decimal("7")]),
     Case("date32", "DATE", pa.array([datetime.date(2020, 1, 1), None], pa.date32()),
          "SELECT DATE '2020-01-01' AS c", [datetime.date(2020, 1, 1)]),
     Case("timestamp_us", "TIMESTAMP",
@@ -149,10 +159,17 @@ TYPE_CASES = [
     Case("map_str_int", "MAP",
          pa.array([[("a", 1), ("b", 2)], None], pa.map_(pa.string(), pa.int32())),
          "SELECT MAP(['a'],[1]) AS c", [[("a", 1)]]),
+    Case("map_nested_value", "MAP",
+         pa.array([[("a", [1, 2])], None], pa.map_(pa.string(), pa.list_(pa.int32()))),
+         "SELECT MAP(['a'], [[1,2]]) AS c", [[("a", [1, 2])]]),
     Case("list_struct", "LIST",
          pa.array([[{"a": 1}], None], pa.list_(pa.struct([("a", pa.int32())])))),
     Case("struct_list", "STRUCT",
          pa.array([{"l": [1, 2]}, None], pa.struct([("l", pa.list_(pa.int32()))]))),
+    Case("struct_depth3", "STRUCT",
+         pa.array([{"a": {"b": {"c": 1}}}, None],
+                  pa.struct([("a", pa.struct([("b", pa.struct([("c", pa.int32())]))]))])),
+         "SELECT {'a': {'b': {'c': 1}}} AS c", [{"a": {"b": {"c": 1}}}]),
 
     # Register-only layouts with no duckdb_type of their own; each has a distinct C-interface layout the empty-register path must survive.
     Case("dictionary", None, pa.array(["a", "b", None, "a"]).dictionary_encode()),
@@ -177,6 +194,10 @@ TYPE_CASES = [
     Case("enum", "ENUM", None,
          "SELECT 'happy'::mood AS c", ["happy"],
          setup=("CREATE TYPE mood AS ENUM ('happy','sad')",)),
+    Case("enum_uint16", "ENUM", None,
+         f"SELECT 'v{_ENUM_UINT16_LABELS - 1}'::mood16 AS c",
+         [f"v{_ENUM_UINT16_LABELS - 1}"],
+         setup=(_ENUM_UINT16_SETUP,)),
     Case("varint_bignum", "BIGNUM", None,
          "SELECT (123)::VARINT AS c", [123], fetch_mark=_XF_BIGNUM_ARROW),
     Case("geometry", "GEOMETRY", None,
@@ -206,6 +227,7 @@ FETCH_ARROW_TYPES = {
     "float64": "double",
     "decimal128_10_2": "decimal128(10, 2)",
     "decimal128_38_0": "decimal128(38, 0)",
+    "decimal128_1_0": "decimal128(1, 0)",
     "date32": "date32[day]",
     "timestamp_us": "timestamp[us]",
     "timestamp_s": "timestamp[s]",
@@ -225,8 +247,12 @@ FETCH_ARROW_TYPES = {
     "list_int": "list<l: int32>",
     "fixed_size_list": "fixed_size_list<: int32>[3]",
     "struct": "struct<a: int32, b: string>",
+    "struct_depth3": "struct<a: struct<b: struct<c: int32>>>",
     "map_str_int": "map<string, int32>",
+    "map_nested_value": "map<string, list<l: int32>>",
     "enum": "dictionary<values=string, indices=uint8, ordered=0>",
+    # 300 labels overflow the uint8 index width DuckDB uses for a small ENUM.
+    "enum_uint16": "dictionary<values=string, indices=uint16, ordered=0>",
     "varint_bignum": (
         "extension<arrow.opaque[storage_type=binary, type_name=bignum, vendor_name=DuckDB]>"
     ),
@@ -258,6 +284,7 @@ REGISTER_ARROW_TYPES = {
     "decimal128_10_2": "decimal128(10, 2)",
     "decimal128_38_0": "decimal128(38, 0)",
     "decimal128_38_38": "decimal128(38, 38)",
+    "decimal128_1_0": "decimal128(1, 0)",
     "date32": "date32[day]",
     "timestamp_us": "timestamp[us]",
     # DuckDB stamps the session TimeZone on export, so {tz} is resolved against current_setting('TimeZone').
@@ -275,7 +302,9 @@ REGISTER_ARROW_TYPES = {
     "large_list_int": "list<l: int32>",
     "fixed_size_list": "fixed_size_list<: int32>[2]",
     "struct": "struct<a: int32, b: string>",
+    "struct_depth3": "struct<a: struct<b: struct<c: int32>>>",
     "map_str_int": "map<string, int32>",
+    "map_nested_value": "map<string, list<l: int32>>",
     "list_struct": "list<l: struct<a: int32>>",
     "struct_list": "struct<l: list<l: int32>>",
     # A dictionary decays to its value type on import; the encoding is not preserved.

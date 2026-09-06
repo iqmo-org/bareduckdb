@@ -1,7 +1,12 @@
+"""VARIANT has no Arrow mapping, so every export surface must refuse it by name."""
+
+import logging
 
 import pytest
 
 import bareduckdb
+
+logger = logging.getLogger(__name__)
 
 
 def _variant_supported(conn):
@@ -9,6 +14,7 @@ def _variant_supported(conn):
         conn.execute("SELECT (123)::VARIANT::VARCHAR AS v").fetchall()
         return True
     except Exception:
+        logger.info("VARIANT unavailable in this build", exc_info=True)
         return False
 
 
@@ -18,10 +24,10 @@ def test_variant_fetch_raises():
         if not _variant_supported(conn):
             pytest.skip("VARIANT type unavailable in this build")
 
-        with pytest.raises(Exception, match="VARIANT"):
+        with pytest.raises(RuntimeError, match="Unsupported Arrow type VARIANT"):
             conn.execute("SELECT (123)::VARIANT AS v").arrow_table()
 
-        with pytest.raises(Exception, match="VARIANT"):
+        with pytest.raises(RuntimeError, match="Unsupported Arrow type VARIANT"):
             conn.execute("SELECT (123)::VARIANT AS v").fetchall()
     finally:
         conn.close()

@@ -674,7 +674,7 @@ def test_schema_is_stable_across_batches(make_conn):
 
 def test_unsupported_type_raises_rather_than_guessing(make_conn):
     conn = make_conn()
-    with pytest.raises((NotImplementedError, RuntimeError)):
+    with pytest.raises((NotImplementedError, RuntimeError), match="Unsupported Arrow type VARIANT"):
         table(conn, "SELECT (123)::VARIANT AS c")
 
 

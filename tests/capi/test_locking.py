@@ -170,6 +170,10 @@ def test_lock_free_fast_paths_return_correct_results():
 
 
 @pytest.mark.parallel_threads(1)
+@pytest.mark.skipif(
+    not FREE_THREADED,
+    reason="on a GIL build run_with_gil sets nothing, so this would rerun test_lock_free_fast_paths_return_correct_results verbatim",
+)
 def test_lock_free_fast_paths_return_correct_results_under_the_gil():
     """The same fast paths under a GIL-holding interpreter, where the spin can starve."""
     proc = run_with_gil(FAST_PATH_RACE, "lock-free fast paths under the GIL")
@@ -179,7 +183,7 @@ def test_lock_free_fast_paths_return_correct_results_under_the_gil():
 
 @pytest.mark.parallel_threads(1)
 def test_the_child_interpreter_really_holds_the_gil():
-    """Guards the two tests above: without a GIL the spin is only a busy wait."""
+    """Guards every run_with_gil test: without a GIL the spin is only a busy wait."""
     proc = run_with_gil(
         "import sys; print(getattr(sys, '_is_gil_enabled', lambda: True)())", "gil check"
     )

@@ -46,7 +46,8 @@ def test_error_message_names_the_fix():
         assert "output_type='arrow_reader'" in str(excinfo.value)
 
 
-def test_default_output_type_on_the_connection_also_works():
+def test_output_type_set_on_the_connection_also_works():
+    """The connection-level output_type is not the default one; see tests/compat/test_default_output_type_surfaces.py for that."""
     with bareduckdb.connect(output_type="arrow_reader") as conn:
         reader = conn.execute(QUERY).arrow_reader()
         assert sum(batch.num_rows for batch in reader) == 1000

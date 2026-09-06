@@ -215,6 +215,139 @@ def test_string_and_bytes_parameters(make_conn):
     assert _one(conn, "SELECT $1::BLOB", [b"hi"]) == b"hi"
 
 
+def test_bool_parameter_binds_as_boolean(make_conn):
+    """bool is checked before int, so True must not arrive as BIGINT 1."""
+    conn = make_conn()
+    assert _one(conn, "SELECT typeof($1)", [True]) == "BOOLEAN"
+    assert _one(conn, "SELECT $1", [True]) is True
+    assert _one(conn, "SELECT $1", [False]) is False
+
+
+def test_int_parameter_binds_as_bigint(make_conn):
+    conn = make_conn()
+    assert _one(conn, "SELECT typeof($1)", [5]) == "BIGINT"
+    assert _one(conn, "SELECT $1", [2 ** 63 - 1]) == 2 ** 63 - 1
+    assert _one(conn, "SELECT $1", [-(2 ** 63)]) == -(2 ** 63)
+
+
+def test_int_parameter_above_bigint_binds_as_hugeint(make_conn):
+    conn = make_conn()
+    assert _one(conn, "SELECT typeof($1)", [2 ** 63]) == "HUGEINT"
+    assert _one(conn, "SELECT $1", [2 ** 100]) == 2 ** 100
+    assert _one(conn, "SELECT $1", [-(2 ** 100)]) == -(2 ** 100)
+
+
+def test_int_parameter_at_the_hugeint_limits_round_trips(make_conn):
+    conn = make_conn()
+    assert _one(conn, "SELECT $1", [2 ** 127 - 1]) == 2 ** 127 - 1
+    assert _one(conn, "SELECT $1", [-(2 ** 127)]) == -(2 ** 127)
+
+
+def test_int_parameter_beyond_hugeint_raises_overflow(make_conn):
+    conn = make_conn()
+    for too_big in (2 ** 127, -(2 ** 127) - 1, 2 ** 200):
+        with pytest.raises(OverflowError, match="HUGEINT"):
+            _one(conn, "SELECT $1", [too_big])
+
+
+def test_float_parameter_binds_as_double(make_conn):
+    conn = make_conn()
+    assert _one(conn, "SELECT typeof($1)", [1.5]) == "DOUBLE"
+    assert _one(conn, "SELECT $1", [1.5]) == 1.5
+    assert _one(conn, "SELECT $1", [-0.125]) == -0.125
+
+
+def test_non_finite_float_parameters_round_trip(make_conn):
+    conn = make_conn()
+    assert _one(conn, "SELECT $1", [float("inf")]) == float("inf")
+    assert _one(conn, "SELECT $1", [float("-inf")]) == float("-inf")
+    assert _one(conn, "SELECT isnan($1)", [float("nan")]) is True
+
+
+def test_bytearray_parameter_binds_as_blob(make_conn):
+    conn = make_conn()
+    assert _one(conn, "SELECT typeof($1)", [bytearray(b"hi")]) == "BLOB"
+    assert _one(conn, "SELECT $1", [bytearray(b"hi")]) == b"hi"
+    assert _one(conn, "SELECT $1", [bytearray()]) == b""
+
+
+def test_memoryview_parameter_is_not_a_blob(make_conn):
+    """Only bytes and bytearray reach the BLOB branch; anything else must say so."""
+    conn = make_conn()
+    with pytest.raises(TypeError, match="cannot bind"):
+        _one(conn, "SELECT $1", [memoryview(b"hi")])
+
+
+def test_datetime_parameter_binds_as_timestamp(make_conn):
+    conn = make_conn()
+    value = datetime.datetime(2020, 1, 2, 3, 4, 5, 6)
+    assert _one(conn, "SELECT typeof($1)", [value]) == "TIMESTAMP"
+    assert _one(conn, "SELECT $1", [value]) == value
+
+
+def test_datetime_parameter_is_checked_before_date(make_conn):
+    """datetime subclasses date, so the order of the isinstance chain is the contract."""
+    conn = make_conn()
+    value = datetime.datetime(2020, 1, 2, 3, 4)
+    assert _one(conn, "SELECT typeof($1)", [value]) == "TIMESTAMP"
+    assert _one(conn, "SELECT typeof($1)", [value.date()]) == "DATE"
+
+
+def test_datetime_parameter_before_the_epoch_round_trips(make_conn):
+    conn = make_conn()
+    value = datetime.datetime(1900, 6, 15, 12, 0, 0, 123456)
+    assert _one(conn, "SELECT $1", [value]) == value
+
+
+@pytest.mark.xfail(
+    reason="a tz-aware datetime leaks 'can't subtract offset-naive and offset-aware datetimes' from the _EPOCH_DATETIME subtraction (result.pyx:796); it binds neither TIMESTAMPTZ nor a message naming the parameter",
+    strict=True,
+)
+def test_aware_datetime_parameter_binds_as_timestamptz(make_conn):
+    conn = make_conn()
+    value = datetime.datetime(2020, 1, 2, 3, 4, tzinfo=datetime.timezone.utc)
+    assert _one(conn, "SELECT typeof($1)", [value]) == "TIMESTAMP WITH TIME ZONE"
+
+
+def test_aware_datetime_parameter_raises_today(make_conn):
+    """Pins the failure mode so the xfail above flips when the branch grows a tz case."""
+    conn = make_conn()
+    with pytest.raises(TypeError, match="offset-naive and offset-aware"):
+        _one(conn, "SELECT $1", [datetime.datetime(2020, 1, 2, tzinfo=datetime.timezone.utc)])
+
+
+def test_date_parameter_binds_as_date(make_conn):
+    conn = make_conn()
+    value = datetime.date(2020, 1, 2)
+    assert _one(conn, "SELECT typeof($1)", [value]) == "DATE"
+    assert _one(conn, "SELECT $1", [value]) == value
+    assert _one(conn, "SELECT $1", [datetime.date(1900, 6, 15)]) == datetime.date(1900, 6, 15)
+
+
+def test_time_parameter_binds_as_time(make_conn):
+    conn = make_conn()
+    value = datetime.time(1, 2, 3, 4)
+    assert _one(conn, "SELECT typeof($1)", [value]) == "TIME"
+    assert _one(conn, "SELECT $1", [value]) == value
+    assert _one(conn, "SELECT $1", [datetime.time(23, 59, 59, 999999)]) == datetime.time(23, 59, 59, 999999)
+
+
+@pytest.mark.xfail(
+    reason="the time branch reads only hour/minute/second/microsecond (result.pyx:810-814), so a tz-aware time binds as plain TIME and the offset is discarded with no error",
+    strict=True,
+)
+def test_aware_time_parameter_keeps_its_offset(make_conn):
+    conn = make_conn()
+    value = datetime.time(1, 2, 3, tzinfo=datetime.timezone.utc)
+    assert _one(conn, "SELECT typeof($1)", [value]) == "TIME WITH TIME ZONE"
+
+
+def test_aware_time_parameter_silently_drops_the_offset_today(make_conn):
+    conn = make_conn()
+    value = datetime.time(1, 2, 3, tzinfo=datetime.timezone(datetime.timedelta(hours=5)))
+    assert _one(conn, "SELECT $1", [value]) == datetime.time(1, 2, 3)
+
+
 def test_decimal_parameters_round_trip(make_conn):
     conn = make_conn()
     assert _one(conn, "SELECT $1::DECIMAL(10,2)", [decimal.Decimal("1.23")]) == decimal.Decimal("1.23")

@@ -78,6 +78,15 @@ find_package(
   COMPONENTS Interpreter Development.Module ${SKBUILD_SABI_COMPONENT}
   REQUIRED)
 
+# Diagnostics only
+message(STATUS "BAREDUCKDB_PROBE: Python_INTERPRETER_ID='${Python_INTERPRETER_ID}' Python_VERSION='${Python_VERSION}' Python_SOABI='${Python_SOABI}'")
+message(STATUS "BAREDUCKDB_PROBE: SKBUILD_SABI_COMPONENT='${SKBUILD_SABI_COMPONENT}' SKBUILD_SABI_VERSION='${SKBUILD_SABI_VERSION}'")
+if(SKBUILD_SABI_VERSION)
+  message(STATUS "BAREDUCKDB_PROBE: limited-API branch, CYTHON_USE_MODULE_STATE=1 will be defined")
+else()
+  message(STATUS "BAREDUCKDB_PROBE: versioned branch, CYTHON_USE_MODULE_STATE will NOT be defined")
+endif()
+
 include(UseCython)
 
 # ---------------------------------------------------------------------------

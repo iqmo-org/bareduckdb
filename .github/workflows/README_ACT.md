@@ -30,10 +30,21 @@ command from here.
 
 ### 3. Run Specific Jobs
 
-`dev_versions.yml` has two jobs, `dev_versions` and `musl`. To run just the first:
+`dev_versions.yml` has three jobs: `dev_versions`, `musl`, and `graalpy`, which is a call
+into the reusable workflow `graalpy.yml` and is chained behind `dev_versions` with `needs:`.
+`act --list` shows that as stage 1. To run just the first:
 
 ```bash
 ../act/bin/act -W .github/workflows/dev_versions.yml --matrix python-version:3.14 -P  ubuntu-latest=catthehacker/ubuntu:act-latest -j dev_versions --artifact-server-path /tmp/artifacts --reuse
+```
+
+### Run the GraalPy job on its own
+
+`graalpy.yml` also accepts `workflow_dispatch`, so it runs standalone without the CPython
+matrix in front of it. The stock runner image has no cmake, so build a derived one first.
+
+```bash
+../act/bin/act -W .github/workflows/graalpy.yml -j graalpy   -P ubuntu-latest=<image with cmake, ninja and build-essential> --reuse
 ```
 
 ## Common Options
@@ -41,3 +52,19 @@ command from here.
 - -n : dry run
 - -v : verbose
 - --reuse
+
+## Known act gaps
+
+Three things bite locally that do not bite on a GitHub runner:
+
+- **`catthehacker/ubuntu:act-24.04` has no `cmake`**, so any job that invokes CMake outside
+  scikit-build-core's own bootstrap dies with `cmake: command not found`. Derive an image:
+  `FROM catthehacker/ubuntu:act-24.04` plus
+  `apt-get install -y cmake ninja-build build-essential`, then pass it with
+  `-P ubuntu-latest=<that image>`.
+- **`--reuse` reuses the container, not the image.** After changing the `-P` image you must
+  `docker rm -f` the existing `act-...` container or act silently keeps the old one.
+- **In a git worktree, `setuptools-scm` cannot see `.git`**, because it is a file pointing at
+  a gitdir outside the bind mount, and the build fails with "unable to detect version".
+  Pass `--env SETUPTOOLS_SCM_PRETEND_VERSION=0.1.dev0`. `actions/checkout` on a real runner
+  produces a normal `.git` directory, so this is local-only.

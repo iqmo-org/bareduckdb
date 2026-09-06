@@ -285,3 +285,18 @@ jobs:
                   --ignore=tests/comparison --ignore=tests/benchmarks \
                   -o addopts="" -q -n auto
             '
+
+  graalpy:
+    name: GraalPy
+    needs: dev_versions
+    uses: ./.github/workflows/graalpy.yml
+    permissions:
+      contents: read
+
+  benchmarks:
+    name: Benchmarks
+    needs: dev_versions
+    uses: ./.github/workflows/benchmarks.yml
+    permissions:
+      contents: read
+      pull-requests: write

@@ -16,6 +16,8 @@ INCLUDE_DIR = REPO_ROOT / "src" / "bareduckdb" / "capi" / "include"
 VENDORED_HEADER = INCLUDE_DIR / "duckdb_v2.h"
 HEADER_VERSION = INCLUDE_DIR / "HEADER_VERSION.txt"
 PXD = REPO_ROOT / "src" / "bareduckdb" / "capi" / "impl" / "duckdb_v2.pxd"
+SUBMODULE = REPO_ROOT / "external" / "duckdb"
+SUBMODULE_HEADER = "src/include/duckdb_v2.h"
 VSWHERE = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
 VC_TOOLS_REQUIREMENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
 
@@ -180,6 +182,35 @@ def test_header_manifest_matches_pin():
     assert count == EXPECTED_HEADER_FUNCTION_COUNT, (
         f"vendored header declares {count} duckdb_v2_* functions, expected {EXPECTED_HEADER_FUNCTION_COUNT}; "
         "the header and HEADER_VERSION.txt were not re-pinned together"
+    )
+
+
+def _normalize_eol(data: bytes):
+    """Split into lines with trailing carriage returns dropped, so CRLF and LF checkouts compare equal."""
+    return [line.rstrip(b"\r") for line in data.split(b"\n")]
+
+
+def test_vendored_header_matches_submodule_at_pin():
+    """The vendored header is the submodule's committed copy at the pinned SHA, byte for byte."""
+    if shutil.which("git") is None:
+        pytest.skip("git not on PATH; cannot read the submodule's committed header")
+    if not (SUBMODULE / ".git").exists():
+        pytest.skip(f"submodule {SUBMODULE} is not checked out; workflows check out with submodules: false")
+
+    sha = pinned_sha()
+    proc = subprocess.run(
+        ["git", "-C", str(SUBMODULE), "show", f"{sha}:{SUBMODULE_HEADER}"],
+        capture_output=True,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        pytest.skip(f"submodule has no object {sha}:{SUBMODULE_HEADER} (shallow or stale checkout): {proc.stderr.decode(errors='replace').strip()}")
+
+    committed = _normalize_eol(proc.stdout)
+    vendored = _normalize_eol(VENDORED_HEADER.read_bytes())
+    assert vendored == committed, (
+        f"{VENDORED_HEADER} differs from {SUBMODULE_HEADER} at {sha}; "
+        "the header was hand-edited or re-vendored from a different commit"
     )
 
 

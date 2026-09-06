@@ -1,5 +1,6 @@
 """Interpreter exit must tear the shared v2 environment down without complaining."""
 
+import gc
 import subprocess
 import sys
 
@@ -38,6 +39,8 @@ print([r.rows() for r in results])
 """
 
 DEFERRED_TEARDOWN = """
+import gc
+
 from bareduckdb.capi.impl.connection import (
     CApiConnectionImpl,
     _destroy_environment,
@@ -48,6 +51,7 @@ conn = CApiConnectionImpl(None)
 _destroy_environment()
 assert _environment_is_active(), "the environment went while a database was still open"
 del conn
+gc.collect()
 assert not _environment_is_active(), "the last database handle left the environment behind"
 print("ok")
 """
@@ -89,6 +93,17 @@ def test_the_environment_outlives_a_dropped_database_before_exit():
 
 
 @pytest.mark.parallel_threads(1)
+def test_closing_a_connection_closes_its_database():
+    """close() releases the database itself, without waiting for the object to be collected."""
+    env = CApiEnvironment()
+    before = env.database_count()
+    conn = CApiConnectionImpl(None)
+    assert env.database_count() == before + 1
+    conn.close()
+    assert env.database_count() == before
+
+
+@pytest.mark.parallel_threads(1)
 def test_dropping_a_connection_closes_its_database():
     """The refusal's precondition: a dropped connection leaves no database open."""
     env = CApiEnvironment()
@@ -96,6 +111,7 @@ def test_dropping_a_connection_closes_its_database():
     conn = CApiConnectionImpl(None)
     assert env.database_count() == before + 1
     del conn
+    gc.collect()
     assert env.database_count() == before
 
 
@@ -110,4 +126,5 @@ def test_dropping_the_last_cursor_closes_the_shared_database():
     del conn
     assert env.database_count() == before + 1
     del cursor
+    gc.collect()
     assert env.database_count() == before

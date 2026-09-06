@@ -70,7 +70,10 @@ cdef void bd_registry_release(bd_registry *reg) noexcept nogil
 cdef class _DatabaseHandle:
     cdef duckdb_v2_database_handle _db
     cdef bd_registry *_registry
+    cdef long _holders
     cdef void _adopt(self, duckdb_v2_database_handle db) noexcept
+    cdef void _acquire(self) noexcept
+    cdef void _release(self) noexcept
 
 
 cdef class CApiEnvironment:

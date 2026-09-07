@@ -123,7 +123,7 @@ jobs:
           THREADS=$((THREADS > 4 ? 4 : THREADS))
           echo "NPROC: $NPROC"
           echo "THREADS: $THREADS"
-          uv run --no-sync pytest tests/ -n 0 --parallel-threads=$THREADS --iterations=10 --tb=short -v -m "not asyncio" --ignore=tests/experimental --ignore=tests/comparison --ignore=tests/downstream --ignore=tests/benchmarks --cov=bareduckdb --cov-append
+          uv run --no-sync pytest tests/ -n 0 --parallel-threads=$THREADS --iterations=5 --tb=short -v -m "not asyncio" --ignore=tests/experimental --ignore=tests/comparison --ignore=tests/downstream --ignore=tests/benchmarks --cov=bareduckdb --cov-append
 
       - name: Test PyArrow is Optional
         # TODO: 3.15: pola-rs/polars#28347

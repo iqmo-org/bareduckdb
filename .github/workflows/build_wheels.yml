@@ -71,11 +71,10 @@ jobs:
           path: wheelhouse/*.whl
           compression-level: 0
 
+  # cibuildwheel doesn't support 25.3 yet
   graalpy_wheel:
     name: GraalPy wheel
     uses: ./.github/workflows/graalpy.yml
-    with:
-      versions: '["graalpy-25.0", "graalpy-25.3"]'
     permissions:
       contents: read
 

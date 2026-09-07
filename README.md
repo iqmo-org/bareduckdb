@@ -54,7 +54,17 @@ Both take polars DataFrames and LazyFrames, pyarrow Tables, Datasets, Scanners a
 RecordBatchReaders, pandas DataFrames, and anything exposing `__arrow_c_stream__`. A LazyFrame
 is streamed in batches, never collected.
 
-## Differences from duckdb-python
+## Major differences from duckdb-python
+
+\* Not an exhaustive list
+
+Changes: 
+- PyArrow backed Pandas dataframes
+
+Features dropped: 
+- Python UDFs require duckdb worker threads to call back into the Python interpreter. This significantly increases complexity. Instead, this project plans to add Cython/Numba/C-style function UDFs that are "nogil" only
+- Relations API: Use [ibis](https://ibis-project.org/) or [narwhals](https://github.com/narwhals-dev/narwhals) instead
+- fsspec filesystems: Similar to UDFs, fsspec involves the duckdb threads calling back to the Python interpreter 
 
 | | duckdb-python | bareduckdb |
 | --- | --- | --- |

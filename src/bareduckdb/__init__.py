@@ -25,6 +25,17 @@ from . import functional
 from ._utils import pyarrow_available
 from ._version import __version__
 from .compat.connection_compat import Connection
+
+# duckdb's module-level API, present so a call fails explicitly rather than as AttributeError.
+from .compat.module_api import (
+    default_connection,
+    execute,
+    from_arrow,
+    query,
+    read_csv,
+    read_parquet,
+    sql,
+)
 from .core.connection_base import ConnectionBase, InvalidInputException
 
 logger = logging.getLogger(__name__)
@@ -91,6 +102,14 @@ __all__ = [
     "pyarrow_available",
     "functional",
     "features",
+    # duckdb's module-level API: present, and raising NotImplementedError.
+    "sql",
+    "execute",
+    "query",
+    "read_csv",
+    "read_parquet",
+    "from_arrow",
+    "default_connection",
 ]
 
 

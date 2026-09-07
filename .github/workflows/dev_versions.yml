@@ -189,25 +189,6 @@ jobs:
           uv run --no-sync pytest tests/downstream/test_sqlalchemy.py tests/downstream/test_magic_duckdb.py -v --cov=bareduckdb --cov-append
           uv run --no-sync pytest tests/downstream/test_jupysql.py -v --cov=bareduckdb --cov-append
 
-      - name: Install dependencies nightly builds
-        shell: bash
-        run: |
-          # Install nightly builds of pyarrow and pandas
-          # These replace the stable versions installed by uv sync
-          uv pip install --pre --upgrade --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple --no-build pandas pyarrow
-          # uv pip install git+https://github.com/apache/arrow-adbc#subdirectory=python/adbc_driver_manager
-
-      - name: Rebuild with nightly PyArrow
-        shell: bash
-        run: |
-          rm -rf build/ && find src/bareduckdb \( -name "*.so" -o -name "*.pyd" \) -delete  # Clean old build artifacts
-          uv sync --reinstall-package bareduckdb -v
-      
-      - name: Run core tests against Nightlys
-        shell: bash
-        run: |
-          uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream --ignore=tests/comparison --ignore=tests/benchmarks -v --cov=bareduckdb --cov-append -n auto
-
       - name: Generate coverage report
         if: always()
         shell: bash

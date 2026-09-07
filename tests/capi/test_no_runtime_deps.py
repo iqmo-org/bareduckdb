@@ -7,7 +7,11 @@ import sys
 
 def test_import_and_query_with_empty_environment() -> None:
     """A subprocess with a scrubbed environment can import, connect and query"""
-    env = {k: v for k, v in os.environ.items() if k in ("SYSTEMROOT", "PATH", "TEMP", "TMP")}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k in ("SYSTEMROOT", "PATH", "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA")
+    }
     env["PYTHONNOUSERSITE"] = "1"
     code = (
         "import sys;"

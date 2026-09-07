@@ -3,13 +3,13 @@ revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15' and platform_machine == 'arm64' and sys_platform == 'darwin'",
-    "python_full_version == '3.14.*' and platform_machine == 'arm64' and sys_platform == 'darwin'",
-    "python_full_version < '3.14' and platform_machine == 'arm64' and sys_platform == 'darwin'",
     "python_full_version >= '3.15' and platform_machine == 'x86_64' and sys_platform == 'linux'",
-    "python_full_version == '3.14.*' and platform_machine == 'x86_64' and sys_platform == 'linux'",
-    "python_full_version < '3.14' and platform_machine == 'x86_64' and sys_platform == 'linux'",
     "python_full_version >= '3.15' and platform_machine == 'AMD64' and sys_platform == 'win32'",
+    "python_full_version == '3.14.*' and platform_machine == 'arm64' and sys_platform == 'darwin'",
+    "python_full_version == '3.14.*' and platform_machine == 'x86_64' and sys_platform == 'linux'",
     "python_full_version == '3.14.*' and platform_machine == 'AMD64' and sys_platform == 'win32'",
+    "python_full_version < '3.14' and platform_machine == 'arm64' and sys_platform == 'darwin'",
+    "python_full_version < '3.14' and platform_machine == 'x86_64' and sys_platform == 'linux'",
     "python_full_version < '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32'",
 ]
 supported-markers = [
@@ -64,15 +64,15 @@ source = { editable = "." }
 [package.optional-dependencies]
 arrow = [
     { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pyarrow", version = "26.0.0.dev175", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pyarrow", version = "26.0.0.dev209", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
 ]
 test = [
     { name = "filelock" },
     { name = "pandas", version = "3.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pandas", version = "3.1.0.dev0+1717.g6de181b121", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pandas", version = "3.1.0.dev0+1803.gc26625d6e7", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
     { name = "psutil" },
     { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pyarrow", version = "26.0.0.dev175", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pyarrow", version = "26.0.0.dev209", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -89,13 +89,13 @@ dev = [
     { name = "coverage" },
     { name = "ipykernel", marker = "python_full_version < '3.14'" },
     { name = "pandas", version = "3.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pandas", version = "3.1.0.dev0+1717.g6de181b121", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pandas", version = "3.1.0.dev0+1803.gc26625d6e7", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
     { name = "pandas-stubs" },
     { name = "polars", marker = "python_full_version < '3.14'" },
     { name = "pre-commit-uv" },
     { name = "psutil" },
     { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pyarrow", version = "26.0.0.dev175", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pyarrow", version = "26.0.0.dev209", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
     { name = "pyarrow-stubs" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -636,7 +636,7 @@ dependencies = [
     { name = "ipython" },
     { name = "jinja2" },
     { name = "pandas", version = "3.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pandas", version = "3.1.0.dev0+1717.g6de181b121", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pandas", version = "3.1.0.dev0+1803.gc26625d6e7", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/eb/58/00ef73bbdb6042e17270cf61afdcfcb27581fe1f5ae58d0f101cfc473f0e/magic_duckdb-0.2.4.tar.gz", hash = "sha256:09f92ef13de4f6cb3a18d0d320f34ab86ecd6dc29e19f97538fccd4d862d9136", size = 19898, upload-time = "2026-01-11T16:17:03.315Z" }
 wheels = [
@@ -754,10 +754,10 @@ version = "3.0.5"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version == '3.14.*' and platform_machine == 'arm64' and sys_platform == 'darwin'",
-    "python_full_version < '3.14' and platform_machine == 'arm64' and sys_platform == 'darwin'",
     "python_full_version == '3.14.*' and platform_machine == 'x86_64' and sys_platform == 'linux'",
-    "python_full_version < '3.14' and platform_machine == 'x86_64' and sys_platform == 'linux'",
     "python_full_version == '3.14.*' and platform_machine == 'AMD64' and sys_platform == 'win32'",
+    "python_full_version < '3.14' and platform_machine == 'arm64' and sys_platform == 'darwin'",
+    "python_full_version < '3.14' and platform_machine == 'x86_64' and sys_platform == 'linux'",
     "python_full_version < '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32'",
 ]
 dependencies = [
@@ -788,7 +788,7 @@ wheels = [
 
 [[package]]
 name = "pandas"
-version = "3.1.0.dev0+1717.g6de181b121"
+version = "3.1.0.dev0+1803.gc26625d6e7"
 source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }
 resolution-markers = [
     "python_full_version >= '3.15' and platform_machine == 'arm64' and sys_platform == 'darwin'",
@@ -801,31 +801,31 @@ dependencies = [
     { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
 wheels = [
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp312-cp312-macosx_11_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp312-cp312-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp312-cp312-pyemscripten_2024_0_wasm32.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp312-cp312-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp313-cp313-macosx_11_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp313-cp313-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp313-cp313-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp314-cp314-macosx_11_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp314-cp314-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp314-cp314-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp314-cp314t-macosx_11_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp314-cp314t-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp314-cp314t-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp315-cp315-macosx_11_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp315-cp315-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp315-cp315-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp315-cp315-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp315-cp315t-macosx_11_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp315-cp315t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp315-cp315t-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1717.g6de181b121/pandas-3.1.0.dev0+1717.g6de181b121-cp315-cp315t-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp312-cp312-macosx_11_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp312-cp312-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp312-cp312-pyemscripten_2024_0_wasm32.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp312-cp312-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp313-cp313-macosx_11_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp313-cp313-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp313-cp313-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314-macosx_11_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314t-macosx_11_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314t-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314t-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315-macosx_11_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315t-macosx_11_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315t-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315t-win_amd64.whl" },
 ]
 
 [[package]]
@@ -1037,10 +1037,10 @@ version = "25.0.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version == '3.14.*' and platform_machine == 'arm64' and sys_platform == 'darwin'",
-    "python_full_version < '3.14' and platform_machine == 'arm64' and sys_platform == 'darwin'",
     "python_full_version == '3.14.*' and platform_machine == 'x86_64' and sys_platform == 'linux'",
-    "python_full_version < '3.14' and platform_machine == 'x86_64' and sys_platform == 'linux'",
     "python_full_version == '3.14.*' and platform_machine == 'AMD64' and sys_platform == 'win32'",
+    "python_full_version < '3.14' and platform_machine == 'arm64' and sys_platform == 'darwin'",
+    "python_full_version < '3.14' and platform_machine == 'x86_64' and sys_platform == 'linux'",
     "python_full_version < '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3d/e3/27f57f80141379d60defe6703eb50a707325706f07fedfd1312c7a751995/pyarrow-25.0.1.tar.gz", hash = "sha256:9150a83248bfed9813ea3c3af74c3856c1984d444aa28e58bf7733b9750ddf6a", size = 1201653, upload-time = "2026-08-10T12:40:53.904Z" }
@@ -1065,7 +1065,7 @@ wheels = [
 
 [[package]]
 name = "pyarrow"
-version = "26.0.0.dev175"
+version = "26.0.0.dev209"
 source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }
 resolution-markers = [
     "python_full_version >= '3.15' and platform_machine == 'arm64' and sys_platform == 'darwin'",
@@ -1073,43 +1073,43 @@ resolution-markers = [
     "python_full_version >= '3.15' and platform_machine == 'AMD64' and sys_platform == 'win32'",
 ]
 wheels = [
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp312-cp312-macosx_12_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp312-cp312-manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp312-cp312-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp312-cp312-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp313-cp313-macosx_12_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp313-cp313-manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp313-cp313-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp313-cp313-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp314-cp314-macosx_12_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp314-cp314-manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp314-cp314-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp314-cp314-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp314-cp314t-macosx_12_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp314-cp314t-manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp314-cp314t-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp314-cp314t-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp315-cp315-macosx_12_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp315-cp315-manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp315-cp315-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp315-cp315-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp315-cp315t-macosx_12_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp315-cp315t-manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp315-cp315t-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev175/pyarrow-26.0.0.dev175-cp315-cp315t-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp312-cp312-macosx_12_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp312-cp312-manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp312-cp312-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp312-cp312-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp313-cp313-macosx_12_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp313-cp313-manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp313-cp313-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp313-cp313-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314-macosx_12_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314-manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314t-macosx_12_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314t-manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314t-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314t-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315-macosx_12_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315-manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315t-macosx_12_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315t-manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315t-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315t-win_amd64.whl" },
 ]
 
 [[package]]
 name = "pyarrow-stubs"
-version = "20.0.0.20260625"
+version = "20.0.0.20260819"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pyarrow", version = "26.0.0.dev175", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pyarrow", version = "26.0.0.dev209", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ff/7d/a3eadf94131428ec61b44bc40a52acca2b093bf0f6a90a0596c44aa9fe62/pyarrow_stubs-20.0.0.20260625.tar.gz", hash = "sha256:cae81ae0900d0710e5b8a6271fef34ccfacb08663bb5f805d94f129baf13130e", size = 237707, upload-time = "2026-06-25T07:27:47.496Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/12/a7/8a2ca91ffe4c6576207f932de655d7d8a36485c520dccce70ce7d492b256/pyarrow_stubs-20.0.0.20260819.tar.gz", hash = "sha256:150710a72248bc834bf048d3092713f070904a4af76d40289c43afb3ee189823", size = 238222, upload-time = "2026-08-19T05:52:53.618Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/29/65/00bb68d5951a1b758646fd33bca1735aebb6d9ed7184f260e1c1d17e6d97/pyarrow_stubs-20.0.0.20260625-py3-none-any.whl", hash = "sha256:26d8b6c0fa9d61ae49ad70d59988d8b88e2fe022cd782dd3333bcd33e6066486", size = 235701, upload-time = "2026-06-25T07:27:48.793Z" },
+    { url = "https://files.pythonhosted.org/packages/65/6c/eea1d03e475217aea95b1d52aee09c97575d05bbc592c39c085b71dab89f/pyarrow_stubs-20.0.0.20260819-py3-none-any.whl", hash = "sha256:297e60b6e5314739c082b4757d090d8be6047465510eb0684ca954ef7ea58be3", size = 235949, upload-time = "2026-08-19T05:52:54.711Z" },
 ]
 
 [[package]]

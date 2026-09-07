@@ -8,7 +8,6 @@ import pytest
 
 from bareduckdb.capi.impl.connection import (
     CApiConnectionImpl,
-    CApiEnvironment,
     _environment_is_active,
 )
 
@@ -56,7 +55,6 @@ assert not _environment_is_active(), "the last database handle left the environm
 print("ok")
 """
 
-
 def run_script(source: str) -> subprocess.CompletedProcess:
     """Run source in a child interpreter and return the finished process"""
     return subprocess.run(
@@ -92,42 +90,36 @@ def test_the_environment_outlives_a_dropped_database_before_exit():
     assert _environment_is_active()
 
 
-@pytest.mark.parallel_threads(1)
-def test_closing_a_connection_closes_its_database():
+
+def test_closing_a_connection_releases_its_database_file(tmp_path):
     """close() releases the database itself, without waiting for the object to be collected"""
-    env = CApiEnvironment()
-    gc.collect()
-    before = env.database_count()
-    conn = CApiConnectionImpl(None)
-    assert env.database_count() == before + 1
+    path = str(tmp_path / "closed.duckdb")
+    conn = CApiConnectionImpl(path)
+    with pytest.raises(RuntimeError):
+        CApiConnectionImpl(path)
     conn.close()
-    assert env.database_count() == before
+    reopened = CApiConnectionImpl(path)
+    reopened.close()
 
 
-@pytest.mark.parallel_threads(1)
-def test_dropping_a_connection_closes_its_database():
+def test_dropping_a_connection_releases_its_database_file(tmp_path):
     """The refusal's precondition: a dropped connection leaves no database open"""
-    env = CApiEnvironment()
-    gc.collect()
-    before = env.database_count()
-    conn = CApiConnectionImpl(None)
-    assert env.database_count() == before + 1
+    path = str(tmp_path / "dropped.duckdb")
+    conn = CApiConnectionImpl(path)
     del conn
     gc.collect()
-    assert env.database_count() == before
+    reopened = CApiConnectionImpl(path)
+    reopened.close()
 
 
-@pytest.mark.parallel_threads(1)
-def test_dropping_the_last_cursor_closes_the_shared_database():
+def test_the_last_cursor_releases_the_shared_database_file(tmp_path):
     """Cursors share one database handle, which closes only when the last one drops"""
-    env = CApiEnvironment()
-    gc.collect()
-    before = env.database_count()
-    conn = CApiConnectionImpl(None)
+    path = str(tmp_path / "shared.duckdb")
+    conn = CApiConnectionImpl(path)
     cursor = conn.create_cursor()
-    assert env.database_count() == before + 1
-    del conn
-    assert env.database_count() == before + 1
-    del cursor
-    gc.collect()
-    assert env.database_count() == before
+    conn.close()
+    with pytest.raises(RuntimeError):
+        CApiConnectionImpl(path)
+    cursor.close()
+    reopened = CApiConnectionImpl(path)
+    reopened.close()

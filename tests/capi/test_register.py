@@ -1,4 +1,4 @@
-"""register(), unregister() and the replacement scan dispatcher on the C API v2."""
+"""register(), unregister() and the replacement scan dispatcher on the C API v2"""
 
 import gc
 import threading
@@ -14,7 +14,7 @@ pytestmark = pytest.mark.parallel_threads(1)
 
 
 def imports(conn) -> int:
-    """Imports run so far on this connection's registry."""
+    """Imports run so far on this connection's registry"""
     return conn._impl._registry_stats()["imports"]
 
 
@@ -26,7 +26,7 @@ def conn():
 
 
 def table(rows=3):
-    """Return a small two-column table with a predictable shape."""
+    """Return a small two-column table with a predictable shape"""
     return pa.table({"a": list(range(rows)), "b": [f"v{i}" for i in range(rows)]})
 
 
@@ -157,7 +157,7 @@ def test_repeated_data_queries_do_not_retain_their_sources(conn):
 
 
 def test_unregister_of_an_unknown_name_is_a_no_op(conn):
-    """duckdb-python ignores an unknown name and returns the connection."""
+    """duckdb-python ignores an unknown name and returns the connection"""
     assert conn.unregister("never_registered") is conn
 
 
@@ -310,7 +310,7 @@ BIG_ROWS = 200_000
 
 
 def big_table():
-    """A table large enough that the reader cannot have buffered it all before close()."""
+    """A table large enough that the reader cannot have buffered it all before close()"""
     return pa.table({"i": pa.array(range(BIG_ROWS), pa.int64())})
 
 

@@ -138,14 +138,18 @@ class ConnectionAPI(ConnectionBase):
         *,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] | None = None,
         data: Mapping[str, Any] | None = None,
+        batch_size: int = 0,
     ):
+        """Run query. batch_size is a strict maximum on the rows in one Arrow batch - 0 selects DuckDB's default"""
         self._last_result = None
-        if output_type is None:
-            output_type = self._default_output_type
+        if output_type is None and self._default_output_type == "arrow_capsule":
+            call_output_type = None
+        else:
+            call_output_type = output_type if output_type is not None else self._default_output_type
 
         query, data = self._preprocess(query, data)
 
-        result = self._call(query=query, output_type=output_type, parameters=parameters, data=data)
+        result = self._call(query=query, output_type=call_output_type, parameters=parameters, data=data, batch_size=batch_size)
         result = Result(result)
         self._last_result = result
 
@@ -263,7 +267,7 @@ class ConnectionAPI(ConnectionBase):
         super().close()
 
     def _last_result_get(self):
-        """Get last result or raise if none available."""
+        """Get last result or raise if none available"""
         if not self._last_result:
             raise RuntimeError("No last result")
         return self._last_result
@@ -277,8 +281,8 @@ class ConnectionAPI(ConnectionBase):
     def df(self):
         return self._last_result_get().df()
 
-    def pl(self, lazy: bool = False):
-        return self._last_result_get().pl(lazy=lazy)
+    def pl(self, lazy: bool = False, rechunk: bool = False):
+        return self._last_result_get().pl(lazy=lazy, rechunk=rechunk)
 
     def pl_lazy(self, batch_size: int | None = None):
         return self._last_result_get().pl_lazy(batch_size=batch_size)

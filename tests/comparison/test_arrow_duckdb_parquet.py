@@ -20,7 +20,7 @@ from .conftest import (
 
 
 class TestArrowDuckDBParquet:
-    """Test Arrow → DuckDB → Parquet flow with both implementations."""
+    """Test Arrow → DuckDB → Parquet flow with both implementations"""
 
     def test_comprehensive_type_support(self, tmp_path: Path):
         arrow_table = pa.table({

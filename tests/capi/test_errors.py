@@ -1,4 +1,4 @@
-"""Every v2 failure must surface as a RuntimeError carrying the engine message."""
+"""Every v2 failure must surface as a RuntimeError carrying the engine message"""
 
 import pytest
 
@@ -17,7 +17,7 @@ def test_error_text_round_trips():
 
 @pytest.mark.iterations(1)
 def test_error_info_is_destroyed():
-    """Cannot assert the handle is freed directly, so assert the error path repeats."""
+    """Cannot assert the handle is freed directly, so assert the error path repeats"""
     from bareduckdb.capi.impl.connection import CApiEnvironment
 
     env = CApiEnvironment()

@@ -1,4 +1,4 @@
-"""timetz_utc: our UTC-normalized TIMETZ, off by default and built on the lossless form."""
+"""timetz_utc: our UTC-normalized TIMETZ, off by default and built on the lossless form"""
 
 import datetime
 
@@ -55,7 +55,7 @@ def test_opt_in_separates_opposite_offsets():
 
 
 def test_opt_in_is_off_by_default():
-    """The default stays DuckDB's, so nothing changes unless the caller asks."""
+    """The default stays DuckDB's, so nothing changes unless the caller asks"""
     conn = _lossless_conn()
     try:
         field = conn.execute("SELECT '01:02:03+05'::TIMETZ AS c").arrow_table().schema.field(0)
@@ -65,7 +65,7 @@ def test_opt_in_is_off_by_default():
 
 
 def test_opt_in_without_lossless_is_refused():
-    """The wall clock is not the instant that was asked for, so returning it would be a wrong answer."""
+    """The wall clock is not the instant that was asked for, so returning it would be a wrong answer"""
     conn = bareduckdb.connect()
     try:
         with pytest.raises(RuntimeError, match="arrow_lossless_conversion"):
@@ -84,7 +84,7 @@ def test_opt_in_on_the_stream_without_lossless_is_refused():
 
 
 def test_opt_in_passes_a_result_with_no_time_column_through():
-    """A result with no time64 column cannot be hiding an untagged TIMETZ, so it is not refused."""
+    """A result with no time64 column cannot be hiding an untagged TIMETZ, so it is not refused"""
     conn = bareduckdb.connect()
     try:
         table = conn.execute("SELECT 1 AS n, 'x' AS s").arrow_table(timetz_utc=True)
@@ -95,7 +95,7 @@ def test_opt_in_passes_a_result_with_no_time_column_through():
 
 
 def test_opt_in_refuses_a_plain_time_column_it_cannot_tell_apart():
-    """DuckDB exports TIME and untagged TIMETZ identically, so the ambiguous case fails closed."""
+    """DuckDB exports TIME and untagged TIMETZ identically, so the ambiguous case fails closed"""
     conn = bareduckdb.connect()
     try:
         with pytest.raises(RuntimeError, match="arrow_lossless_conversion"):

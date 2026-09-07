@@ -1,4 +1,4 @@
-"""The vendored duckdb_v2.h must compile standalone and export what we bind."""
+"""The vendored duckdb_v2.h must compile standalone and export what we bind"""
 
 import os
 import re
@@ -16,6 +16,8 @@ INCLUDE_DIR = REPO_ROOT / "src" / "bareduckdb" / "capi" / "include"
 VENDORED_HEADER = INCLUDE_DIR / "duckdb_v2.h"
 HEADER_VERSION = INCLUDE_DIR / "HEADER_VERSION.txt"
 PXD = REPO_ROOT / "src" / "bareduckdb" / "capi" / "impl" / "duckdb_v2.pxd"
+SUBMODULE = REPO_ROOT / "external" / "duckdb"
+SUBMODULE_HEADER = "src/include/duckdb_v2.h"
 VSWHERE = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
 VC_TOOLS_REQUIREMENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
 
@@ -31,7 +33,7 @@ _msvc_cl_cache = None
 
 
 def _msvc_env():
-    """Return (env, cl_path) that vcvarsall x64 sets up, locating MSVC via vswhere."""
+    """Return (env, cl_path) that vcvarsall x64 sets up, locating MSVC via vswhere"""
     global _msvc_env_cache, _msvc_cl_cache
     if _msvc_env_cache is not None:
         return _msvc_env_cache, _msvc_cl_cache
@@ -82,7 +84,7 @@ def _msvc_env():
 
 
 def _cc():
-    """Return the C driver to use on non-Windows platforms, honouring $CC."""
+    """Return the C driver to use on non-Windows platforms, honouring $CC"""
     candidates = [os.environ.get("CC")]
     candidates += ["clang", "gcc"] if sys.platform == "darwin" else ["gcc", "cc", "clang"]
     for name in candidates:
@@ -92,7 +94,7 @@ def _cc():
 
 
 def _compile(cmd, cwd):
-    """Run a compiler command in cwd and surface its output on failure."""
+    """Run a compiler command in cwd and surface its output on failure"""
     if sys.platform == "win32":
         env, _cl = _msvc_env()
         # CreateProcess resolves the executable against the parent's PATH, so use the absolute cl path from the vcvars environment.
@@ -106,7 +108,7 @@ def _compile(cmd, cwd):
 
 
 def _top_level_param_count(params):
-    """Count comma-separated parameters, ignoring commas nested in parentheses."""
+    """Count comma-separated parameters, ignoring commas nested in parentheses"""
     depth = 0
     count = 1 if params.strip() else 0
     for ch in params:
@@ -120,7 +122,7 @@ def _top_level_param_count(params):
 
 
 def header_functions():
-    """Return {name: parameter_count} for every DUCKDB_C_API prototype in the vendored header."""
+    """Return {name: parameter_count} for every DUCKDB_C_API prototype in the vendored header"""
     lines = VENDORED_HEADER.read_text(encoding="utf-8").splitlines()
     functions = {}
     i = 0
@@ -138,14 +140,14 @@ def header_functions():
 
 
 def pxd_functions():
-    """Return {name: parameter_count} for every function declared in duckdb_v2.pxd."""
+    """Return {name: parameter_count} for every function declared in duckdb_v2.pxd"""
     body = re.sub(r"#[^\n]*", "", PXD.read_text(encoding="utf-8"))
     pattern = r"duckdb_v2_error_t\s+(duckdb_v2_[A-Za-z0-9_]+)\s*\((.*?)\)\s*\n"
     return {m.group(1): _top_level_param_count(m.group(2)) for m in re.finditer(pattern, body, re.S)}
 
 
 def pinned_sha():
-    """Return the SHA recorded in HEADER_VERSION.txt, the last non-comment line."""
+    """Return the SHA recorded in HEADER_VERSION.txt, the last non-comment line"""
     lines = [ln.strip() for ln in HEADER_VERSION.read_text(encoding="utf-8").splitlines()]
     shas = [ln for ln in lines if ln and not ln.startswith("#")]
     assert len(shas) == 1, f"HEADER_VERSION.txt must hold exactly one SHA line, found {shas}"
@@ -153,7 +155,7 @@ def pinned_sha():
 
 
 def _link_lib():
-    """Return the library to link the symbol test against, or None to skip."""
+    """Return the library to link the symbol test against, or None to skip"""
     override = os.environ.get(LINK_LIB_ENV)
     if override:
         path = Path(override)
@@ -183,8 +185,37 @@ def test_header_manifest_matches_pin():
     )
 
 
+def _normalize_eol(data: bytes):
+    """Split into lines with trailing carriage returns dropped, so CRLF and LF checkouts compare equal"""
+    return [line.rstrip(b"\r") for line in data.split(b"\n")]
+
+
+def test_vendored_header_matches_submodule_at_pin():
+    """The vendored header is the submodule's committed copy at the pinned SHA, byte for byte"""
+    if shutil.which("git") is None:
+        pytest.skip("git not on PATH; cannot read the submodule's committed header")
+    if not (SUBMODULE / ".git").exists():
+        pytest.skip(f"submodule {SUBMODULE} is not checked out; workflows check out with submodules: false")
+
+    sha = pinned_sha()
+    proc = subprocess.run(
+        ["git", "-C", str(SUBMODULE), "show", f"{sha}:{SUBMODULE_HEADER}"],
+        capture_output=True,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        pytest.skip(f"submodule has no object {sha}:{SUBMODULE_HEADER} (shallow or stale checkout): {proc.stderr.decode(errors='replace').strip()}")
+
+    committed = _normalize_eol(proc.stdout)
+    vendored = _normalize_eol(VENDORED_HEADER.read_bytes())
+    assert vendored == committed, (
+        f"{VENDORED_HEADER} differs from {SUBMODULE_HEADER} at {sha}; "
+        "the header was hand-edited or re-vendored from a different commit"
+    )
+
+
 def test_pxd_declarations_match_header():
-    """Every function the pxd declares exists in the header with the same arity."""
+    """Every function the pxd declares exists in the header with the same arity"""
     header = header_functions()
     pxd = pxd_functions()
     assert pxd, "no function declarations parsed from duckdb_v2.pxd"
@@ -218,7 +249,7 @@ def test_header_compiles_standalone(tmp_path):
 
 
 def test_symbol_binds_at_link_time(tmp_path):
-    """Every function declared in the pxd resolves against the DuckDB library."""
+    """Every function declared in the pxd resolves against the DuckDB library"""
     lib = _link_lib()
     if lib is None:
         pytest.skip(f"no DuckDB library to link against beside {resolve_duckdb_lib().parent}; set {LINK_LIB_ENV} to point at one")

@@ -190,7 +190,7 @@ class TestEdgeCases:
 
 
 class TestTimestampResolutions:
-    """DuckDB stores TIMESTAMP_S/_MS/_NS at their own resolution, so microsecond bounds must be widened back out."""
+    """DuckDB stores TIMESTAMP_S/_MS/_NS at their own resolution, so microsecond bounds must be widened back out"""
 
     VALUES = [
         datetime.datetime(1960, 3, 7, 12, 30, 45, 123456),

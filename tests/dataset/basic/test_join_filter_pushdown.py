@@ -6,7 +6,7 @@ from bareduckdb import Connection
 
 
 def test_join_with_stats_small_build_large_probe():
-    """Repro of a v1.5.3 heap corruption: a small join build pushes a nested CONJUNCTION_AND of OPTIONAL/IN filters into the probe scan."""
+    """Repro of a v1.5.3 heap corruption: a small join build pushes a nested CONJUNCTION_AND of OPTIONAL/IN filters into the probe scan"""
     t_big = pa.table({'id': list(range(20))})
     t_small = pa.table({'id': [5, 10]})
 
@@ -67,7 +67,7 @@ def test_string_join_with_stats():
 
 
 def test_join_with_many_build_values():
-    """Many build-side values force an IN_FILTER with several values plus bounds, exercising allocations across deque chunks."""
+    """Many build-side values force an IN_FILTER with several values plus bounds, exercising allocations across deque chunks"""
     t_big = pa.table({'id': list(range(100))})
     build_vals = [3, 7, 13, 27, 41, 55, 69, 83, 97]
     t_small = pa.table({'id': build_vals})

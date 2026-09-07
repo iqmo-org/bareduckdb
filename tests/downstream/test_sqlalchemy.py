@@ -3,10 +3,12 @@ import tempfile
 import os
 
 import bareduckdb
-bareduckdb.register_as_duckdb()
 
 sqlalchemy = pytest.importorskip("sqlalchemy")
 duckdb_engine = pytest.importorskip("duckdb_engine")
+
+# After the importorskip, so a collected-but-skipped module does not alias duckdb for the session.
+bareduckdb.register_as_duckdb()
 from sqlalchemy import create_engine, text, Table, Column, Integer, String, MetaData, select
 from sqlalchemy.orm import declarative_base, Session
 

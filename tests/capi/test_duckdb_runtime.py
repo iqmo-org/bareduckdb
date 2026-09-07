@@ -1,4 +1,4 @@
-"""Tests for _duckdb_runtime: resolution order, cache naming, no-download mode."""
+"""Tests for _duckdb_runtime: resolution order, cache naming, no-download mode"""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _touch_lib(directory, name=LIB_NAME):
 
 
 def test_cache_dir_for_preview_is_keyed_on_the_branch():
-    """The preview channel selects by branch, not version, so the branch is what must key the cache."""
+    """The preview channel selects by branch, not version, so the branch is what must key the cache"""
     cache_dir = rt.cache_dir_for("preview", "latest", "windows-amd64")
     name = cache_dir.name
     assert "preview" in name
@@ -44,7 +44,7 @@ def test_cache_dir_for_differs_across_versions():
 
 
 def test_preview_url_carries_the_branch():
-    """A stale /latest/ artifact is main, which has no C API v2 Part 3 symbols."""
+    """A stale /latest/ artifact is main, which has no C API v2 Part 3 symbols"""
     url = rt.artifact_url("preview", "latest", "windows-amd64")
     assert fetch.PREVIEW_BRANCH in url
     assert "/latest/" not in url
@@ -152,7 +152,7 @@ def test_no_download_error_names_a_set_but_wrong_env_var(tmp_path, monkeypatch):
     reason="live download test opts in via BAREDUCKDB_TEST_LIVE_DOWNLOAD=1",
 )
 def test_live_download_opt_in(tmp_path, monkeypatch):
-    """Real network download, gated behind an explicit opt-in env var."""
+    """Real network download, gated behind an explicit opt-in env var"""
     artifact = fetch.duckdb_artifact(None)
     lib = rt.download_lib(tmp_path, artifact=artifact, lib_name=LIB_NAME)
     assert lib.is_file()

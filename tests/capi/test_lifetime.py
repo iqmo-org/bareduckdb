@@ -1,4 +1,4 @@
-"""Interpreter exit must tear the shared v2 environment down without complaining."""
+"""Interpreter exit must tear the shared v2 environment down without complaining"""
 
 import gc
 import subprocess
@@ -58,7 +58,7 @@ print("ok")
 
 
 def run_script(source: str) -> subprocess.CompletedProcess:
-    """Run source in a child interpreter and return the finished process."""
+    """Run source in a child interpreter and return the finished process"""
     return subprocess.run(
         [sys.executable, "-c", source], capture_output=True, text=True, timeout=TIMEOUT
     )
@@ -70,7 +70,7 @@ def run_script(source: str) -> subprocess.CompletedProcess:
     ids=["never_closed", "explicitly_closed", "cursors_never_closed"],
 )
 def test_exit_does_not_warn_about_the_environment(script: str):
-    """No teardown warning reaches stderr, whether or not the user closed anything."""
+    """No teardown warning reaches stderr, whether or not the user closed anything"""
     proc = run_script(script)
     assert proc.returncode == 0, proc.stderr
     assert "destroy_environment" not in proc.stderr, proc.stderr
@@ -79,14 +79,14 @@ def test_exit_does_not_warn_about_the_environment(script: str):
 
 @pytest.mark.parallel_threads(1)
 def test_the_last_database_handle_destroys_an_armed_environment():
-    """What atexit arms is what the last database handle then carries out."""
+    """What atexit arms is what the last database handle then carries out"""
     proc = run_script(DEFERRED_TEARDOWN)
     assert proc.returncode == 0, proc.stderr
     assert "ok" in proc.stdout
 
 
 def test_the_environment_outlives_a_dropped_database_before_exit():
-    """Teardown is armed only at exit, so ordinary use keeps one environment."""
+    """Teardown is armed only at exit, so ordinary use keeps one environment"""
     conn = CApiConnectionImpl(None)
     del conn
     assert _environment_is_active()
@@ -94,7 +94,7 @@ def test_the_environment_outlives_a_dropped_database_before_exit():
 
 @pytest.mark.parallel_threads(1)
 def test_closing_a_connection_closes_its_database():
-    """close() releases the database itself, without waiting for the object to be collected."""
+    """close() releases the database itself, without waiting for the object to be collected"""
     env = CApiEnvironment()
     before = env.database_count()
     conn = CApiConnectionImpl(None)
@@ -105,7 +105,7 @@ def test_closing_a_connection_closes_its_database():
 
 @pytest.mark.parallel_threads(1)
 def test_dropping_a_connection_closes_its_database():
-    """The refusal's precondition: a dropped connection leaves no database open."""
+    """The refusal's precondition: a dropped connection leaves no database open"""
     env = CApiEnvironment()
     gc.collect()
     before = env.database_count()
@@ -118,7 +118,7 @@ def test_dropping_a_connection_closes_its_database():
 
 @pytest.mark.parallel_threads(1)
 def test_dropping_the_last_cursor_closes_the_shared_database():
-    """Cursors share one database handle, which closes only when the last one drops."""
+    """Cursors share one database handle, which closes only when the last one drops"""
     env = CApiEnvironment()
     gc.collect()
     before = env.database_count()

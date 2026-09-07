@@ -1,7 +1,7 @@
 # cython: language_level=3
 # cython: freethreading_compatible=True
 
-"""Statement execution and the v2 result lifecycle: parse, bind, execute, stream, destroy."""
+"""Statement execution and the v2 result lifecycle: parse, bind, execute, stream, destroy"""
 
 import datetime
 import decimal
@@ -30,11 +30,14 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_ERROR_NONE,
     DUCKDB_V2_LOGICAL_TYPE_ID_ARRAY,
     DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT,
+    DUCKDB_V2_LOGICAL_TYPE_ID_BIGNUM,
+    DUCKDB_V2_LOGICAL_TYPE_ID_BIT,
     DUCKDB_V2_LOGICAL_TYPE_ID_BLOB,
     DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN,
     DUCKDB_V2_LOGICAL_TYPE_ID_DATE,
     DUCKDB_V2_LOGICAL_TYPE_ID_DECIMAL,
     DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE,
+    DUCKDB_V2_LOGICAL_TYPE_ID_ENUM,
     DUCKDB_V2_LOGICAL_TYPE_ID_FLOAT,
     DUCKDB_V2_LOGICAL_TYPE_ID_HUGEINT,
     DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER,
@@ -52,7 +55,9 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ,
     DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ_NS,
     DUCKDB_V2_LOGICAL_TYPE_ID_TIME_NS,
+    DUCKDB_V2_LOGICAL_TYPE_ID_TIME_TZ,
     DUCKDB_V2_LOGICAL_TYPE_ID_TINYINT,
+    DUCKDB_V2_LOGICAL_TYPE_ID_TUPLE,
     DUCKDB_V2_LOGICAL_TYPE_ID_UBIGINT,
     DUCKDB_V2_LOGICAL_TYPE_ID_UHUGEINT,
     DUCKDB_V2_LOGICAL_TYPE_ID_UINTEGER,
@@ -66,6 +71,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_RESULT_STEP_STATUS_WAITING,
     DUCKDB_V2_RESULT_TYPE_QUERY_RESULT,
     idx_t,
+    duckdb_v2_bignum_decode,
     duckdb_v2_bool_t,
     duckdb_v2_connection_create_type_from_id,
     duckdb_v2_connection_handle,
@@ -85,6 +91,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_logical_type_get_param,
     duckdb_v2_logical_type_get_param_count,
     duckdb_v2_logical_type_handle,
+    duckdb_v2_logical_type_to_text,
     duckdb_v2_logical_type_id_t,
     duckdb_v2_parse_sql,
     duckdb_v2_result_destroy,
@@ -109,6 +116,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_statement_iterator_next,
     duckdb_v2_str_t,
     duckdb_v2_uhugeint_t,
+    duckdb_v2_value_cast_with_connection,
     duckdb_v2_value_create_bigint_with_connection,
     duckdb_v2_value_create_blob_with_connection,
     duckdb_v2_value_create_bool_with_connection,
@@ -140,6 +148,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_value_get_smallint,
     duckdb_v2_value_get_time,
     duckdb_v2_value_get_time_ns,
+    duckdb_v2_value_get_time_tz,
     duckdb_v2_value_get_timestamp,
     duckdb_v2_value_get_timestamp_ms,
     duckdb_v2_value_get_timestamp_ns,
@@ -179,11 +188,16 @@ _EPOCH_DATE = datetime.date(1970, 1, 1)
 _EPOCH_DATETIME = datetime.datetime(1970, 1, 1)
 _EPOCH_DATETIME_UTC = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
 
+# dtime_tz_t packing, duckdb_v2.h:9325. The same constants core/arrow_timetz.py reads.
+_TIME_TZ_OFFSET_BITS = 24
+_TIME_TZ_OFFSET_MASK = 0xFFFFFF
+_TIME_TZ_OFFSET_BIAS = 57599
+
 
 # execute(): parse -> bind -> execute, iterating the whole statement iterator
 
 def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_rows=None):
-    """Execute every statement, draining earlier results; return the last one."""
+    """Execute every statement, draining earlier results; return the last one"""
     cdef duckdb_v2_connection_handle c_conn = conn._conn
     cdef bytes query_bytes = query.encode("utf-8")
     cdef const char *c_query = query_bytes
@@ -211,7 +225,7 @@ cdef object _execute_bound(
     bd_registry *reg,
     bint *transferred,
 ):
-    """Run every statement with the registry borrow already held, and bind the last result to it."""
+    """Run every statement with the registry borrow already held, and bind the last result to it"""
     cdef duckdb_v2_statement_iterator_handle iterator = NULL
     cdef duckdb_v2_sql_statement_handle current = NULL
     cdef duckdb_v2_sql_statement_handle upcoming = NULL
@@ -299,7 +313,7 @@ cdef duckdb_v2_result_handle _execute_one(
     duckdb_v2_sql_statement_handle statement,
     object parameters,
 ) except? NULL:
-    """Bind one statement, build its parameter values from `parameters`, and execute it."""
+    """Bind one statement, build its parameter values from `parameters`, and execute it"""
     cdef duckdb_v2_schema_handle out_schema = NULL
     cdef duckdb_v2_schema_handle out_parameters = NULL
     cdef duckdb_v2_error_info_handle err = NULL
@@ -393,7 +407,7 @@ cdef duckdb_v2_result_handle _execute_one(
 cdef duckdb_v2_logical_type_handle _positional_target_type(
     duckdb_v2_schema_handle out_parameters, idx_t index
 ):
-    """Borrow the declared type of parameter `index`, or NULL when it cannot be found."""
+    """Borrow the declared type of parameter `index`, or NULL when it cannot be found"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef idx_t count = 0
@@ -416,7 +430,7 @@ cdef duckdb_v2_logical_type_handle _positional_target_type(
 cdef duckdb_v2_logical_type_handle _named_target_type(
     duckdb_v2_schema_handle out_parameters, str param_name
 ):
-    """Borrow the declared type of a named parameter, or NULL when it cannot be found."""
+    """Borrow the declared type of a named parameter, or NULL when it cannot be found"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef idx_t count = 0
@@ -442,7 +456,7 @@ cdef duckdb_v2_logical_type_handle _named_target_type(
 
 
 cdef duckdb_v2_logical_type_id_t _logical_type_id(duckdb_v2_logical_type_handle type_handle) except *:
-    """Return the logical type id of a borrowed logical type handle."""
+    """Return the logical type id of a borrowed logical type handle"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_logical_type_id_t type_id
@@ -456,7 +470,7 @@ cdef duckdb_v2_logical_type_id_t _logical_type_id(duckdb_v2_logical_type_handle 
 cdef duckdb_v2_logical_type_handle _owned_child_type(
     duckdb_v2_logical_type_handle type_handle, idx_t index
 ) except NULL:
-    """Return an owned copy of one child logical type of a parameterized logical type."""
+    """Return an owned copy of one child logical type of a parameterized logical type"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_identifier_t pname
@@ -481,7 +495,7 @@ cdef duckdb_v2_logical_type_handle _declared_child_type(
     duckdb_v2_logical_type_id_t container_id,
     idx_t index,
 ) except? NULL:
-    """Return an owned child type when the bound parameter's declared type is that container."""
+    """Return an owned child type when the bound parameter's declared type is that container"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef idx_t param_count = 0
@@ -499,7 +513,7 @@ cdef duckdb_v2_logical_type_handle _declared_child_type(
 cdef duckdb_v2_logical_type_handle _primitive_type(
     duckdb_v2_connection_handle conn, duckdb_v2_logical_type_id_t type_id
 ) except NULL:
-    """Build an owned parameterless logical type from its id."""
+    """Build an owned parameterless logical type from its id"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_logical_type_handle out_type = NULL
@@ -511,7 +525,7 @@ cdef duckdb_v2_logical_type_handle _primitive_type(
 
 
 cdef void _int_to_hugeint(object value, duckdb_v2_hugeint_t *out) except *:
-    """Split a Python int into v2's signed 128-bit (upper, lower) pair."""
+    """Split a Python int into v2's signed 128-bit (upper, lower) pair"""
     if not (-(2 ** 127) <= value < 2 ** 127):
         raise OverflowError(f"Python int {value} does not fit in a v2 HUGEINT")
     out.lower = <uint64_t>(value & ((1 << 64) - 1))
@@ -521,7 +535,7 @@ cdef void _int_to_hugeint(object value, duckdb_v2_hugeint_t *out) except *:
 cdef duckdb_v2_value_handle _decimal_to_value(
     duckdb_v2_connection_handle conn, object val
 ) except? NULL:
-    """Bind a decimal.Decimal as a DECIMAL whose width and scale come from its own digits."""
+    """Bind a decimal.Decimal as a DECIMAL whose width and scale come from its own digits"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_value_handle out_value = NULL
@@ -562,7 +576,7 @@ cdef duckdb_v2_value_handle _decimal_to_value(
 cdef duckdb_v2_value_handle _uuid_to_value(
     duckdb_v2_connection_handle conn, object val
 ) except? NULL:
-    """Bind a uuid.UUID, applying the sign-bit flip _hugeint_to_uuid undoes on the read path."""
+    """Bind a uuid.UUID, applying the sign-bit flip _hugeint_to_uuid undoes on the read path"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_value_handle out_value = NULL
@@ -582,7 +596,7 @@ cdef duckdb_v2_value_handle _uuid_to_value(
 cdef duckdb_v2_value_handle _timedelta_to_value(
     duckdb_v2_connection_handle conn, object val
 ) except? NULL:
-    """Bind a datetime.timedelta as an INTERVAL; a timedelta carries no months, so months is 0."""
+    """Bind a datetime.timedelta as an INTERVAL; a timedelta carries no months, so months is 0"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_value_handle out_value = NULL
@@ -600,7 +614,7 @@ cdef duckdb_v2_value_handle _timedelta_to_value(
 cdef duckdb_v2_value_handle _list_to_value(
     duckdb_v2_connection_handle conn, object val, duckdb_v2_logical_type_handle target_type
 ) except? NULL:
-    """Bind a Python list as a LIST, naming the element type only when the parameter declares one."""
+    """Bind a Python list as a LIST, naming the element type only when the parameter declares one"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_value_handle out_value = NULL
@@ -643,7 +657,7 @@ cdef duckdb_v2_value_handle _list_to_value(
 cdef duckdb_v2_value_handle _dict_to_value(
     duckdb_v2_connection_handle conn, object val, duckdb_v2_logical_type_handle target_type
 ) except? NULL:
-    """Bind a Python dict as a MAP, naming key and value types only when the parameter declares them."""
+    """Bind a Python dict as a MAP, naming key and value types only when the parameter declares them"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_value_handle out_value = NULL
@@ -707,7 +721,7 @@ cdef duckdb_v2_value_handle _dict_to_value(
 cdef duckdb_v2_value_handle _python_to_value(
     duckdb_v2_connection_handle conn, object val, duckdb_v2_logical_type_handle target_type
 ) except? NULL:
-    """Build one owned duckdb_v2_value from a Python parameter value."""
+    """Build one owned duckdb_v2_value from a Python parameter value"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_value_handle out_value = NULL
@@ -844,7 +858,7 @@ cdef duckdb_v2_error_t step_result_chunk(
     duckdb_v2_result_step_status_t *out_status,
     duckdb_v2_error_info_handle *out_err,
 ) noexcept nogil:
-    """Step a result one chunk without the GIL; single consumer (duckdb_v2.h:256)."""
+    """Step a result one chunk without the GIL; single consumer (duckdb_v2.h:256)"""
     cdef duckdb_v2_error_t rc
 
     out_chunk[0] = NULL
@@ -871,7 +885,7 @@ cdef duckdb_v2_error_t step_result_chunk(
             return rc
 
 cdef class CApiResult:
-    """A v2 query result: the schema resolves on first use, rows stream on demand."""
+    """A v2 query result: the schema resolves on first use, rows stream on demand"""
 
     def __cinit__(self):
         self._conn_obj = None
@@ -886,18 +900,19 @@ cdef class CApiResult:
         self._schema_steps = 0
         self._batch_rows = 0
         self._column_names = []
+        self._column_types = []
         self._column_decoders = []
         self._reg = NULL
         self._borrow = 0
 
     cdef void _bind_owned(self, CApiConnectionImpl conn_obj, duckdb_v2_result_handle result) except *:
-        """Take ownership of a freshly executed result, leaving its schema unresolved."""
+        """Take ownership of a freshly executed result, leaving its schema unresolved"""
         # Hold the connection object, not just its handle: it must outlive this result.
         self._conn_obj = conn_obj
         self._result = result
 
     cdef duckdb_v2_schema_handle _ensure_schema(self) except NULL:
-        """Return the output schema, resolving it and the column metadata on first use."""
+        """Return the output schema, resolving it and the column metadata on first use"""
         if not bdv2_load_acquire(&self._schema_ready):
             # A C spinlock, taken with the GIL released since the section below drops it.
             with nogil:
@@ -910,7 +925,7 @@ cdef class CApiResult:
         return self._schema
 
     cdef void _resolve_schema(self) except *:
-        """Fetch the output schema, advancing one step at a time until its metadata exists."""
+        """Fetch the output schema, advancing one step at a time until its metadata exists"""
         cdef duckdb_v2_error_info_handle err = NULL
         cdef duckdb_v2_error_t rc
 
@@ -942,7 +957,7 @@ cdef class CApiResult:
         bdv2_store_release(&self._schema_ready, 1)
 
     cdef int _step_once_for_schema(self) except -1:
-        """Advance the result one step, keeping any chunk it produces. False when it cannot."""
+        """Advance the result one step, keeping any chunk it produces. False when it cannot"""
         cdef duckdb_v2_data_chunk_handle chunk = NULL
         cdef duckdb_v2_result_step_status_t status
         cdef duckdb_v2_error_info_handle err = NULL
@@ -970,7 +985,7 @@ cdef class CApiResult:
         return 1
 
     cdef void _build_column_metadata(self) except *:
-        """Read the resolved schema into the column-name and per-column decoder lists."""
+        """Read the resolved schema into the column-name and per-column decoder lists"""
         cdef duckdb_v2_error_info_handle err = NULL
         cdef duckdb_v2_error_t rc
         cdef idx_t count = 0
@@ -983,29 +998,38 @@ cdef class CApiResult:
         check_v2(rc, err, "duckdb_v2_schema_get_count")
 
         names = []
+        types = []
         decoders = []
         for i in range(count):
             with nogil:
                 rc = duckdb_v2_schema_get_field(self._schema, i, &name, &col_type, &err)
             check_v2(rc, err, "duckdb_v2_schema_get_field")
             names.append(str_view_to_str(name))
+            types.append(_logical_type_text(col_type))
             decoders.append(_build_decoder(col_type))
         self._column_names = names
+        self._column_types = types
         self._column_decoders = decoders
 
     @property
     def columns(self):
-        """Return the output column names, in order."""
+        """Return the output column names, in order"""
         self._ensure_schema()
         return tuple(self._column_names)
 
     @property
+    def column_types(self):
+        """Return the DuckDB logical type name of each output column, in order"""
+        self._ensure_schema()
+        return tuple(self._column_types)
+
+    @property
     def schema_steps(self):
-        """How many times resolving the schema had to step the result."""
+        """How many times resolving the schema had to step the result"""
         return self._schema_steps
 
     def rows(self):
-        """Yield each result row as a tuple of Python scalars, consuming the stream."""
+        """Yield each result row as a tuple of Python scalars, consuming the stream"""
         cdef duckdb_v2_data_chunk_handle chunk
         self._ensure_schema()
         while True:
@@ -1013,19 +1037,19 @@ cdef class CApiResult:
             if chunk == NULL:
                 return
             try:
-                for row in _decode_chunk(chunk, self._column_decoders):
+                for row in _decode_chunk(chunk, self._column_decoders, self._conn_obj._conn):
                     yield row
             finally:
                 _destroy_chunk(chunk)
 
     cdef duckdb_v2_data_chunk_handle _take_pending_chunk(self) noexcept:
-        """Hand over the buffered chunk, if schema resolution had to step to produce one."""
+        """Hand over the buffered chunk, if schema resolution had to step to produce one"""
         cdef duckdb_v2_data_chunk_handle chunk = self._pending_chunk
         self._pending_chunk = NULL
         return chunk
 
     cdef duckdb_v2_data_chunk_handle _next_chunk(self) except? NULL:
-        """Step the stream one chunk, raising the engine's error text on failure."""
+        """Step the stream one chunk, raising the engine's error text on failure"""
         cdef duckdb_v2_data_chunk_handle chunk = NULL
         cdef duckdb_v2_result_step_status_t status
         cdef duckdb_v2_error_info_handle err = NULL
@@ -1049,20 +1073,20 @@ cdef class CApiResult:
         return chunk
 
     cdef void _claim_for_export(self) except *:
-        """Take exclusive, one-shot ownership of this result for an Arrow export."""
+        """Take exclusive, one-shot ownership of this result for an Arrow export"""
         if self._destroyed:
             raise RuntimeError("result already destroyed")
         if not bdv2_cas(&self._consumed, 0, 1):
             raise RuntimeError("arrow export: this result was already consumed")
 
     cdef duckdb_v2_result_handle _release_result_ownership(self) noexcept:
-        """Hand the result handle to a caller that takes over destroying it."""
+        """Hand the result handle to a caller that takes over destroying it"""
         cdef duckdb_v2_result_handle result = self._result
         self._result = NULL
         return result
 
     cdef bd_registry *_take_registry_borrow(self) noexcept:
-        """Hand the registry borrow to a caller that takes over releasing it, or NULL."""
+        """Hand the registry borrow to a caller that takes over releasing it, or NULL"""
         if not bdv2_cas(&self._borrow, 1, 0):
             return NULL
         return self._reg
@@ -1090,16 +1114,18 @@ cdef class CApiResult:
         require_lossless_timetz(table.schema)
         return timetz_to_utc(table)
 
-    def __arrow_c_stream__(self, requested_schema=None, timetz_utc=False):
+    def __arrow_c_stream__(self, requested_schema=None, timetz_utc=False, batch_rows=None):
         """Export this result as an Arrow C Stream capsule, consuming it.
 
-        With no cap from execute(batch_rows=...) this asks for DEFAULT_STREAM_BATCH_ROWS,
-        which is DuckDB's own default.
+        batch_rows is a hint from a caller that will materialize the whole stream, so that a
+        single large batch costs nothing saving the consumer a chunk walk. Explicit
+        execute(batch_rows=...) outranks it. Neither setup: DuckDB's DEFAULT_STREAM_BATCH_ROWS
+
         timetz_utc normalizes TIMETZ to UTC and raises without arrow_lossless_conversion.
         """
         from bareduckdb.capi.impl.arrow import DEFAULT_STREAM_BATCH_ROWS, arrow_stream_from_result
 
-        batch_rows = self._batch_rows or DEFAULT_STREAM_BATCH_ROWS
+        batch_rows = self._batch_rows or batch_rows or DEFAULT_STREAM_BATCH_ROWS
         if not timetz_utc:
             return arrow_stream_from_result(self, batch_rows, requested_schema)
 
@@ -1113,14 +1139,14 @@ cdef class CApiResult:
         return timetz_to_utc_reader(reader).__arrow_c_stream__()
 
     def close(self):
-        """Destroy the underlying v2 result. Safe to call more than once, from any thread."""
+        """Destroy the underlying v2 result. Safe to call more than once, from any thread"""
         self._destroy()
 
     def __dealloc__(self):
         self._destroy()
 
     cdef void _destroy(self) noexcept:
-        """Destroy the result, schema, and buffered chunk once, whichever thread gets there first."""
+        """Destroy the result, schema, and buffered chunk once, whichever thread gets there first"""
         if not bdv2_cas(&self._destroyed, 0, 1):
             return
         if self._pending_chunk != NULL:
@@ -1147,7 +1173,9 @@ cdef void _destroy_chunk(duckdb_v2_data_chunk_handle chunk) noexcept:
             duckdb_v2_data_chunk_destroy(&chunk)
 
 
-cdef list _decode_chunk(duckdb_v2_data_chunk_handle chunk, list decoders):
+cdef list _decode_chunk(
+    duckdb_v2_data_chunk_handle chunk, list decoders, duckdb_v2_connection_handle conn
+):
     cdef idx_t size = 0
     cdef idx_t vec_count = 0
     cdef idx_t col
@@ -1155,6 +1183,7 @@ cdef list _decode_chunk(duckdb_v2_data_chunk_handle chunk, list decoders):
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_vector_handle *vectors = NULL
+    cdef duckdb_v2_logical_type_handle varchar_type = NULL
     cdef list out = []
     cdef list row_values
 
@@ -1180,14 +1209,25 @@ cdef list _decode_chunk(duckdb_v2_data_chunk_handle chunk, list decoders):
         for row in range(size):
             row_values = []
             for col in range(vec_count):
-                row_values.append(_decode_cell(vectors[col], row, decoders[col]))
+                row_values.append(
+                    _decode_cell(vectors[col], row, decoders[col], conn, &varchar_type)
+                )
             out.append(tuple(row_values))
     finally:
         free(vectors)
+        if varchar_type != NULL:
+            with nogil:
+                duckdb_v2_logical_type_destroy(&varchar_type)
     return out
 
 
-cdef object _decode_cell(duckdb_v2_vector_handle vector, idx_t row, tuple decoder):
+cdef object _decode_cell(
+    duckdb_v2_vector_handle vector,
+    idx_t row,
+    tuple decoder,
+    duckdb_v2_connection_handle conn,
+    duckdb_v2_logical_type_handle *varchar_type,
+):
     cdef duckdb_v2_value_handle value = NULL
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
@@ -1196,19 +1236,25 @@ cdef object _decode_cell(duckdb_v2_vector_handle vector, idx_t row, tuple decode
         rc = duckdb_v2_vector_get_value(vector, row, &value, &err)
     check_v2(rc, err, "duckdb_v2_vector_get_value")
     try:
-        return _decode_value(value, decoder)
+        return _decode_value(value, decoder, conn, varchar_type)
     finally:
         with nogil:
             duckdb_v2_value_destroy(&value)
 
 
-cdef object _decode_value(duckdb_v2_value_handle value, tuple decoder):
+cdef object _decode_value(
+    duckdb_v2_value_handle value,
+    tuple decoder,
+    duckdb_v2_connection_handle conn,
+    duckdb_v2_logical_type_handle *varchar_type,
+):
     cdef duckdb_v2_bool_t is_null = False
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef idx_t child_count = 0
     cdef idx_t i
     cdef duckdb_v2_value_handle child = NULL
+    cdef duckdb_v2_str_t label
     cdef str kind = decoder[0]
 
     with nogil:
@@ -1220,7 +1266,7 @@ cdef object _decode_value(duckdb_v2_value_handle value, tuple decoder):
     if kind == "scalar":
         return _decode_scalar(value, decoder[1], decoder[2])
 
-    if kind == "list":
+    if kind == "list" or kind == "array":
         child_decoder = decoder[1]
         with nogil:
             rc = duckdb_v2_value_get_child_count(value, &child_count, &err)
@@ -1231,11 +1277,51 @@ cdef object _decode_value(duckdb_v2_value_handle value, tuple decoder):
                 rc = duckdb_v2_value_get_child(value, i, &child, &err)
             check_v2(rc, err, "duckdb_v2_value_get_child")
             try:
-                out_list.append(_decode_value(child, child_decoder))
+                out_list.append(_decode_value(child, child_decoder, conn, varchar_type))
             finally:
                 with nogil:
                     duckdb_v2_value_destroy(&child)
-        return out_list
+        # duckdb-python hands back a tuple for a fixed-size ARRAY and a list for a LIST.
+        return tuple(out_list) if kind == "array" else out_list
+
+    if kind == "enum":
+        # value_get_varchar refuses an ENUM: it borrows from the value, so it cannot convert.
+        # A real cast is the sanctioned route (duckdb_v2.h:11099), and there is no ENUM to
+        # integer cast to read the dictionary index with instead. The VARCHAR target is built
+        # once per chunk by _decode_chunk and borrowed here.
+        if varchar_type[0] == NULL:
+            varchar_type[0] = _primitive_type(conn, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR)
+        with nogil:
+            rc = duckdb_v2_value_cast_with_connection(
+                conn, value, varchar_type[0], &child, &err
+            )
+        check_v2(rc, err, "duckdb_v2_value_cast_with_connection(enum)")
+        try:
+            with nogil:
+                rc = duckdb_v2_value_get_varchar(child, &label, &err)
+            check_v2(rc, err, "duckdb_v2_value_get_varchar(enum)")
+            return str_view_to_str(label)
+        finally:
+            with nogil:
+                duckdb_v2_value_destroy(&child)
+
+    if kind == "tuple":
+        # Positional like "struct", but unnamed: duckdb_v2.h:3649 gives TUPLE [i] = field i.
+        child_decoders = decoder[1]
+        with nogil:
+            rc = duckdb_v2_value_get_child_count(value, &child_count, &err)
+        check_v2(rc, err, "duckdb_v2_value_get_child_count")
+        out_tuple = []
+        for i in range(child_count):
+            with nogil:
+                rc = duckdb_v2_value_get_child(value, i, &child, &err)
+            check_v2(rc, err, "duckdb_v2_value_get_child")
+            try:
+                out_tuple.append(_decode_value(child, child_decoders[i], conn, varchar_type))
+            finally:
+                with nogil:
+                    duckdb_v2_value_destroy(&child)
+        return tuple(out_tuple)
 
     if kind == "struct":
         fields = decoder[1]
@@ -1249,7 +1335,7 @@ cdef object _decode_value(duckdb_v2_value_handle value, tuple decoder):
             check_v2(rc, err, "duckdb_v2_value_get_child")
             try:
                 field_name, field_decoder = fields[i]
-                out_dict[field_name] = _decode_value(child, field_decoder)
+                out_dict[field_name] = _decode_value(child, field_decoder, conn, varchar_type)
             finally:
                 with nogil:
                     duckdb_v2_value_destroy(&child)
@@ -1268,7 +1354,7 @@ cdef object _decode_value(duckdb_v2_value_handle value, tuple decoder):
                 rc = duckdb_v2_value_get_child(value, i, &child, &err)
             check_v2(rc, err, "duckdb_v2_value_get_child")
             try:
-                map_key = _decode_value(child, key_decoder)
+                map_key = _decode_value(child, key_decoder, conn, varchar_type)
             finally:
                 with nogil:
                     duckdb_v2_value_destroy(&child)
@@ -1276,7 +1362,7 @@ cdef object _decode_value(duckdb_v2_value_handle value, tuple decoder):
                 rc = duckdb_v2_value_get_child(value, i + 1, &child, &err)
             check_v2(rc, err, "duckdb_v2_value_get_child")
             try:
-                out_map[map_key] = _decode_value(child, value_decoder)
+                out_map[map_key] = _decode_value(child, value_decoder, conn, varchar_type)
             finally:
                 with nogil:
                     duckdb_v2_value_destroy(&child)
@@ -1435,12 +1521,30 @@ cdef object _decode_scalar(duckdb_v2_value_handle value, duckdb_v2_logical_type_
         with nogil:
             rc = duckdb_v2_value_get_interval(value, &iv, &err)
         check_v2(rc, err, "duckdb_v2_value_get_interval")
-        return {"months": int(iv.months), "days": int(iv.days), "micros": int(iv.micros)}
+        # duckdb-python's own answer: months fold in at 30 days, which is lossy but faithful.
+        return datetime.timedelta(
+            days=int(iv.months) * 30 + int(iv.days), microseconds=int(iv.micros)
+        )
     if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_UUID:
         with nogil:
             rc = duckdb_v2_value_get_uuid(value, &hv, &err)
         check_v2(rc, err, "duckdb_v2_value_get_uuid")
         return _hugeint_to_uuid(hv)
+    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_TIME_TZ:
+        with nogil:
+            rc = duckdb_v2_value_get_time_tz(value, &u64, &err)
+        check_v2(rc, err, "duckdb_v2_value_get_time_tz")
+        return _timetz_from_packed(u64)
+    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_BIT:
+        with nogil:
+            rc = duckdb_v2_value_get_blob(value, &sv, &err)
+        check_v2(rc, err, "duckdb_v2_value_get_blob(bit)")
+        return _bits_from_storage(str_view_to_bytes(sv))
+    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_BIGNUM:
+        with nogil:
+            rc = duckdb_v2_value_get_blob(value, &sv, &err)
+        check_v2(rc, err, "duckdb_v2_value_get_blob(bignum)")
+        return _bignum_from_storage(sv)
     if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_SQLNULL:
         return None
 
@@ -1451,7 +1555,7 @@ cdef object _decode_scalar(duckdb_v2_value_handle value, duckdb_v2_logical_type_
 
 
 cdef object _decimal_from_coefficient(object coeff, int scale):
-    """Build an exact decimal.Decimal from a scaled integer, independent of context precision."""
+    """Build an exact decimal.Decimal from a scaled integer, independent of context precision"""
     sign = "-" if coeff < 0 else ""
     digits = str(abs(coeff))
     if scale > 0:
@@ -1461,11 +1565,83 @@ cdef object _decimal_from_coefficient(object coeff, int scale):
 
 
 cdef object _hugeint_to_uuid(duckdb_v2_hugeint_t hv):
-    """Undo v2's sign-bit flip (used so hugeint ordering matches UUID byte ordering)."""
+    """Undo v2's sign-bit flip (used so hugeint ordering matches UUID byte ordering)"""
     cdef uint64_t upper_raw = <uint64_t>hv.upper
     cdef uint64_t upper_unsigned = upper_raw ^ (<uint64_t>1 << 63)
     full = (int(upper_unsigned) << 64) | int(hv.lower)
     return uuid.UUID(int=full)
+
+
+cdef str _logical_type_text(duckdb_v2_logical_type_handle col_type):
+    """Render a logical type as SQL text, so MAP(INTEGER, VARCHAR) keeps its parameters"""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef idx_t length = 0
+    cdef char *buf = NULL
+
+    with nogil:
+        rc = duckdb_v2_logical_type_to_text(col_type, NULL, 0, &length, &err)
+    check_v2(rc, err, "duckdb_v2_logical_type_to_text(size)")
+
+    buf = <char *>malloc(length + 1)
+    if buf == NULL:
+        raise MemoryError("could not allocate a logical type text buffer")
+    try:
+        with nogil:
+            rc = duckdb_v2_logical_type_to_text(col_type, buf, length + 1, &length, &err)
+        check_v2(rc, err, "duckdb_v2_logical_type_to_text")
+        return (<bytes>buf[:length]).decode("utf-8")
+    finally:
+        free(buf)
+
+
+cdef object _timetz_from_packed(uint64_t packed):
+    """Unpack the committed dtime_tz_t layout: micros in the high 40 bits, biased offset in 24"""
+    micros = int(packed >> _TIME_TZ_OFFSET_BITS)
+    offset_seconds = _TIME_TZ_OFFSET_BIAS - int(packed & _TIME_TZ_OFFSET_MASK)
+    wall = _micros_to_time(micros)
+    tz = datetime.timezone(datetime.timedelta(seconds=offset_seconds))
+    return wall.replace(tzinfo=tz)
+
+
+cdef object _bits_from_storage(bytes data):
+    """Read BIT storage: byte 0 is the count of padding bits in the first data byte"""
+    if not data:
+        raise ValueError("BIT value is empty")
+    padding = data[0]
+    if padding > 7:
+        raise ValueError(f"BIT padding out of range: {padding}")
+    return "".join(f"{byte:08b}" for byte in data[1:])[padding:]
+
+
+cdef object _bignum_from_storage(duckdb_v2_str_t view):
+    """Decode BIGNUM storage through the only function that may interpret those bytes"""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef idx_t length = 0
+    cdef duckdb_v2_bool_t is_negative = False
+    cdef uint8_t *buf = NULL
+
+    # out_data NULL sizes the buffer exactly from the storage header, so this never retries.
+    with nogil:
+        rc = duckdb_v2_bignum_decode(
+            <const uint8_t *>view.ptr, view.len, NULL, 0, &length, &is_negative, &err
+        )
+    check_v2(rc, err, "duckdb_v2_bignum_decode(size)")
+
+    buf = <uint8_t *>malloc(length if length else 1)
+    if buf == NULL:
+        raise MemoryError("could not allocate a BIGNUM magnitude buffer")
+    try:
+        with nogil:
+            rc = duckdb_v2_bignum_decode(
+                <const uint8_t *>view.ptr, view.len, buf, length, &length, &is_negative, &err
+            )
+        check_v2(rc, err, "duckdb_v2_bignum_decode")
+        magnitude = int.from_bytes(<bytes>buf[:length], "big")
+    finally:
+        free(buf)
+    return -magnitude if is_negative else magnitude
 
 
 cdef object _micros_to_time(int64_t micros):
@@ -1478,7 +1654,7 @@ cdef object _micros_to_time(int64_t micros):
 # Column decoder tree: built once per column from the result's output schema
 
 cdef object _build_decoder(duckdb_v2_logical_type_handle col_type):
-    """Build a ("scalar", type_id) / ("list", child) / ("struct", [(name, child), ...]) plan."""
+    """Build a ("scalar", type_id) / ("list", child) / ("struct", [(name, child), ...]) plan"""
     cdef duckdb_v2_logical_type_id_t type_id
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
@@ -1493,6 +1669,7 @@ cdef object _build_decoder(duckdb_v2_logical_type_handle col_type):
     check_v2(rc, err, "duckdb_v2_logical_type_get_id")
 
     if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_LIST or type_id == DUCKDB_V2_LOGICAL_TYPE_ID_ARRAY:
+        kind = "array" if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_ARRAY else "list"
         with nogil:
             rc = duckdb_v2_logical_type_get_param(col_type, 0, &pname, &pvalue, &err)
         check_v2(rc, err, "duckdb_v2_logical_type_get_param(element type)")
@@ -1501,13 +1678,30 @@ cdef object _build_decoder(duckdb_v2_logical_type_handle col_type):
                 rc = duckdb_v2_value_get_type(pvalue, &child_type, &err)
             check_v2(rc, err, "duckdb_v2_value_get_type")
             try:
-                return ("list", _build_decoder(child_type))
+                return (kind, _build_decoder(child_type))
             finally:
                 with nogil:
                     duckdb_v2_logical_type_destroy(&child_type)
         finally:
             with nogil:
                 duckdb_v2_value_destroy(&pvalue)
+
+    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_ENUM:
+        return ("enum",)
+
+    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_TUPLE:
+        with nogil:
+            rc = duckdb_v2_logical_type_get_param_count(col_type, &param_count, &err)
+        check_v2(rc, err, "duckdb_v2_logical_type_get_param_count")
+        child_decoders = []
+        for i in range(param_count):
+            child_type = _owned_child_type(col_type, i)
+            try:
+                child_decoders.append(_build_decoder(child_type))
+            finally:
+                with nogil:
+                    duckdb_v2_logical_type_destroy(&child_type)
+        return ("tuple", child_decoders)
 
     if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_STRUCT:
         with nogil:

@@ -1,4 +1,4 @@
-"""Streaming results must be freed when the exported stream is released."""
+"""Streaming results must be freed when the exported stream is released"""
 
 import gc
 import sys
@@ -50,7 +50,7 @@ def _drop_capsules(conn, count):
 
 
 def _growth_windows(work):
-    """Resident growth over two consecutive windows of equal length."""
+    """Resident growth over two consecutive windows of equal length"""
     conn = ConnectionBase()
     try:
         work(conn, WARMUP)

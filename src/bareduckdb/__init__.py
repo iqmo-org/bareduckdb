@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 def __getattr__(name: str):
-    """Resolve __duckdb_version__ lazily via PEP 562, queried at first access."""
+    """Resolve __duckdb_version__ lazily via PEP 562, queried at first access"""
     if name == "__duckdb_version__":
         try:
             from .capi.impl._probe import library_version  # pyright: ignore[reportMissingImports]
@@ -68,7 +68,7 @@ paramstyle: str = "qmark"
 
 
 def register_as_duckdb() -> None:
-    """Register bareduckdb as 'duckdb' in sys.modules."""
+    """Register bareduckdb as 'duckdb' in sys.modules"""
     import sys
 
     sys.modules["duckdb"] = sys.modules["bareduckdb"]

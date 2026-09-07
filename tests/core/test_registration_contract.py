@@ -1,4 +1,4 @@
-"""Registration behavior that must hold identically on every platform."""
+"""Registration behavior that must hold identically on every platform"""
 
 import pytest
 
@@ -252,7 +252,7 @@ def test_identifiers_needing_quotes(conn):
 
 
 def test_unregister_of_an_unknown_name_is_a_no_op(conn):
-    """duckdb-python ignores an unknown name, and returns the connection either way."""
+    """duckdb-python ignores an unknown name, and returns the connection either way"""
     assert conn.unregister("never_registered") is conn
     conn._register_arrow("t", pa.table(CAT_TABLE))
     assert conn.unregister("t") is conn
@@ -285,7 +285,7 @@ def test_registering_an_unsupported_object_raises_invalid_input(bad):
 
 
 def test_preprocessing_treats_a_registered_name_as_existing():
-    """A registered name never enters the catalog, so SHOW TABLES alone would miss it."""
+    """A registered name never enters the catalog, so SHOW TABLES alone would miss it"""
     conn = bareduckdb.connect(enable_replacement_scan=True)
     try:
         conn.register("t", pa.table(CAT_TABLE))

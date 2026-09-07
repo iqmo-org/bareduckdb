@@ -1,4 +1,4 @@
-"""TIMETZ Arrow behaviour: pins DuckDB's default, and characterizes its lossless mode."""
+"""TIMETZ Arrow behaviour: pins DuckDB's default, and characterizes its lossless mode"""
 
 import datetime
 
@@ -20,20 +20,20 @@ LITERALS = [
 
 
 def _wall_clock(literal):
-    """The time of day the literal spells, with the offset ignored."""
+    """The time of day the literal spells, with the offset ignored"""
     hms = literal[: literal.index("+")] if "+" in literal else literal[: literal.rindex("-")]
     return datetime.time.fromisoformat(hms)
 
 
 def _lossless_conn():
-    """A connection with DuckDB's arrow_lossless_conversion turned on."""
+    """A connection with DuckDB's arrow_lossless_conversion turned on"""
     conn = bareduckdb.connect()
     conn.execute("SET arrow_lossless_conversion = true")
     return conn
 
 
 def _engine_utc(conn, literal):
-    """The instant DuckDB itself says the literal denotes, as a naive UTC time."""
+    """The instant DuckDB itself says the literal denotes, as a naive UTC time"""
     text = conn.execute(f"SELECT (('{literal}'::TIMETZ) AT TIME ZONE 'UTC')::VARCHAR AS c").fetchall()[0][0]
     hms, _, _ = text.partition("+")
     return datetime.time.fromisoformat(hms)
@@ -41,7 +41,7 @@ def _engine_utc(conn, literal):
 
 @pytest.mark.parametrize("literal", LITERALS)
 def test_default_exports_the_wall_clock(literal):
-    """DuckDB's default writes input.time().value, so Arrow carries the wall clock."""
+    """DuckDB's default writes input.time().value, so Arrow carries the wall clock"""
     conn = bareduckdb.connect()
     try:
         got = conn.execute(f"SELECT '{literal}'::TIMETZ AS c").arrow_table().column(0).to_pylist()[0]
@@ -51,7 +51,7 @@ def test_default_exports_the_wall_clock(literal):
 
 
 def test_default_collapses_opposite_offsets():
-    """The documented cost of DuckDB's default: two different instants export identically."""
+    """The documented cost of DuckDB's default: two different instants export identically"""
     conn = bareduckdb.connect()
     try:
         east = conn.execute("SELECT '01:02:03+05'::TIMETZ AS c").arrow_table().column(0).to_pylist()[0]
@@ -64,7 +64,7 @@ def test_default_collapses_opposite_offsets():
 
 @pytest.mark.parametrize("literal", LITERALS)
 def test_lossless_mode_keeps_the_whole_value(literal):
-    """arrow_lossless_conversion routes TIMETZ through arrow.opaque[time_tz] over w:8."""
+    """arrow_lossless_conversion routes TIMETZ through arrow.opaque[time_tz] over w:8"""
     conn = _lossless_conn()
     try:
         field = conn.execute(f"SELECT '{literal}'::TIMETZ AS c").arrow_table().schema.field(0)
@@ -86,7 +86,7 @@ def test_lossless_mode_keeps_the_whole_value(literal):
 
 
 def test_lossless_mode_separates_opposite_offsets():
-    """The instant survives in lossless mode, which is what the default cannot do."""
+    """The instant survives in lossless mode, which is what the default cannot do"""
     conn = _lossless_conn()
     try:
         east = conn.execute("SELECT '01:02:03+05'::TIMETZ AS c").arrow_table().column(0).to_pylist()[0]
@@ -99,7 +99,7 @@ def test_lossless_mode_separates_opposite_offsets():
 
 @pytest.mark.parametrize("literal", LITERALS)
 def test_lossless_mode_restores_the_row_api(literal):
-    """fetchall() reads the arrow.opaque tag, so lossless mode returns a tz-aware time."""
+    """fetchall() reads the arrow.opaque tag, so lossless mode returns a tz-aware time"""
     conn = _lossless_conn()
     try:
         got = conn.execute(f"SELECT '{literal}'::TIMETZ AS c").fetchall()[0][0]

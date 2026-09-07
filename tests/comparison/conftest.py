@@ -1,4 +1,6 @@
-"""Helper utilities for DuckDB/BareDuckDB comparison tests."""
+"""Helper utilities for DuckDB/BareDuckDB comparison tests"""
+
+from __future__ import annotations
 
 from __future__ import annotations
 

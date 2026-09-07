@@ -21,7 +21,7 @@ DATA_FILE_MAP = {
 
 
 def replace_data_placeholders(sql: str) -> str:
-    """Replace DATA_* placeholders with actual file paths."""
+    """Replace DATA_* placeholders with actual file paths"""
     for placeholder, filepath in DATA_FILE_MAP.items():
         sql = sql.replace(placeholder, f"'{filepath}'")
     return sql
@@ -87,7 +87,7 @@ def parse_sql_case(path: Path, replace_placeholders: bool = True) -> tuple[str, 
 
 
 def discover_sql_cases() -> list[tuple[str, Path]]:
-    """returns list of (test_id, path)."""
+    """returns list of (test_id, path)"""
     cases = []
     for sql_file in sorted(CASES_DIR.rglob("*.sql")):
         # test_id: category/name (without .sql)
@@ -143,7 +143,7 @@ PARQUET_DEFINITIONS = {
 
 
 def warm_data(data_dir: Path | None = None):
-    """Read every benchmark parquet file so each arm starts from the same page cache state."""
+    """Read every benchmark parquet file so each arm starts from the same page cache state"""
     if data_dir is None:
         data_dir = DATA_DIR
 
@@ -160,7 +160,7 @@ def warm_data(data_dir: Path | None = None):
 
 
 def missing_data_files(data_dir: Path | None = None) -> list[Path]:
-    """Return the benchmark parquet files that do not exist yet."""
+    """Return the benchmark parquet files that do not exist yet"""
     if data_dir is None:
         data_dir = DATA_DIR
     return [data_dir / filename for filename in PARQUET_DEFINITIONS if not (data_dir / filename).exists()]
@@ -200,7 +200,7 @@ def setup_data(data_dir: Path | None = None, force: bool = False):
 
 
 def clean_data(data_dir: Path | None = None):
-    """Remove all benchmark data files."""
+    """Remove all benchmark data files"""
     if data_dir is None:
         data_dir = DATA_DIR
 

@@ -1,4 +1,4 @@
-"""Registration behaviour asserted against the official duckdb client rather than a literal."""
+"""Registration behaviour asserted against the official duckdb client rather than a literal"""
 
 import pytest
 
@@ -80,7 +80,7 @@ def test_registering_an_unsupported_object_raises_invalid_input(both_connections
 
 
 def test_show_tables_lists_a_registered_name(both_connections):
-    """Known deviation: our registration is a replacement scan, so the catalog never sees it."""
+    """Known deviation: our registration is a replacement scan, so the catalog never sees it"""
     bare_conn, duck_conn = both_connections
 
     duck_conn.register("t", _table())

@@ -1,5 +1,5 @@
 # cython: language_level=3
-"""Minimal link and load probe for the vendored duckdb_v2 declarations."""
+"""Minimal link and load probe for the vendored duckdb_v2 declarations"""
 
 from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_ERROR_NONE,
@@ -10,7 +10,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
 
 
 def library_version() -> str:
-    """Return the version string of the linked DuckDB 2.0 library."""
+    """Return the version string of the linked DuckDB 2.0 library"""
     cdef duckdb_v2_str_t version
     cdef duckdb_v2_error_t rc
     with nogil:

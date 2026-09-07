@@ -1,4 +1,4 @@
-"""Shared fixtures for dataset tests: pushdown test data and EXPLAIN helpers."""
+"""Shared fixtures for dataset tests: pushdown test data and EXPLAIN helpers"""
 
 import pytest
 import pyarrow as pa
@@ -31,12 +31,12 @@ _BOX_BORDERS = ("╭", "╯")
 
 
 def _explain_text(conn, query):
-    """The physical plan for query as one string."""
+    """The physical plan for query as one string"""
     return "\n".join(str(row) for row in conn.execute(f"EXPLAIN {query}").fetchall())
 
 
 def _scan_block(plan):
-    """Only the scan operator's own box, because `Filters:` read off the whole plan would match a FILTER operator above the scan."""
+    """Only the scan operator's own box, because `Filters:` read off the whole plan would match a FILTER operator above the scan"""
     lines = plan.splitlines()
     for index, line in enumerate(lines):
         if SCAN_OPERATOR in line:
@@ -51,11 +51,11 @@ def _scan_block(plan):
 
 @pytest.fixture
 def explain_text():
-    """Callable giving the physical plan for a query as one string."""
+    """Callable giving the physical plan for a query as one string"""
     return _explain_text
 
 
 @pytest.fixture
 def scan_block():
-    """Callable giving only the registered-source scan operator's box from a plan."""
+    """Callable giving only the registered-source scan operator's box from a plan"""
     return _scan_block

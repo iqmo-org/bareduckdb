@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a benchmark comparison table from JSONL results."""
+"""Generate a benchmark comparison table from JSONL results"""
 
 import argparse
 import sys
@@ -66,10 +66,13 @@ SETUP_STATEMENTS = [
         r.time_ms_avg/b.time_ms_avg as ms_ratio,
         -- median ratio: immune to a single cold-cache run, unlike ms_ratio
         r.time_ms_median/b.time_ms_median as ms_median_ratio,
-     -- r.memory_kb_delta/b.memory_kb_delta as mem_delta_ratio,
+    -- mem_delta_ratio: rusage high-water RISE across the call phase,
+    -- mem_peak_ratio: high-water ABSOLUTE
+        r.memory_kb_delta/b.memory_kb_delta as mem_delta_ratio,
         r.memory_kb_peak/b.memory_kb_peak as mem_peak_ratio,
-    -- mem_query_ratio: per-query RSS delta, vs. mem_peak_ratio's process-wide peak
+    -- mem_query_ratio: per-query RSS delta
         r.memory_kb_query_delta/b.memory_kb_query_delta as mem_query_ratio,
+        b.memory_kb_delta as base_mem_kb_delta,
         r.time_ms_avg is null as missing
     from expected_cells e
     join baseline b on b.test_name=e.test_name and b.mode=e.mode
@@ -89,7 +92,7 @@ SETUP_STATEMENTS = [
 ]
 
 def build_report_query(libs):
-    """Build the per-library report columns explicitly, since PIVOT expands into multiple engine statements."""
+    """Build the per-library report columns explicitly, since PIVOT expands into multiple engine statements"""
     columns = []
     for lib in libs:
         safe = lib.replace("'", "''")
@@ -98,7 +101,8 @@ def build_report_query(libs):
         columns.append(f"round(max(case when lib = '{safe}' then ms_median_ratio end), 2) as \"{lib}_time_med\"")
     for lib in libs:
         safe = lib.replace("'", "''")
-        # mem_peak: process-wide rusage high-water mark. mem_query: per-query RSS delta.
+        # mem is result, others are diags
+        columns.append(f"round(max(case when lib = '{safe}' then mem_delta_ratio end), 2) as \"{lib}_mem\"")
         columns.append(f"round(max(case when lib = '{safe}' then mem_peak_ratio end), 1) as \"{lib}_mem_peak\"")
         columns.append(f"round(max(case when lib = '{safe}' then mem_query_ratio end), 1) as \"{lib}_mem_query\"")
 
@@ -192,6 +196,7 @@ def main(argv=None):
     print(df.to_markdown(index=False))
     print("\n_time_ratio < 1 means bareduckdb is faster_")
     print("_`time` is the mean-of-N ratio, `time_med` the median-of-N ratio; a regression in one but not the other is run-to-run noise_")
+    print("_`mem` is the result: the rusage high-water rise during the query alone. `mem_peak` and `mem_query` are diags")
     print("_`no_data` names any library with no results for that case, so gaps are visible rather than dropped_")
 
     if len(df_gaps) > 0:

@@ -30,9 +30,9 @@ command from here.
 
 ### 3. Run Specific Jobs
 
-`dev_versions.yml` has three jobs: `dev_versions`, `musl`, and `graalpy`, which is a call
-into the reusable workflow `graalpy.yml` and is chained behind `dev_versions` with `needs:`.
-`act --list` shows that as stage 1. To run just the first:
+`dev_versions.yml` has four jobs: `dev_versions`, `musl`, `graalpy` and `benchmarks`. The
+last two are calls into the reusable workflows `graalpy.yml` and `benchmarks.yml`, and all
+three are chained behind `dev_versions` with `needs:`. To run just the first:
 
 ```bash
 ../act/bin/act -W .github/workflows/dev_versions.yml --matrix python-version:3.14 -P  ubuntu-latest=catthehacker/ubuntu:act-latest -j dev_versions --artifact-server-path /tmp/artifacts --reuse

@@ -1,5 +1,5 @@
 # cython: language_level=3
-"""C-level surface of the v2 error layer and the shared borrowed-view decoders."""
+"""C-level surface of the v2 error layer and the shared borrowed-view decoders"""
 
 from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_error_info_handle,

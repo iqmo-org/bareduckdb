@@ -180,7 +180,7 @@ class TestNaNFilterPushdown:
         assert "Filters:" in scan_block(plan), "the scan should carry the pushed-down predicate"
 
     def test_explain_without_pushdown_shows_a_separate_filter(self, float_table_with_nan, unique_table_name, make_connection, connect_config, explain_text, scan_block, thread_index, iteration_index):
-        """The predicate is evaluated in a FILTER operator above the scan, with no `Filters:` inside it."""
+        """The predicate is evaluated in a FILTER operator above the scan, with no `Filters:` inside it"""
         conn = make_connection(thread_index, iteration_index)
         conn.register(unique_table_name, float_table_with_nan)
 

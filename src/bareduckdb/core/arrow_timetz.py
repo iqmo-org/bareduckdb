@@ -31,7 +31,7 @@ def _is_lossless_timetz(arrow_type) -> bool:
 
 
 def has_lossless_timetz(schema: pa.Schema) -> bool:
-    """True when a top-level field carries DuckDB's arrow.opaque[time_tz] tag."""
+    """True when a top-level field carries DuckDB's arrow.opaque[time_tz] tag"""
     return any(_is_lossless_timetz(field.type) for field in schema)
 
 
@@ -52,7 +52,7 @@ def _is_time64(arrow_type) -> bool:
 
 
 def require_lossless_timetz(schema: pa.Schema) -> None:
-    """Raise when a top-level column could be an untagged TIMETZ, which cannot be converted."""
+    """Raise when a top-level column could be an untagged TIMETZ, which cannot be converted"""
     if has_lossless_timetz(schema):
         return
     ambiguous = [field.name for field in schema if _is_time64(field.type)]
@@ -61,7 +61,7 @@ def require_lossless_timetz(schema: pa.Schema) -> None:
 
 
 def _utc_micros(packed: bytes) -> int:
-    """Turn DuckDB's packed dtime_tz_t into microseconds since midnight UTC."""
+    """Turn DuckDB's packed dtime_tz_t into microseconds since midnight UTC"""
     value = int.from_bytes(packed, "little")
     micros = value >> _OFFSET_BITS
     offset_seconds = _OFFSET_BIAS - (value & _OFFSET_MASK)
@@ -69,7 +69,7 @@ def _utc_micros(packed: bytes) -> int:
 
 
 def timetz_schema(schema: pa.Schema) -> pa.Schema:
-    """The schema with every tagged TIMETZ field retyped as time64[us]."""
+    """The schema with every tagged TIMETZ field retyped as time64[us]"""
     import pyarrow as pa_
 
     for index, field in enumerate(schema):
@@ -93,7 +93,7 @@ def _converted_column(column):
 
 
 def timetz_to_utc(data):
-    """Normalize every tagged TIMETZ column of a Table or RecordBatch to UTC time64[us]."""
+    """Normalize every tagged TIMETZ column of a Table or RecordBatch to UTC time64[us]"""
     import pyarrow as pa_
 
     schema = data.schema
@@ -108,7 +108,7 @@ def timetz_to_utc(data):
 
 
 def timetz_to_utc_reader(reader: pa.RecordBatchReader) -> pa.RecordBatchReader:
-    """Wrap a reader so each batch is normalized as it is pulled."""
+    """Wrap a reader so each batch is normalized as it is pulled"""
     import pyarrow as pa_
 
     if not has_lossless_timetz(reader.schema):

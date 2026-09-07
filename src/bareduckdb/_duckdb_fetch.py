@@ -1,4 +1,4 @@
-"""Pure-stdlib DuckDB lib helpers; loaded by path pre-build, so no bareduckdb imports here."""
+"""Pure-stdlib DuckDB lib helpers; loaded by path pre-build, so no bareduckdb imports here"""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ STABLE_URL = "https://install.duckdb.org/{version}/libduckdb-{artifact}.zip"
 
 
 def is_musl() -> bool:
-    """True when the build target is a musl libc Linux."""
+    """True when the build target is a musl libc Linux"""
     host = sysconfig.get_config_var("HOST_GNU_TYPE") or ""
     if host.endswith("musl"):
         return True
@@ -35,7 +35,7 @@ def is_musl() -> bool:
 
 
 def duckdb_artifact(target_machine: str | None) -> str:
-    """Name of the DuckDB release artifact matching the build target."""
+    """Name of the DuckDB release artifact matching the build target"""
     override = os.getenv("BAREDUCKDB_DUCKDB_ARTIFACT")
     if override:
         return override
@@ -53,7 +53,7 @@ def duckdb_artifact(target_machine: str | None) -> str:
 
 
 def shared_lib_name() -> str:
-    """Filename of the DuckDB runtime library on this platform."""
+    """Filename of the DuckDB runtime library on this platform"""
     if sys.platform == "darwin":
         return "libduckdb.dylib"
     if sys.platform == "win32":
@@ -62,7 +62,7 @@ def shared_lib_name() -> str:
 
 
 def verify_arch(lib: Path, artifact: str) -> None:
-    """Fail loudly if the fetched library does not match the build target."""
+    """Fail loudly if the fetched library does not match the build target"""
     if artifact == "osx-universal":
         return
     expected = "arm64" if "arm64" in artifact else "amd64"
@@ -80,7 +80,7 @@ def verify_arch(lib: Path, artifact: str) -> None:
 
 
 def download(url: str, dest: Path, attempts: int = 3) -> bytes:
-    """Download url, retrying on transient failure, returning the body."""
+    """Download url, retrying on transient failure, returning the body"""
     last: Exception | None = None
     for i in range(attempts):
         try:
@@ -95,7 +95,7 @@ def download(url: str, dest: Path, attempts: int = 3) -> bytes:
 
 
 def extract(body: bytes, dest: Path, url: str) -> None:
-    """Extract a .tar.gz or .zip archive into dest, flattening any leading directory."""
+    """Extract a .tar.gz or .zip archive into dest, flattening any leading directory"""
     dest.mkdir(parents=True, exist_ok=True)
     if url.endswith(".tar.gz"):
         with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as tf:

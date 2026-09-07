@@ -1,4 +1,4 @@
-"""A registered scan references the caller's Arrow buffers rather than copying them."""
+"""A registered scan references the caller's Arrow buffers rather than copying them"""
 
 from array import array
 
@@ -15,7 +15,7 @@ ROWS = 4096
 
 
 def test_a_registered_scan_references_the_source_buffers():
-    """Mutating the source buffer after registration changes what a later scan returns."""
+    """Mutating the source buffer after registration changes what a later scan returns"""
     backing = array("q", [1]) * ROWS
     column = pa.Array.from_buffers(pa.int64(), ROWS, [None, pa.py_buffer(backing)])
     source = pa.table({"c0": column})

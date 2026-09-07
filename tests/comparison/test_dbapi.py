@@ -1,4 +1,4 @@
-"""Verify DB-API 2.0 compatibility between bareduckdb and the official duckdb client."""
+"""Verify DB-API 2.0 compatibility between bareduckdb and the official duckdb client"""
 
 import pytest
 
@@ -50,8 +50,7 @@ class TestDBAPIBasics:
         bare_conn.execute("SELECT * FROM range(10)")
         duck_conn.execute("SELECT * FROM range(10)")
 
-        # bareduckdb returns the actual row count; official duckdb returns -1 per DB-API 2.0
-        assert bare_conn.rowcount == 10
+        assert bare_conn.rowcount == -1
         assert duck_conn.rowcount == -1
 
     def test_fetchone(self, both_connections):

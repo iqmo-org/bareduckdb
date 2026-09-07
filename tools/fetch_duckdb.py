@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 def _load_fetch_module():
-    """Load bareduckdb/_duckdb_fetch.py directly by path, bypassing package import."""
+    """Load bareduckdb/_duckdb_fetch.py directly by path, bypassing package import"""
     path = Path(__file__).resolve().parent.parent / "src" / "bareduckdb" / "_duckdb_fetch.py"
     spec = importlib.util.spec_from_file_location("_bareduckdb_duckdb_fetch_standalone", path)
     if spec is None or spec.loader is None:
@@ -23,7 +23,7 @@ _fetch = _load_fetch_module()
 
 
 def main() -> int:
-    """Resolve the DuckDB library, downloading if needed, and emit a CMake fragment."""
+    """Resolve the DuckDB library, downloading if needed, and emit a CMake fragment"""
     ap = argparse.ArgumentParser()
     ap.add_argument("--channel", default="preview", choices=["preview", "stable"])
     ap.add_argument("--version", default="latest")

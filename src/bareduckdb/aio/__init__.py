@@ -1,4 +1,4 @@
-"""Asyncio surface for bareduckdb."""
+"""Asyncio surface for bareduckdb"""
 
 from .async_connection import AsyncConnectionPool
 

@@ -1,7 +1,7 @@
 # cython: language_level=3
 # cython: freethreading_compatible=True
 
-"""Arrow export for v2 results through DuckDB's own duckdb_v2_result_to_arrow_stream."""
+"""Arrow export for v2 results through DuckDB's own duckdb_v2_result_to_arrow_stream"""
 
 import logging
 
@@ -75,7 +75,7 @@ cdef const char *_owned_get_last_error(ArrowArrayStream *stream) noexcept nogil:
 
 
 cdef void _owned_release(ArrowArrayStream *stream) noexcept nogil:
-    """Release DuckDB's stream, then drop the registry borrow the export was holding."""
+    """Release DuckDB's stream, then drop the registry borrow the export was holding"""
     cdef bd_stream_owner *owner = <bd_stream_owner *>stream.private_data
     stream.release = NULL
     stream.private_data = NULL
@@ -100,7 +100,7 @@ cdef void capsule_destructor(object capsule) noexcept:
 
 
 cdef object _export_stream(CApiResult result, object batch_rows):
-    """Surrender the result to duckdb_v2_result_to_arrow_stream and wrap it in a capsule."""
+    """Surrender the result to duckdb_v2_result_to_arrow_stream and wrap it in a capsule"""
     cdef ArrowArrayStream *stream = NULL
     cdef bd_stream_owner *owner = NULL
     cdef duckdb_v2_result_handle handle = NULL
@@ -162,7 +162,7 @@ def arrow_stream_from_result(CApiResult result, batch_rows=None, requested_schem
 
 
 def arrow_table_from_result(CApiResult result, batch_rows=None):
-    """Materialize a v2 result as a pyarrow.Table through one stream and one schema."""
+    """Materialize a v2 result as a pyarrow.Table through one stream and one schema"""
     import pyarrow
 
     capsule = arrow_stream_from_result(result, batch_rows)
@@ -182,7 +182,7 @@ _VECTOR_TYPE_NAMES = {
 
 
 def probe_vector_types(CApiResult result):
-    """Report each chunk's per-column vector representation, for diagnostics."""
+    """Report each chunk's per-column vector representation, for diagnostics"""
     cdef duckdb_v2_data_chunk_handle chunk = NULL
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc

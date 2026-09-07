@@ -1,4 +1,4 @@
-"""Resolve the DuckDB lib: env var, then in-tree _libs/, then user cache, then download."""
+"""Resolve the DuckDB lib: env var, then in-tree _libs/, then user cache, then download"""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ ENV_NO_DOWNLOAD = "BAREDUCKDB_NO_DOWNLOAD"
 
 
 class DuckDBLibraryNotFoundError(RuntimeError):
-    """Raised when the DuckDB shared library cannot be found or downloaded."""
+    """Raised when the DuckDB shared library cannot be found or downloaded"""
 
 
 def _in_tree_libs_dir() -> Path:
@@ -30,7 +30,7 @@ def _in_tree_libs_dir() -> Path:
 
 
 def user_cache_root() -> Path:
-    """Platform-appropriate user cache directory bareduckdb downloads into."""
+    """Platform-appropriate user cache directory bareduckdb downloads into"""
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return Path(base) / "bareduckdb" / "Cache"
@@ -41,12 +41,12 @@ def user_cache_root() -> Path:
 
 
 def cache_key(channel: str, version: str) -> str:
-    """What identifies an artifact within a channel: the branch for preview, the version for stable."""
+    """What identifies an artifact within a channel: the branch for preview, the version for stable"""
     return fetch.PREVIEW_BRANCH if channel == "preview" else version
 
 
 def cache_dir_for(channel: str, version: str, artifact: str) -> Path:
-    """Cache subdirectory for one channel/version/artifact combination."""
+    """Cache subdirectory for one channel/version/artifact combination"""
     return user_cache_root() / f"duckdb_lib_{channel}_{cache_key(channel, version)}_{artifact}"
 
 
@@ -71,14 +71,14 @@ def _resolve_env_override(lib_name: str) -> Path | None:
 
 
 def artifact_url(channel: str, version: str, artifact: str) -> str:
-    """URL of the DuckDB release artifact for one channel/version/artifact combination."""
+    """URL of the DuckDB release artifact for one channel/version/artifact combination"""
     if channel == "preview":
         return fetch.PREVIEW_URL.format(branch=fetch.PREVIEW_BRANCH, artifact=artifact)
     return fetch.STABLE_URL.format(version=version, artifact=artifact)
 
 
 def download_lib(dest_dir: Path, *, artifact: str, lib_name: str) -> Path:
-    """Download the pinned DuckDB library into dest_dir; not concurrency-safe alone."""
+    """Download the pinned DuckDB library into dest_dir; not concurrency-safe alone"""
     url = artifact_url(DUCKDB_CHANNEL, DUCKDB_VERSION, artifact)
     print(f"bareduckdb: downloading DuckDB library from {url} ...", file=sys.stderr)  # noqa: T201
     try:
@@ -95,7 +95,7 @@ def download_lib(dest_dir: Path, *, artifact: str, lib_name: str) -> Path:
 
 
 def _download_into_cache(cache_dir: Path, artifact: str, lib_name: str) -> Path:
-    """Download to a temp dir, then rename atomically; racing processes never corrupt it."""
+    """Download to a temp dir, then rename atomically; racing processes never corrupt it"""
     cache_dir.parent.mkdir(parents=True, exist_ok=True)
     tmp_dir = cache_dir.parent / f".tmp-{os.getpid()}-{uuid.uuid4().hex}"
     try:
@@ -136,7 +136,7 @@ def _no_download_error(lib_name: str, cache_dir: Path) -> DuckDBLibraryNotFoundE
 
 
 def resolve_duckdb_lib() -> Path:
-    """Return the DuckDB shared library path, downloading it first if necessary."""
+    """Return the DuckDB shared library path, downloading it first if necessary"""
     lib_name = fetch.shared_lib_name()
 
     env_lib = _resolve_env_override(lib_name)

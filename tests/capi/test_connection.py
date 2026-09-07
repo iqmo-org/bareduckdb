@@ -1,4 +1,4 @@
-"""Connection lifecycle over the DuckDB C API v2 environment."""
+"""Connection lifecycle over the DuckDB C API v2 environment"""
 
 import pytest
 

@@ -1,4 +1,4 @@
-"""CLI escape hatch: fetch the DuckDB shared library ahead of time (air-gapped installs)."""
+"""CLI escape hatch: fetch the DuckDB shared library ahead of time (air-gapped installs)"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from ._duckdb_runtime import DUCKDB_CHANNEL, DUCKDB_VERSION, _download_into_cach
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Fetch the DuckDB library into --dir or the user cache, printing the resolved path."""
+    """Fetch the DuckDB library into --dir or the user cache, printing the resolved path"""
     ap = argparse.ArgumentParser(prog="python -m bareduckdb.install_duckdb")
     ap.add_argument("--dir", default=None, help="Install into this directory instead of the user cache")
     args = ap.parse_args(argv)

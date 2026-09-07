@@ -1,15 +1,15 @@
 # bareduckdb
 
-Minimal Python bindings to DuckDB 2.0, built on the new stable C API 2.0 (`duckdb_v2_*`). 
+Minimal Python bindings to DuckDB 2.0, built on its new C API (`duckdb_v2_*`).
 
 [![PyPI version](https://img.shields.io/pypi/v/bareduckdb.svg)](https://pypi.org/project/bareduckdb)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 # Highlights
-- **Python 3.15t**, plus 3.12 (abi3), 3.13, 3.14.
-- **DuckDB 2.0 C API v2.** Stable ABI
-- **Free threaded** Every engine call runs under `nogil`, every module sets `freethreading_compatible=True`, and no Python object guards an engine call.
+- **Free-threaded wheels for 3.14t and 3.15t**, plus a cp312 abi3 wheel covering 3.12+.
+- **DuckDB C API v2**, using only entry points upstream marks `stable`.
+- **Free threaded** Every engine call runs under `nogil`, every module that touches the engine sets `freethreading_compatible=True`, and no Python object guards an engine call.
 - **Minimal.** ~3.5k lines of Cython, ~1.2k of declarations, ~2.3k of Python. The Cython exists to cross the C boundary and hold the free-threading guarantees; everything else is Python.
 - **No runtime dependencies.** pyarrow, polars and pandas are all optional and imported on demand.
 - **Dynamically linked** against DuckDB's official shared library, resolved or downloaded at
@@ -93,6 +93,7 @@ with bareduckdb.connect() as conn:
     conn.execute("SELECT * FROM range(1000)").df()
     conn.execute("SELECT * FROM range(1000)").fetchall()
 
+    conn.execute("CREATE TABLE t AS SELECT * FROM range(100) AS r(a)")
     conn.execute("SELECT * FROM t WHERE a > ?", [10])  # positional
     conn.execute("SELECT * FROM t WHERE a > $x", {"x": 10})  # named
 ```
@@ -102,20 +103,23 @@ Registering in-memory data, by name or inline:
 ```python
 import polars as pl
 
-conn.register("t", pl.LazyFrame({"a": [1, 2, 3]}))  # streamed, never collected
-conn.execute("SELECT sum(a) FROM t").pl()
+with bareduckdb.connect() as conn:
+    conn.register("t", pl.LazyFrame({"a": [1, 2, 3]}))  # streamed, never collected
+    conn.execute("SELECT sum(a) FROM t").pl()
 
-conn.execute("SELECT * FROM frame", data={"frame": some_table})
+    frame = pl.DataFrame({"a": [1, 2, 3]})
+    conn.execute("SELECT * FROM frame", data={"frame": frame})
 ```
 
 Streaming rather than materializing:
 
 ```python
-conn.execute("SELECT * FROM big", output_type="arrow_reader")
-for batch in conn.arrow_reader():
-    ...
+with bareduckdb.connect() as conn:
+    conn.execute("SELECT * FROM range(1000000)", output_type="arrow_reader")
+    for batch in conn.arrow_reader():
+        ...
 
-conn.execute("SELECT * FROM big", batch_size=100_000)  # cap the Arrow batch
+    conn.execute("SELECT * FROM range(1000000)", batch_size=100_000)  # cap the Arrow batch
 ```
 
 Async, over a connection pool:
@@ -136,7 +140,7 @@ uv run pytest
 uv run pre-commit run --all-files
 ```
 
-Editing a `.pyx` or `.pxd` require a rebuild.
+Editing a `.pyx` or `.pxd` requires a rebuild.
 
 ## Disclaimer
 

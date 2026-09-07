@@ -270,6 +270,10 @@ jobs:
               test -x "$PY" || { echo "ERROR: no interpreter at $PY"; ls /opt/python; exit 1; }
               gcc --version | head -1
               export UV_PYTHON="$PY"
+              # TODO(cp315): delete this block once pandas/pyarrow ship stable cp315 wheels
+              if [ "${{ matrix.python }}" = cp315t ]; then
+                uv lock --upgrade-package pandas --upgrade-package pyarrow
+              fi
               uv sync --no-default-groups --extra test --reinstall-package bareduckdb
 
               # libduckdb must be the musl build, not glibc

@@ -3,31 +3,15 @@ name: GraalPy
 # workflow_call so dev_versions.yml can chain it
 on:
   workflow_call:
-    inputs:
-      versions:
-        description: 'JSON array of GraalPy versions for setup-python, e.g. ["graalpy-25.0", "graalpy-25.3"]'
-        required: false
-        type: string
-        default: '["graalpy-25.3"]'
   workflow_dispatch:
-    inputs:
-      versions:
-        description: 'JSON array of GraalPy versions for setup-python, e.g. ["graalpy-25.0", "graalpy-25.3"]'
-        required: false
-        type: string
-        default: '["graalpy-25.3"]'
 
+# GraalPy 25.3: binary wheels are only available for pandas/pyarrow here
 jobs:
   graalpy:
-    name: 'GraalPy - ${{ matrix.version }} - ubuntu x86_64'
+    name: 'GraalPy - graalpy-25.3 - ubuntu x86_64'
     runs-on: ubuntu-latest
 
     continue-on-error: true
-
-    strategy:
-      fail-fast: false
-      matrix:
-        version: ${{ fromJSON(inputs.versions || '["graalpy-25.3"]') }}
 
     permissions:
       contents: read
@@ -46,7 +30,7 @@ jobs:
       - name: Set up GraalPy
         uses: actions/setup-python@v7.0.0
         with:
-          python-version: ${{ matrix.version }}
+          python-version: graalpy-25.3
 
       - name: Interpreter identity
         shell: bash
@@ -178,7 +162,9 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          python -m pip install --extra-index-url "$GRAALPY_WHEELS" pyarrow
+          # Pinned to the newest graalpy313 wheel on Oracle's index; --only-binary
+          # fails fast on drift instead of building an sdist.
+          python -m pip install --extra-index-url "$GRAALPY_WHEELS" --only-binary=:all: pyarrow==24.0.0
           python -c "import pyarrow; print('pyarrow', pyarrow.__version__)"
 
       - name: Smoke test
@@ -231,7 +217,9 @@ jobs:
       - name: Reduced test selection
         shell: bash
         run: |
-          python -m pip install --extra-index-url "$GRAALPY_WHEELS" pytest filelock pytest-run-parallel pandas tzdata
+          # pandas pinned to the newest graalpy313 wheel on Oracle's index; binary
+          # only.
+          python -m pip install --extra-index-url "$GRAALPY_WHEELS" --only-binary=pandas pytest filelock pytest-run-parallel pandas==3.0.3 tzdata
           python -m pytest -o addopts= -p no:randomly -v \
             tests/capi/test_no_runtime_deps.py \
             tests/capi/test_connection.py \
@@ -254,7 +242,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: graalpy-wheel-${{ matrix.version }}
+          name: graalpy-wheel
           path: |
             dist/*.whl
             build.log

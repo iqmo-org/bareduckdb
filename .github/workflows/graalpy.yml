@@ -214,14 +214,8 @@ jobs:
       - name: Reduced test selection
         shell: bash
         run: |
-          # pytest-run-parallel supplies the thread_index / iteration_index fixtures
-          # that tests/core/test_connect.py and test_register.py take, so without it
-          # those eight collect as errors even though nothing is run in parallel here.
-          # pandas is what _fetch_rows lands on for most of the type matrix, and tzdata
-          # is what zoneinfo needs for 'UTC'; without either, roughly thirty tests fail
-          # for a missing dependency rather than for anything about GraalPy. pandas has
-          # no GraalPy wheel and builds from its sdist, which takes a few minutes.
-          python -m pip install pytest filelock pytest-run-parallel pandas tzdata
+          # Oracle's index carries graalpy253_313 builds of pandas and numpy
+          python -m pip install --extra-index-url "$GRAALPY_WHEELS" pytest filelock pytest-run-parallel pandas tzdata
           python -m pytest -o addopts= -p no:randomly -v \
             tests/capi/test_no_runtime_deps.py \
             tests/capi/test_connection.py \

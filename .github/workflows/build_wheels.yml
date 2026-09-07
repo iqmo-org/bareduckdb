@@ -22,8 +22,6 @@ jobs:
           - { os: macos-latest,      arch: arm64,      cibw_system: macosx }
           - { os: windows-latest,    arch: AMD64,      cibw_system: win }
           # - { os: macos-13,          arch: x86_64,     cibw_system: macosx }
-        include:
-          - { python: gp312_250, platform: { os: ubuntu-latest, arch: x86_64, cibw_system: manylinux } }
     runs-on: ${{ matrix.platform.os }}
 
     steps:
@@ -46,12 +44,6 @@ jobs:
           CIBW_TEST_COMMAND: pytest {project}/tests --import-mode=importlib --ignore={project}/tests/experimental --ignore={project}/tests/downstream --ignore={project}/tests/comparison --ignore={project}/tests/benchmarks -v -n auto --cov=bareduckdb --cov-report=term-missing
           CIBW_TEST_EXTRAS: "test"
           CIBW_TEST_REQUIRES: filelock
-          # graalpy.yml is where GraalPy is tested, against its own reduced selection and its
-          # own pyarrow index; the full suite here needs deps GraalPy has no wheels for.
-          CIBW_TEST_SKIP: "gp*"
-          CIBW_ENABLE: graalpy
-          # cibuildwheel documents a GraalPy incompatibility with the uv frontend.
-          CIBW_BUILD_FRONTEND: build
           CIBW_ARCHS: ${{ matrix.platform.arch }}
           CIBW_BUILD: ${{ matrix.python }}-${{ matrix.platform.cibw_system }}_${{ matrix.platform.arch }}
 
@@ -78,6 +70,13 @@ jobs:
           name: wheel-${{ matrix.python }}-${{ matrix.platform.cibw_system }}_${{ matrix.platform.arch }}
           path: wheelhouse/*.whl
           compression-level: 0
+
+  # cibuildwheel has no GraalPy 25.3; its graalpy-wheel artifact stays out of the wheel-* publish set, being tagged linux_x86_64 rather than manylinux.
+  graalpy_wheel:
+    name: GraalPy wheel
+    uses: ./.github/workflows/graalpy.yml
+    permissions:
+      contents: read
 
   publish-wheels:
     name: Publish Wheels to PyPI

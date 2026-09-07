@@ -1,4 +1,4 @@
-"""The C-level locks in the v2 layer must not deadlock when the GIL is enabled."""
+"""The C-level locks in the v2 layer must not deadlock when the GIL is enabled"""
 
 import os
 import subprocess
@@ -119,7 +119,7 @@ print("ok")
 
 
 def run_with_gil(source: str, what: str) -> subprocess.CompletedProcess:
-    """Run source in a child interpreter that has the GIL enabled, failing on a hang."""
+    """Run source in a child interpreter that has the GIL enabled, failing on a hang"""
     env = dict(os.environ)
     if FREE_THREADED:
         env["PYTHON_GIL"] = "1"
@@ -137,7 +137,7 @@ def run_with_gil(source: str, what: str) -> subprocess.CompletedProcess:
 
 @pytest.mark.parallel_threads(1)
 def test_concurrent_environment_creation_does_not_deadlock():
-    """Threads racing to create the shared environment must all finish."""
+    """Threads racing to create the shared environment must all finish"""
     proc = run_with_gil(ENVIRONMENT_RACE, "concurrent environment creation")
     assert proc.returncode == 0, proc.stderr
     assert "ok" in proc.stdout
@@ -145,14 +145,14 @@ def test_concurrent_environment_creation_does_not_deadlock():
 
 @pytest.mark.parallel_threads(1)
 def test_concurrent_schema_resolution_does_not_deadlock():
-    """Threads racing to resolve one result's schema must all finish."""
+    """Threads racing to resolve one result's schema must all finish"""
     proc = run_with_gil(SCHEMA_RACE, "concurrent schema resolution")
     assert proc.returncode == 0, proc.stderr
     assert "ok" in proc.stdout
 
 
 def run_natively(source: str, what: str) -> subprocess.CompletedProcess:
-    """Run source in a child interpreter with this interpreter's own threading model."""
+    """Run source in a child interpreter with this interpreter's own threading model"""
     try:
         return subprocess.run(
             [sys.executable, "-c", source], capture_output=True, text=True, timeout=TIMEOUT
@@ -163,7 +163,7 @@ def run_natively(source: str, what: str) -> subprocess.CompletedProcess:
 
 @pytest.mark.parallel_threads(1)
 def test_lock_free_fast_paths_return_correct_results():
-    """Threads reading an already-published schema and environment must see them whole."""
+    """Threads reading an already-published schema and environment must see them whole"""
     proc = run_natively(FAST_PATH_RACE, "lock-free fast paths")
     assert proc.returncode == 0, proc.stderr
     assert "ok" in proc.stdout
@@ -175,7 +175,7 @@ def test_lock_free_fast_paths_return_correct_results():
     reason="on a GIL build run_with_gil sets nothing, so this would rerun test_lock_free_fast_paths_return_correct_results verbatim",
 )
 def test_lock_free_fast_paths_return_correct_results_under_the_gil():
-    """The same fast paths under a GIL-holding interpreter, where the spin can starve."""
+    """The same fast paths under a GIL-holding interpreter, where the spin can starve"""
     proc = run_with_gil(FAST_PATH_RACE, "lock-free fast paths under the GIL")
     assert proc.returncode == 0, proc.stderr
     assert "ok" in proc.stdout
@@ -183,7 +183,7 @@ def test_lock_free_fast_paths_return_correct_results_under_the_gil():
 
 @pytest.mark.parallel_threads(1)
 def test_the_child_interpreter_really_holds_the_gil():
-    """Guards every run_with_gil test: without a GIL the spin is only a busy wait."""
+    """Guards every run_with_gil test: without a GIL the spin is only a busy wait"""
     proc = run_with_gil(
         "import sys; print(getattr(sys, '_is_gil_enabled', lambda: True)())", "gil check"
     )

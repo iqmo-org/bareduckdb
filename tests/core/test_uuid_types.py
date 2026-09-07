@@ -22,7 +22,7 @@ def test_registered_uuid_extension_array_becomes_a_duckdb_uuid():
 
 
 def test_registered_uuid_exports_as_a_string():
-    """DuckDB's exporter writes UUID as its canonical text, matching the fetch path."""
+    """DuckDB's exporter writes UUID as its canonical text, matching the fetch path"""
     conn = bareduckdb.connect()
     try:
         conn.register("t", pa.table({"c": pa.array([VALUE, None], pa.uuid())}))
@@ -45,7 +45,7 @@ def test_empty_uuid_register_keeps_its_type():
 
 
 def test_registered_binary16_is_not_promoted_to_uuid():
-    """A raw 16-byte binary column stays BLOB; only the Arrow uuid extension type maps across."""
+    """A raw 16-byte binary column stays BLOB; only the Arrow uuid extension type maps across"""
     conn = bareduckdb.connect()
     try:
         conn.register("t", pa.table({"c": pa.array([VALUE.bytes, None], pa.binary(16))}))

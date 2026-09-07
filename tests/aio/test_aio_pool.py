@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.parallel_threads(1)]
 
 
 async def test_pool_shares_catalog():
-    """The one that would have caught the original defect."""
+    """The one that would have caught the original defect"""
     async with AsyncConnectionPool(":memory:", pool_size=4) as pool:
         await pool.execute("create table t as select 1 as v")
         for _ in range(8):
@@ -22,7 +22,7 @@ async def test_pool_shares_catalog():
 
 
 async def test_pool_ddl_visible_to_every_member():
-    """Assert each member individually; a rotation can otherwise hide a partial failure."""
+    """Assert each member individually; a rotation can otherwise hide a partial failure"""
     size = 4
     async with AsyncConnectionPool(":memory:", pool_size=size) as pool:
         await pool.execute("create table t as select 42 as v")
@@ -31,7 +31,7 @@ async def test_pool_ddl_visible_to_every_member():
 
 
 async def test_pool_file_backed_opens(tmp_path):
-    """pool_size >= 2 on a file failed at __aenter__ with a file lock before the fix."""
+    """pool_size >= 2 on a file failed at __aenter__ with a file lock before the fix"""
     db = tmp_path / "pool.db"
     async with AsyncConnectionPool(str(db), pool_size=4) as pool:
         await pool.execute("create table t as select 7 as v")
@@ -40,7 +40,7 @@ async def test_pool_file_backed_opens(tmp_path):
 
 
 async def test_pool_file_backed_persists_after_aclose(tmp_path):
-    """Pins that the database closes last and releases the file."""
+    """Pins that the database closes last and releases the file"""
     db = tmp_path / "persist.db"
     pool = AsyncConnectionPool(str(db), pool_size=3)
     await pool.connect()
@@ -78,7 +78,7 @@ async def test_pool_concurrent_data_same_name_is_isolated():
 
 @pytest.mark.parallel_threads(1)
 async def test_pool_cursors_do_not_serialize():
-    """The property the whole design rests on: cursors of one database run concurrently."""
+    """The property the whole design rests on: cursors of one database run concurrently"""
     size = 4
     query = "select sum(i * i) as s from range(3000000) t(i)"
 
@@ -128,7 +128,7 @@ async def test_pool_execute_after_aclose_raises():
 
 @pytest.mark.parallel_threads(1)
 async def test_pool_failed_open_shuts_down_executor(tmp_path):
-    """A failed open must not leak the executor's threads."""
+    """A failed open must not leak the executor's threads"""
     pool = AsyncConnectionPool(str(tmp_path / "missing.db"), pool_size=2, read_only=True)
     with pytest.raises(Exception):
         await pool.connect()
@@ -142,7 +142,7 @@ async def test_pool_rejects_bad_size():
 
 @pytest.mark.asyncio(loop_scope="function")
 async def test_aio_package_level_import():
-    """Fails without src/bareduckdb/aio/__init__.py, since aio was a namespace package."""
+    """Fails without src/bareduckdb/aio/__init__.py, since aio was a namespace package"""
     from bareduckdb.aio import AsyncConnectionPool as Imported
 
     assert Imported is AsyncConnectionPool

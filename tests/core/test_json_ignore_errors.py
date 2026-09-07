@@ -1,4 +1,4 @@
-"""read_json(ignore_errors=true): a malformed line yields an all-NULL row, a bad field nulls only that field."""
+"""read_json(ignore_errors=true): a malformed line yields an all-NULL row, a bad field nulls only that field"""
 
 import logging
 
@@ -16,7 +16,7 @@ def _maybe_skip_read_json(exc):
 
 
 def _conn():
-    """The json extension is usually built in; a failed LOAD is only fatal if read_json is then missing."""
+    """The json extension is usually built in; a failed LOAD is only fatal if read_json is then missing"""
     conn = bareduckdb.connect()
     try:
         conn.execute("LOAD json")

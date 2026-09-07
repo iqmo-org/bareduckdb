@@ -1,5 +1,5 @@
 # cython: language_level=3
-"""Cython declarations for the DuckDB C API v2, read from the vendored duckdb_v2.h."""
+"""Cython declarations for the DuckDB C API v2, read from the vendored duckdb_v2.h"""
 
 from libc.stdint cimport int8_t, int16_t, int32_t, int64_t, uint8_t, uint16_t, uint32_t, uint64_t
 
@@ -508,6 +508,15 @@ cdef extern from "duckdb_v2.h" nogil:
     duckdb_v2_error_t duckdb_v2_vector_get_value(duckdb_v2_vector_handle vector, idx_t row, duckdb_v2_value_handle *out_value, duckdb_v2_error_info_handle *err)
     # Repoints vector at source's data rather than copying it.
     duckdb_v2_error_t duckdb_v2_vector_reference(duckdb_v2_vector_handle vector, duckdb_v2_vector_handle source, duckdb_v2_error_info_handle *err)
+    duckdb_v2_error_t duckdb_v2_bignum_decode(
+        const uint8_t *in_data,
+        idx_t in_length,
+        uint8_t *out_data,
+        idx_t out_capacity,
+        idx_t *out_length,
+        duckdb_v2_bool_t *out_is_negative,
+        duckdb_v2_error_info_handle *err
+    )
 
     # arenas (no stable functions at this pin)
 
@@ -704,6 +713,8 @@ cdef extern from "duckdb_v2.h" nogil:
     duckdb_v2_error_t duckdb_v2_value_get_date(duckdb_v2_value_handle value, int32_t *out, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_value_get_time(duckdb_v2_value_handle value, int64_t *out, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_value_get_time_ns(duckdb_v2_value_handle value, int64_t *out, duckdb_v2_error_info_handle *err)
+    # Micros high 40 bits - biased offset low 24
+    duckdb_v2_error_t duckdb_v2_value_get_time_tz(duckdb_v2_value_handle value, uint64_t *out, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_value_get_timestamp(duckdb_v2_value_handle value, int64_t *out, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_value_get_timestamp_sec(duckdb_v2_value_handle value, int64_t *out, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_value_get_timestamp_ms(duckdb_v2_value_handle value, int64_t *out, duckdb_v2_error_info_handle *err)

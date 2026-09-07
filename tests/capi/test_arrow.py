@@ -1,4 +1,4 @@
-"""Arrow export from v2 results, through DuckDB's duckdb_v2_result_to_arrow_stream."""
+"""Arrow export from v2 results, through DuckDB's duckdb_v2_result_to_arrow_stream"""
 
 import gc
 import os
@@ -40,7 +40,7 @@ ORACLE_REQUIRED = os.environ.get("BAREDUCKDB_REQUIRE_ORACLE") == "1"
 
 @pytest.fixture
 def make_conn():
-    """Hand out a fresh connection per call, since a v2 connection carries a single live result and pytest-run-parallel would share one fixture object across threads."""
+    """Hand out a fresh connection per call, since a v2 connection carries a single live result and pytest-run-parallel would share one fixture object across threads"""
     created = []
     lock = threading.Lock()
 
@@ -56,17 +56,17 @@ def make_conn():
 
 
 def table(conn, sql, parameters=None, batch_rows=None):
-    """Run a query and materialize it as a pyarrow.Table through the v2 Arrow layer."""
+    """Run a query and materialize it as a pyarrow.Table through the v2 Arrow layer"""
     return arrow_table_from_result(execute(conn, sql, parameters), batch_rows)
 
 
 def run(conn, sql):
-    """Execute a statement and drain it so its side effects apply."""
+    """Execute a statement and drain it so its side effects apply"""
     list(execute(conn, sql).rows())
 
 
 def test_oracle_agrees_on_a_simple_table(make_conn):
-    """Cross-check one Arrow table against the official client when it is installed."""
+    """Cross-check one Arrow table against the official client when it is installed"""
     if not DUCKDB_CLIENT_AVAILABLE:
         if ORACLE_REQUIRED:
             pytest.fail(ORACLE_HOWTO)
@@ -141,7 +141,7 @@ def test_multiple_fixed_width_columns(make_conn):
 
 
 def test_timestamptz_carries_the_session_zone(make_conn):
-    """DuckDB stamps the session TimeZone on the field rather than normalizing to UTC."""
+    """DuckDB stamps the session TimeZone on the field rather than normalizing to UTC"""
     conn = make_conn()
     zone = table(conn, "SELECT current_setting('TimeZone') AS c").column(0).to_pylist()[0]
     assert table(conn, "SELECT '2020-01-01'::TIMESTAMPTZ AS c").schema.field(0).type == pa.timestamp("us", zone)
@@ -192,7 +192,7 @@ def test_validity_first_row_null(make_conn):
 
 
 def test_validity_spanning_chunk_boundary(make_conn):
-    """DuckDB chunks at 2048 rows; nulls on either side of a boundary must line up."""
+    """DuckDB chunks at 2048 rows; nulls on either side of a boundary must line up"""
     conn = make_conn()
     sql = "SELECT CASE WHEN i IN (2047, 2048, 2049) THEN NULL ELSE i::INTEGER END AS c FROM range(5000) t(i)"
     values = table(conn, sql).column(0).to_pylist()
@@ -201,7 +201,7 @@ def test_validity_spanning_chunk_boundary(make_conn):
 
 
 def test_validity_null_in_final_partial_chunk(make_conn):
-    """5000 rows is 2 full 2048 chunks plus a 904-row tail; the null lives in the tail."""
+    """5000 rows is 2 full 2048 chunks plus a 904-row tail; the null lives in the tail"""
     conn = make_conn()
     sql = "SELECT CASE WHEN i = 4999 THEN NULL ELSE i::INTEGER END AS c FROM range(5000) t(i)"
     values = table(conn, sql).column(0).to_pylist()
@@ -216,7 +216,7 @@ MISALIGNED_SQL = (
 
 
 def test_validity_survives_misaligned_chunk_sizes(make_conn):
-    """An unordered filter yields odd-sized engine chunks; coalescing must not shift validity."""
+    """An unordered filter yields odd-sized engine chunks; coalescing must not shift validity"""
     conn = make_conn()
     run(conn, "CREATE TABLE mis AS SELECT i FROM range(20000) t(i)")
     expected = sorted(
@@ -237,7 +237,7 @@ def test_null_count_matches(make_conn):
 
 
 def observed_layouts(conn, sql):
-    """Return the set of vector representation names this query actually produces."""
+    """Return the set of vector representation names this query actually produces"""
     seen = set()
     for chunk in probe_vector_types(execute(conn, sql)):
         for name in chunk:
@@ -264,7 +264,7 @@ def test_flat_layout_is_produced_and_converted(make_conn):
 
 
 def test_result_boundary_hands_out_only_known_representations(make_conn):
-    """Notices if a build ever hands out CONSTANT or DICTIONARY across the boundary."""
+    """Notices if a build ever hands out CONSTANT or DICTIONARY across the boundary"""
     conn = make_conn()
     run(conn, "CREATE TABLE layoutmix AS SELECT i, (i % 3)::VARCHAR AS s FROM range(9000) t(i)")
     for sql in LAYOUT_QUERIES:
@@ -289,7 +289,7 @@ def test_nested_shapes_convert(make_conn, sql):
 
 
 def test_constant_and_dictionary_queries_still_convert_correctly(make_conn):
-    """Whatever representation the engine picks, these queries must convert."""
+    """Whatever representation the engine picks, these queries must convert"""
     conn = make_conn()
     assert table(conn, "SELECT 42 AS c FROM range(10000)").column(0).to_pylist() == [42] * 10000
     assert table(conn, "SELECT NULL::INTEGER AS c FROM range(10000)").column(0).null_count == 10000
@@ -303,7 +303,7 @@ def test_constant_and_dictionary_queries_still_convert_correctly(make_conn):
 
 
 def test_short_string_is_inline(make_conn):
-    """12 bytes or fewer live inline in duckdb_v2_bytes, so no data buffer is used."""
+    """12 bytes or fewer live inline in duckdb_v2_bytes, so no data buffer is used"""
     conn = make_conn()
     tbl = table(conn, "SELECT 'abcdefghijkl' AS c")
     assert tbl.column(0).to_pylist() == ["abcdefghijkl"]
@@ -324,7 +324,7 @@ def test_mixed_inline_and_long_strings(make_conn):
 
 
 def test_string_data_is_copied_not_borrowed(make_conn):
-    """Read the whole table, force a GC, and re-read: borrowed chunk memory would be gone."""
+    """Read the whole table, force a GC, and re-read: borrowed chunk memory would be gone"""
     conn = make_conn()
     tbl = table(conn, "SELECT repeat('z', 200) || i::VARCHAR AS c FROM range(5000) t(i)")
     gc.collect()
@@ -492,7 +492,7 @@ def test_empty_result_from_a_filter_preserves_schema(make_conn):
 
 
 def test_statement_expanding_into_a_group_exports_to_arrow(make_conn):
-    """A dynamic PIVOT has no schema until stepping prepares its row-producing fragment."""
+    """A dynamic PIVOT has no schema until stepping prepares its row-producing fragment"""
     conn = make_conn()
     list(execute(conn, "CREATE TABLE arrow_piv(k VARCHAR, v INTEGER)").rows())
     list(execute(conn, "INSERT INTO arrow_piv VALUES ('a', 1), ('b', 2), ('a', 10)").rows())
@@ -503,7 +503,7 @@ def test_statement_expanding_into_a_group_exports_to_arrow(make_conn):
 
 
 def test_statement_expanding_into_a_group_through_the_public_api():
-    """The bareduckdb.connect() path must reach the same PIVOT result as the raw layer."""
+    """The bareduckdb.connect() path must reach the same PIVOT result as the raw layer"""
     import bareduckdb
 
     with bareduckdb.connect() as public_conn:
@@ -593,7 +593,7 @@ def batch_sizes(conn, sql, batch_rows):
 
 
 def test_batch_rows_coalesces_chunks(make_conn):
-    """DuckDB emits 2048-row chunks; a 10000-row cap must coalesce them up to that cap."""
+    """DuckDB emits 2048-row chunks; a 10000-row cap must coalesce them up to that cap"""
     conn = make_conn()
     sizes = batch_sizes(conn, "SELECT i FROM range(50000) t(i)", 10000)
     assert sum(sizes) == 50000
@@ -601,7 +601,7 @@ def test_batch_rows_coalesces_chunks(make_conn):
 
 
 def test_batch_rows_is_a_strict_maximum(make_conn):
-    """No batch may exceed the cap, even though the engine's own chunks are 2048 rows."""
+    """No batch may exceed the cap, even though the engine's own chunks are 2048 rows"""
     conn = make_conn()
     sizes = batch_sizes(conn, "SELECT i FROM range(20000) t(i)", 1000)
     assert sum(sizes) == 20000
@@ -609,7 +609,7 @@ def test_batch_rows_is_a_strict_maximum(make_conn):
 
 
 def test_batch_rows_smaller_than_an_engine_chunk_splits_it(make_conn):
-    """The cap is honoured below the engine chunk size, which a floor could not do."""
+    """The cap is honoured below the engine chunk size, which a floor could not do"""
     conn = make_conn()
     sizes = batch_sizes(conn, "SELECT i FROM range(20000) t(i)", 1)
     assert sizes == [1] * 20000
@@ -622,7 +622,7 @@ def test_batch_rows_larger_than_result_gives_one_batch(make_conn):
 
 
 def test_batch_rows_default_matches_duckdb(make_conn):
-    """A falsy batch_rows selects DuckDB's own default, which DEFAULT_BATCH_ROWS names."""
+    """A falsy batch_rows selects DuckDB's own default, which DEFAULT_BATCH_ROWS names"""
     conn = make_conn()
     rows = DEFAULT_BATCH_ROWS + 1
     assert batch_sizes(conn, f"SELECT i FROM range({rows}) t(i)", 0) == [DEFAULT_BATCH_ROWS, 1]
@@ -631,7 +631,7 @@ def test_batch_rows_default_matches_duckdb(make_conn):
 
 
 def test_stream_default_matches_duckdbs(make_conn):
-    """__arrow_c_stream__ keeps DuckDB's own default; see BACKLOG.md item 4."""
+    """__arrow_c_stream__ keeps DuckDB's own default; see BACKLOG.md item 4"""
     conn = make_conn()
     assert DEFAULT_STREAM_BATCH_ROWS == DEFAULT_BATCH_ROWS == 131_072
     rows = DEFAULT_STREAM_BATCH_ROWS + 1
@@ -641,7 +641,7 @@ def test_stream_default_matches_duckdbs(make_conn):
 
 
 def test_table_default_gives_one_chunk(make_conn):
-    """to_arrow materializes regardless, and a single chunk is what keeps to_numpy copy-free."""
+    """to_arrow materializes regardless, and a single chunk is what keeps to_numpy copy-free"""
     conn = make_conn()
     assert DEFAULT_TABLE_BATCH_ROWS == 16_777_216
     assert DEFAULT_TABLE_BATCH_ROWS > DEFAULT_BATCH_ROWS
@@ -690,7 +690,7 @@ def test_stream_from_a_closed_result_raises(make_conn):
 
 
 def test_failed_drain_on_a_non_final_statement_does_not_leak(make_conn):
-    """A constraint violation mid-multi-statement must destroy the result before raising."""
+    """A constraint violation mid-multi-statement must destroy the result before raising"""
     conn = make_conn()
     run(conn, "CREATE TABLE pk_t(i INTEGER PRIMARY KEY)")
     for _ in range(50):
@@ -701,7 +701,7 @@ def test_failed_drain_on_a_non_final_statement_does_not_leak(make_conn):
 
 
 def test_concurrent_close_is_safe(make_conn):
-    """Two threads closing the same result must not double-destroy it."""
+    """Two threads closing the same result must not double-destroy it"""
     conn = make_conn()
     import threading
 
@@ -721,7 +721,7 @@ def test_concurrent_close_is_safe(make_conn):
 
 
 def test_result_outlives_the_python_connection_object(make_conn):
-    """The result holds a reference to its connection, so the handle cannot dangle."""
+    """The result holds a reference to its connection, so the handle cannot dangle"""
     conn = make_conn()
     env = CApiEnvironment()
     other = env.connect()
@@ -733,7 +733,7 @@ def test_result_outlives_the_python_connection_object(make_conn):
 
 @pytest.mark.parallel_threads(1)
 def test_concurrent_drains_share_the_buffer_pool_safely(make_conn):
-    """Free threading is the point: parallel drains must not corrupt each other."""
+    """Free threading is the point: parallel drains must not corrupt each other"""
     conn = make_conn()
     import threading
 

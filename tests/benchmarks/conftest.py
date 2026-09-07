@@ -57,7 +57,7 @@ _metric_warnings = []
 
 
 def _banner(lines):
-    """Format a block that cannot be missed in a CI log."""
+    """Format a block that cannot be missed in a CI log"""
     width = max(len(line) for line in lines) + 4
     bar = "!" * width
     body = "\n".join(f"!! {line}" for line in lines)
@@ -65,7 +65,7 @@ def _banner(lines):
 
 
 class _RssSampler:
-    """Background thread tracking peak process RSS (trustworthy only one test per process, see --forked)."""
+    """Background thread tracking peak process RSS (trustworthy only one test per process, see --forked)"""
 
     def __init__(self, process, interval_s=_RSS_SAMPLE_INTERVAL_S):
         self._process = process
@@ -124,7 +124,7 @@ def pytest_addoption(parser):
 
 
 def pytest_generate_tests(metafunc):
-    """Generate test variants for each registration mode."""
+    """Generate test variants for each registration mode"""
     if "registration_mode" in metafunc.fixturenames:
         modes_str = metafunc.config.getoption("--registration-modes")
         modes = [m.strip() for m in modes_str.split(",")]
@@ -132,7 +132,7 @@ def pytest_generate_tests(metafunc):
 
 
 def _check_metric_availability(config):
-    """Fail or warn loudly when a memory metric cannot be collected, never degrade silently."""
+    """Fail or warn loudly when a memory metric cannot be collected, never degrade silently"""
     if psutil is None:
         message = [
             "psutil is NOT installed",
@@ -163,7 +163,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
 
 def pytest_configure(config):
-    """Set up library info and output file once at session start."""
+    """Set up library info and output file once at session start"""
 
     # TODO: Think about allowing parallel tasks - maybe file locking
     global _output_file
@@ -397,7 +397,7 @@ def conn_with_like_data(request, ensure_parquet_files):
 
 @pytest.fixture
 def conn(request):
-    """Basic connection fixture."""
+    """Basic connection fixture"""
     use_duckdb = request.config.getoption("--use-duckdb")
 
     if use_duckdb:
@@ -418,7 +418,7 @@ def conn(request):
 
 @pytest.fixture
 def conne(request):
-    """Connection execute method fixture."""
+    """Connection execute method fixture"""
     use_duckdb = request.config.getoption("--use-duckdb")
 
     if use_duckdb:

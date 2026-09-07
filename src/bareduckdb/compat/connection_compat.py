@@ -91,12 +91,13 @@ class Connection(ConnectionAPI):
         params: Sequence[Any] | Mapping[str, Any] | None = None,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] | None = None,
         data: Mapping[str, Any] | None = None,
+        batch_size: int = 0,
     ) -> Connection:
         if params is not None and parameters is None:
             # For compatibility with duckdb pyrelations
             parameters = params
 
-        return super().execute(query=query, parameters=parameters, output_type=output_type, data=data)
+        return super().execute(query=query, parameters=parameters, output_type=output_type, data=data, batch_size=batch_size)
 
     def register(
         self,
@@ -123,7 +124,7 @@ class Connection(ConnectionAPI):
         return self
 
     def unregister(self, name: str) -> Connection:
-        """Unregister a name, returning this connection; an unknown name is a no-op."""
+        """Unregister a name, returning this connection; an unknown name is a no-op"""
         super().unregister(name)
         return self
 
@@ -236,7 +237,7 @@ class Connection(ConnectionAPI):
         import_extension(name, force_install=force_install, con=self)  # pyright: ignore[reportPrivateUsage]
 
     def load_extension(self, extension: str) -> None:
-        """Load an installed extension into the current connection; install_extension() must run first."""
+        """Load an installed extension into the current connection; install_extension() must run first"""
         sql = f"LOAD {extension}"
         logger.info("Loading extension: %s", sql)
         self.execute(sql)

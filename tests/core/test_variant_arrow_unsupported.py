@@ -1,4 +1,4 @@
-"""VARIANT has no Arrow mapping, so every export surface must refuse it by name."""
+"""VARIANT has no Arrow mapping, so every export surface must refuse it by name"""
 
 import logging
 
@@ -27,7 +27,7 @@ def test_variant_fetch_raises():
         with pytest.raises(RuntimeError, match="Unsupported Arrow type VARIANT"):
             conn.execute("SELECT (123)::VARIANT AS v").arrow_table()
 
-        with pytest.raises(RuntimeError, match="Unsupported Arrow type VARIANT"):
+        with pytest.raises(NotImplementedError, match="VARIANT"):
             conn.execute("SELECT (123)::VARIANT AS v").fetchall()
     finally:
         conn.close()

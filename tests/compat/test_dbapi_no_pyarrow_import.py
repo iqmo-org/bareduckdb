@@ -1,4 +1,4 @@
-"""The polars path must not import pyarrow, even when pyarrow is installed
+"""The DBAPI surface must not import pyarrow, even when pyarrow is installed
 """
 
 import subprocess
@@ -7,32 +7,41 @@ import textwrap
 
 import pytest
 
-pytest.importorskip("polars")
 pytest.importorskip("pyarrow")
 
 _PROBE = """
 import sys
-import polars as pl
 import bareduckdb
 
 assert "pyarrow" not in sys.modules, "pyarrow was imported before the query ran"
 
 conn = bareduckdb.connect()
-conn._default_output_type = "arrow_capsule"
-conn.register("t", pl.DataFrame({"a": [1, 2, 3, 4], "s": ["w", "x", "y", "z"]}))
-got = conn.execute("select a, s from t where a > 2 order by a").pl()
-assert got["a"].to_list() == [3, 4], got
+result = conn.execute("select i, i::varchar as s from range(4) t(i)")
+assert result.fetchone() == (0, "0")
+assert result.fetchmany(2) == [(1, "1"), (2, "2")]
+assert result.fetchall() == [(3, "3")]
+assert result.fetchone() is None
 
-conn.register("lf", pl.LazyFrame({"b": [10, 20, 30]}))
-assert conn.execute("select sum(b) as n from lf").pl()["n"][0] == 60
+assert [d[0] for d in conn.description] == ["i", "s"]
+assert [d[1] for d in conn.description] == ["BIGINT", "VARCHAR"]
+assert conn.rowcount == -1
+assert conn._last_result_get().columns == ["i", "s"]
+
+# The types whose row values used to come from an Arrow tag or from pyarrow's as_py.
+conn.execute(
+    "select 170141183460469231731687303715884105727::HUGEINT as h, '10101'::BIT as b, "
+    "'a'::ENUM('a','b') as e, MAP{1:'x'} as m, [1,2]::INT[2] as arr"
+)
+assert conn.fetchall() == [(170141183460469231731687303715884105727, "10101", "a", {1: "x"}, (1, 2))]
 
 assert not bareduckdb.pyarrow_available(), sorted(m for m in sys.modules if "arrow" in m)
+assert "pandas" not in sys.modules, "the row path pulled in pandas"
 print("OK")
 """
 
 
 @pytest.mark.parallel_threads(1)
-def test_polars_roundtrip_does_not_import_pyarrow():
+def test_dbapi_fetch_does_not_import_pyarrow():
     proc = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(_PROBE)],
         capture_output=True,

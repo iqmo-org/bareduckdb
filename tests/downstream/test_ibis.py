@@ -9,7 +9,7 @@ bareduckdb.register_as_duckdb()
 
 @pytest.fixture
 def tmp_file():
-    """Create a temporary database file path."""
+    """Create a temporary database file path"""
     # Don't create the file - let DuckDB create it
     fd, tmp_path = tempfile.mkstemp(suffix='.db')
     os.close(fd)
@@ -51,7 +51,7 @@ class TestIbisBasics:
         assert 'test' in con.list_tables()
 
     def test_list_tables(self):
-        """Test listing tables."""
+        """Test listing tables"""
         import pandas as pd
 
         con = ibis.duckdb.connect()
@@ -119,7 +119,7 @@ class TestIbisQueries:
         assert 'id' not in result.columns
 
     def test_aggregations(self):
-        """Test GROUP BY and aggregation functions."""
+        """Test GROUP BY and aggregation functions"""
         import pandas as pd
 
         con = ibis.duckdb.connect()
@@ -140,7 +140,7 @@ class TestIbisQueries:
         assert apple_total == 25
 
     def test_joins(self):
-        """Test JOIN operations."""
+        """Test JOIN operations"""
         import pandas as pd
 
         con = ibis.duckdb.connect()
@@ -193,7 +193,7 @@ class TestDataFrameInterop:
         assert len(result) == 3
 
     def test_pyarrow_to_ibis(self):
-        """Test registering PyArrow table."""
+        """Test registering PyArrow table"""
         import pyarrow as pa
         
         con = ibis.duckdb.connect()
@@ -209,7 +209,7 @@ class TestDataFrameInterop:
         assert result['id'].tolist() == [1, 2, 3]
 
     def test_polars_to_ibis(self):
-        """Test registering Polars DataFrame."""
+        """Test registering Polars DataFrame"""
         polars = pytest.importorskip("polars")
         
         con = ibis.duckdb.connect()
@@ -269,7 +269,7 @@ class TestAdvancedFeatures:
         assert (result['doubled'] == result['num'] * 2).all()
 
     def test_expression_compilation(self):
-        """Test compiling Ibis expressions to SQL."""
+        """Test compiling Ibis expressions to SQL"""
         import pandas as pd
 
         con = ibis.duckdb.connect()
@@ -285,7 +285,7 @@ class TestAdvancedFeatures:
         assert 'WHERE' in sql.upper()
 
     def test_sql_execution(self):
-        """Test executing raw SQL through Ibis."""
+        """Test executing raw SQL through Ibis"""
         import pandas as pd
 
         con = ibis.duckdb.connect()

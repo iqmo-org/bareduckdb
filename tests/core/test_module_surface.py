@@ -1,4 +1,4 @@
-"""The module-level public surface: PEP 249 attributes, aliases, the functional shim, register_as_duckdb."""
+"""The module-level public surface: PEP 249 attributes, aliases, the functional shim, register_as_duckdb"""
 
 import subprocess
 import sys
@@ -21,7 +21,7 @@ def test_pep249_module_attributes():
 
 
 def test_paramstyle_describes_what_execute_accepts():
-    """qmark is the claim, so a ? placeholder has to bind."""
+    """qmark is the claim, so a ? placeholder has to bind"""
     with bareduckdb.connect() as conn:
         assert conn.execute("SELECT ?::INTEGER AS a", [7]).fetchall() == [(7,)]
 
@@ -126,7 +126,7 @@ print("ok")
 
 @pytest.mark.parallel_threads(1)
 def test_register_as_duckdb_installs_the_alias_in_a_child_process():
-    """Runs in a subprocess because the call rewrites sys.modules for the whole interpreter."""
+    """Runs in a subprocess because the call rewrites sys.modules for the whole interpreter"""
     proc = subprocess.run(
         [sys.executable, "-c", _REGISTER_AS_DUCKDB],
         capture_output=True,
@@ -140,5 +140,5 @@ def test_register_as_duckdb_installs_the_alias_in_a_child_process():
 
 @pytest.mark.parallel_threads(1)
 def test_this_session_did_not_get_duckdb_aliased_to_bareduckdb():
-    """Guards against a module calling register_as_duckdb() at import time during collection."""
+    """Guards against a module calling register_as_duckdb() at import time during collection"""
     assert sys.modules.get("duckdb") is not bareduckdb

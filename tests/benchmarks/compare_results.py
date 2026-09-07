@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a benchmark comparison table from JSONL results."""
+"""Generate a benchmark comparison table from JSONL results"""
 
 import argparse
 import sys
@@ -89,7 +89,7 @@ SETUP_STATEMENTS = [
 ]
 
 def build_report_query(libs):
-    """Build the per-library report columns explicitly, since PIVOT expands into multiple engine statements."""
+    """Build the per-library report columns explicitly, since PIVOT expands into multiple engine statements"""
     columns = []
     for lib in libs:
         safe = lib.replace("'", "''")

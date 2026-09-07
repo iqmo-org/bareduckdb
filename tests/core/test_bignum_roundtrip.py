@@ -72,7 +72,7 @@ def test_varint_multiple_rows():
         ("SELECT {'a': 5::VARINT} AS c", [({"a": 5},)]),
         ("SELECT [{'a': 7::VARINT}] AS c", [([{"a": 7}],)]),
         ("SELECT {'l': [3::VARINT]} AS c", [({"l": [3]},)]),
-        ("SELECT MAP(['k'], [9::VARINT]) AS c", [([("k", 9)],)]),
+        ("SELECT MAP(['k'], [9::VARINT]) AS c", [({"k": 9},)]),
         ("SELECT [(-(2**100))::VARINT] AS c", [([-(2**100)],)]),
     ],
 )

@@ -1,5 +1,5 @@
 # cython: language_level=3
-"""C-level surface of the v2 result object, for the Arrow layer to cimport."""
+"""C-level surface of the v2 result object, for the Arrow layer to cimport"""
 
 from bareduckdb.capi.impl.connection cimport CApiConnectionImpl, bd_registry
 from bareduckdb.capi.impl.duckdb_v2 cimport (
@@ -34,6 +34,7 @@ cdef class CApiResult:
     cdef long _schema_steps
     cdef unsigned long long _batch_rows
     cdef list _column_names
+    cdef list _column_types
     cdef list _column_decoders
     # The registry whose collections this result may be scanning, and the borrow it holds on it.
     cdef bd_registry *_reg

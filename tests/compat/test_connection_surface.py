@@ -36,7 +36,7 @@ def test_begin_returns_none_and_leaves_a_transaction_open():
 
 
 def test_commit_without_a_transaction_is_swallowed():
-    """The 'no transaction is active' case is the one commit() is allowed to eat."""
+    """The 'no transaction is active' case is the one commit() is allowed to eat"""
     with bareduckdb.connect() as conn:
         assert conn.commit() is None
 
@@ -65,23 +65,37 @@ def test_description_is_a_seven_item_tuple_per_column():
         assert all(d[2:] == (None, None, None, None, None) for d in description)
 
 
-def test_description_type_code_is_the_arrow_type():
-    pa = pytest.importorskip("pyarrow")
+def test_description_type_code_is_the_duckdb_type_name():
     with bareduckdb.connect() as conn:
+        conn.execute(QUERY)
+        assert [d[1] for d in conn.description] == ["INTEGER", "VARCHAR"]
+
+
+def test_description_type_code_is_the_arrow_type_in_an_eager_mode():
+    pa = pytest.importorskip("pyarrow")
+    with bareduckdb.connect(output_type="arrow_table") as conn:
         conn.execute(QUERY)
         assert [d[1] for d in conn.description] == [pa.int32(), pa.string()]
 
 
-def test_rowcount_is_the_materialized_row_count():
+def test_rowcount_is_unknown_on_an_unconsumed_result():
+    """DBAPI's -1, and duckdb-python's answer: counting a stream would mean draining it"""
     with bareduckdb.connect() as conn:
         conn.execute("SELECT i FROM range(37) t(i)")
-        assert conn.rowcount == 37
+        assert conn.rowcount == -1
 
 
-def test_rowcount_of_an_empty_result_is_zero():
+def test_rowcount_of_an_empty_result_is_also_unknown():
     with bareduckdb.connect() as conn:
         conn.execute("SELECT i FROM range(10) t(i) WHERE i > 100")
-        assert conn.rowcount == 0
+        assert conn.rowcount == -1
+
+
+def test_rowcount_is_the_row_count_once_materialized():
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect(output_type="arrow_table") as conn:
+        conn.execute("SELECT i FROM range(37) t(i)")
+        assert conn.rowcount == 37
 
 
 def test_result_columns_lists_the_names():
@@ -135,7 +149,7 @@ def test_to_pandas_and_fetch_df_return_the_same_frame():
 
 
 def test_result_level_aliases_are_the_same_callables():
-    """These are assignments in the class body, so identity is the contract."""
+    """These are assignments in the class body, so identity is the contract"""
     from bareduckdb.compat.result_compat import Result
 
     assert Result.to_arrow is Result.arrow_table
@@ -179,7 +193,7 @@ def test_appender_raises_not_implemented():
 
 
 def test_appender_raises_before_touching_the_table():
-    """The NotImplementedError is unconditional, so a missing table is not what raises."""
+    """The NotImplementedError is unconditional, so a missing table is not what raises"""
     with bareduckdb.connect() as conn:
         conn.execute("CREATE TABLE t(i INTEGER)")
         with pytest.raises(NotImplementedError):
@@ -224,7 +238,7 @@ def test_invalid_output_type_raises_value_error():
 
 
 def test_unregister_on_a_closed_connection_is_a_no_op():
-    """The backend has already dropped every registration, so this warns rather than raises."""
+    """The backend has already dropped every registration, so this warns rather than raises"""
     pa = pytest.importorskip("pyarrow")
     conn = bareduckdb.connect()
     conn.register("t", pa.table({"c": [1, 2]}))

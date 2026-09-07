@@ -1,4 +1,4 @@
-"""Statement execution and the v2 result lifecycle."""
+"""Statement execution and the v2 result lifecycle"""
 
 import datetime
 import decimal
@@ -14,7 +14,7 @@ from bareduckdb.capi.impl.result import execute
 
 @pytest.fixture
 def make_conn():
-    """Hand out a fresh connection per call, since a v2 connection carries a single live result and pytest-run-parallel would share one fixture object across threads."""
+    """Hand out a fresh connection per call, since a v2 connection carries a single live result and pytest-run-parallel would share one fixture object across threads"""
     created = []
     lock = threading.Lock()
 
@@ -38,7 +38,7 @@ def _one(conn, sql, parameters=None):
 
 
 def _run(conn, sql, parameters=None):
-    """Execute and fully consume: duckdb_v2_result_destroy abandons unread side effects."""
+    """Execute and fully consume: duckdb_v2_result_destroy abandons unread side effects"""
     return list(execute(conn, sql, parameters).rows())
 
 
@@ -103,7 +103,7 @@ def test_null_round_trip(make_conn):
 def test_interval_round_trip(make_conn):
     conn = make_conn()
     value = _one(conn, "SELECT INTERVAL '1 month 2 days 3 seconds'")
-    assert value == {"months": 1, "days": 2, "micros": 3_000_000}
+    assert value == datetime.timedelta(days=32, seconds=3)
 
 
 def test_list_of_struct_round_trip(make_conn):
@@ -216,7 +216,7 @@ def test_string_and_bytes_parameters(make_conn):
 
 
 def test_bool_parameter_binds_as_boolean(make_conn):
-    """bool is checked before int, so True must not arrive as BIGINT 1."""
+    """bool is checked before int, so True must not arrive as BIGINT 1"""
     conn = make_conn()
     assert _one(conn, "SELECT typeof($1)", [True]) == "BOOLEAN"
     assert _one(conn, "SELECT $1", [True]) is True
@@ -272,7 +272,7 @@ def test_bytearray_parameter_binds_as_blob(make_conn):
 
 
 def test_memoryview_parameter_is_not_a_blob(make_conn):
-    """Only bytes and bytearray reach the BLOB branch; anything else must say so."""
+    """Only bytes and bytearray reach the BLOB branch; anything else must say so"""
     conn = make_conn()
     with pytest.raises(TypeError, match="cannot bind"):
         _one(conn, "SELECT $1", [memoryview(b"hi")])
@@ -286,7 +286,7 @@ def test_datetime_parameter_binds_as_timestamp(make_conn):
 
 
 def test_datetime_parameter_is_checked_before_date(make_conn):
-    """datetime subclasses date, so the order of the isinstance chain is the contract."""
+    """datetime subclasses date, so the order of the isinstance chain is the contract"""
     conn = make_conn()
     value = datetime.datetime(2020, 1, 2, 3, 4)
     assert _one(conn, "SELECT typeof($1)", [value]) == "TIMESTAMP"
@@ -310,7 +310,7 @@ def test_aware_datetime_parameter_binds_as_timestamptz(make_conn):
 
 
 def test_aware_datetime_parameter_raises_today(make_conn):
-    """Pins the failure mode so the xfail above flips when the branch grows a tz case."""
+    """Pins the failure mode so the xfail above flips when the branch grows a tz case"""
     conn = make_conn()
     with pytest.raises(TypeError, match="offset-naive and offset-aware"):
         _one(conn, "SELECT $1", [datetime.datetime(2020, 1, 2, tzinfo=datetime.timezone.utc)])
@@ -409,33 +409,26 @@ def test_uuid_parameter_matches_the_sql_literal(make_conn):
 def test_timedelta_parameter_round_trip(make_conn):
     conn = make_conn()
     delta = datetime.timedelta(days=5, seconds=12600)
-    assert _one(conn, "SELECT $1::INTERVAL", [delta]) == {
-        "months": 0,
-        "days": 5,
-        "micros": 12600 * 1_000_000,
-    }
+    assert _one(conn, "SELECT $1::INTERVAL", [delta]) == delta
 
 
 def test_timedelta_parameter_keeps_microseconds(make_conn):
     conn = make_conn()
     delta = datetime.timedelta(seconds=1, microseconds=7)
-    assert _one(conn, "SELECT $1::INTERVAL", [delta]) == {"months": 0, "days": 0, "micros": 1_000_007}
+    assert _one(conn, "SELECT $1::INTERVAL", [delta]) == delta
 
 
 def test_negative_timedelta_parameter_round_trip(make_conn):
     conn = make_conn()
     delta = datetime.timedelta(microseconds=-1)
-    assert _one(conn, "SELECT $1::INTERVAL", [delta]) == {
-        "months": 0,
-        "days": -1,
-        "micros": 86_399_999_999,
-    }
+    assert _one(conn, "SELECT $1::INTERVAL", [delta]) == delta
     assert _one(conn, "SELECT $1::INTERVAL = INTERVAL '-1 microsecond'", [delta]) is True
 
 
 def test_timedelta_parameter_never_carries_months(make_conn):
     conn = make_conn()
-    assert _one(conn, "SELECT $1::INTERVAL", [datetime.timedelta(days=365)])["months"] == 0
+    # A timedelta binds as days, never months, so it survives the 30-day fold unchanged.
+    assert _one(conn, "SELECT $1::INTERVAL", [datetime.timedelta(days=365)]) == datetime.timedelta(days=365)
 
 
 def test_list_parameter_round_trip(make_conn):
@@ -533,7 +526,7 @@ def test_unread_result_still_applies_side_effects(make_conn):
 
 
 def test_statement_expanding_into_a_group_executes(make_conn):
-    """A dynamic PIVOT expands into several engine statements, which cannot be bound."""
+    """A dynamic PIVOT expands into several engine statements, which cannot be bound"""
     conn = make_conn()
     _run(conn, "CREATE TABLE piv(k VARCHAR, v INTEGER)")
     _run(conn, "INSERT INTO piv VALUES ('a', 1), ('b', 2)")
@@ -543,7 +536,7 @@ def test_statement_expanding_into_a_group_executes(make_conn):
 
 
 def test_resolving_a_group_schema_takes_no_chunk(make_conn):
-    """The schema resolves before the first chunk, so the Arrow export still sees every row."""
+    """The schema resolves before the first chunk, so the Arrow export still sees every row"""
     conn = make_conn()
     _run(conn, "CREATE TABLE pivchunk(k VARCHAR, v INTEGER)")
     _run(conn, "INSERT INTO pivchunk VALUES ('a', 1), ('b', 2), ('a', 10)")
@@ -562,7 +555,7 @@ def test_resolving_a_group_schema_takes_no_chunk(make_conn):
     "sql", ["SELECT 42", "SELECT i FROM range(10) t(i)", "INSERT INTO stepfree_t VALUES (1)"]
 )
 def test_resolving_an_ordinary_schema_takes_no_step(make_conn, sql):
-    """Stepping executes the statement, so the happy path must never do it for the schema."""
+    """Stepping executes the statement, so the happy path must never do it for the schema"""
     conn = make_conn()
     _run(conn, "CREATE TABLE stepfree_t(i INTEGER)")
     result = execute(conn, sql)
@@ -571,7 +564,7 @@ def test_resolving_an_ordinary_schema_takes_no_step(make_conn, sql):
 
 
 def test_columns_after_an_arrow_export_says_what_happened(make_conn):
-    """The handle is gone, so this must name the export rather than step a NULL result."""
+    """The handle is gone, so this must name the export rather than step a NULL result"""
     conn = make_conn()
     pytest.importorskip("pyarrow")
     result = execute(conn, "SELECT 1 AS a")
@@ -594,7 +587,7 @@ def test_call_impl_on_closed_connection_raises(make_conn):
 
 
 def test_to_arrow_returns_a_table(make_conn):
-    """to_arrow() smoke test; the Arrow layer's own suite covers the detail."""
+    """to_arrow() smoke test; the Arrow layer's own suite covers the detail"""
     conn = make_conn()
     pa = pytest.importorskip("pyarrow")
     result = execute(conn, "SELECT 1 AS c")
@@ -608,3 +601,69 @@ def test_arrow_c_stream_returns_a_capsule(make_conn):
     pytest.importorskip("pyarrow")
     result = execute(conn, "SELECT 1 AS c")
     assert type(result.__arrow_c_stream__()).__name__ == "PyCapsule"
+
+def test_bignum_round_trip(make_conn):
+    conn = make_conn()
+    big = 1234567890123456789012345678901234567890
+    assert _one(conn, f"SELECT {big}::BIGNUM") == big
+    assert _one(conn, f"SELECT (-{big})::BIGNUM") == -big
+    assert _one(conn, f"SELECT {big}::VARINT") == big
+    assert _one(conn, "SELECT 0::BIGNUM") == 0
+    assert _one(conn, "SELECT NULL::BIGNUM") is None
+
+
+def test_bit_round_trip(make_conn):
+    conn = make_conn()
+    assert _one(conn, "SELECT '10101'::BIT") == "10101"
+    # Longer than one storage byte, so the padding count applies to a real prefix.
+    assert _one(conn, "SELECT '1111000011110000111100001'::BIT") == "1111000011110000111100001"
+    assert _one(conn, "SELECT NULL::BIT") is None
+
+
+def test_timetz_keeps_its_offset(make_conn):
+    conn = make_conn()
+    east = _one(conn, "SELECT '01:02:03+02'::TIMETZ")
+    assert east == datetime.time(1, 2, 3, tzinfo=datetime.timezone(datetime.timedelta(hours=2)))
+    west = _one(conn, "SELECT '01:02:03-05:30'::TIMETZ")
+    assert west.utcoffset() == datetime.timedelta(hours=-5, minutes=-30)
+    assert _one(conn, "SELECT NULL::TIMETZ") is None
+
+
+def test_enum_decodes_to_its_label(make_conn):
+    conn = make_conn()
+    assert _one(conn, "SELECT 'b'::ENUM('a','b','c')") == "b"
+    # Above 256 labels the dictionary index widens; the label read must not care.
+    wide = ",".join(f"'v{i}'" for i in range(300))
+    assert _one(conn, f"SELECT 'v299'::ENUM({wide})") == "v299"
+    assert _one(conn, "SELECT ['a','b']::ENUM('a','b')[]") == ["a", "b"]
+    assert _one(conn, "SELECT NULL::ENUM('a','b')") is None
+
+
+def test_tuple_decodes_positionally(make_conn):
+    conn = make_conn()
+    assert _one(conn, "SELECT (1, 2)") == (1, 2)
+    assert _one(conn, "SELECT (1, 'a', NULL)") == (1, "a", None)
+
+
+def test_array_is_a_tuple_and_list_is_a_list(make_conn):
+    conn = make_conn()
+    assert _one(conn, "SELECT [1,2,3]::INT[3]") == (1, 2, 3)
+    assert _one(conn, "SELECT [1,2,3]") == [1, 2, 3]
+
+
+def test_union_and_variant_still_have_no_row_decode_route(make_conn):
+    conn = make_conn()
+    with pytest.raises(NotImplementedError, match="UNION"):
+        _one(conn, "SELECT union_value(i := 1)")
+    with pytest.raises(NotImplementedError, match="VARIANT"):
+        _one(conn, "SELECT 1::VARIANT")
+
+
+def test_column_types_render_their_parameters(make_conn):
+    conn = make_conn()
+    result = execute(conn, "SELECT 1 AS a, MAP{1:'x'} AS b, [1]::INT[1] AS c")
+    assert result.columns == ("a", "b", "c")
+    assert result.column_types == ("INTEGER", "MAP(INTEGER, VARCHAR)", "INTEGER[1]")
+    # Reading the schema must not consume a chunk.
+    assert result.schema_steps == 0
+    assert list(result.rows()) == [(1, {1: "x"}, (1,))]

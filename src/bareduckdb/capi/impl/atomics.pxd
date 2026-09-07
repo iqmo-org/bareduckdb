@@ -1,5 +1,5 @@
 # cython: language_level=3
-"""cas, add, lock, unlock and the acquire/release pair: the atomics, since MSVC C11 atomics are opt-in."""
+"""cas, add, lock, unlock and the acquire/release pair: the atomics, since MSVC C11 atomics are opt-in"""
 
 cdef extern from *:
     """

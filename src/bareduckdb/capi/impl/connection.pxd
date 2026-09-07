@@ -1,5 +1,5 @@
 # cython: language_level=3
-"""C-level surface of the v2 environment and connection implementation."""
+"""C-level surface of the v2 environment and connection implementation"""
 
 from bareduckdb.capi.impl.duckdb_v2 cimport (
     ArrowArrayStream,

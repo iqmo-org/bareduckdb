@@ -59,7 +59,7 @@ class AsyncConnectionPool:
         self._executor: Optional[ThreadPoolExecutor] = None
 
     async def connect(self) -> AsyncConnectionPool:
-        """Open the database and its cursors. Idempotent."""
+        """Open the database and its cursors. Idempotent"""
         from bareduckdb.core.connection_base import ConnectionBase
 
         if self._executor is not None:
@@ -93,7 +93,7 @@ class AsyncConnectionPool:
         return self
 
     async def aclose(self) -> None:
-        """Close every cursor, then the owning connection, then the executor."""
+        """Close every cursor, then the owning connection, then the executor"""
         executor, self._executor = self._executor, None
         conns, self._connections = self._connections, []
         owner, self._owner = self._owner, None

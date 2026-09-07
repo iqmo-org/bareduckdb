@@ -1,6 +1,7 @@
 
 import datetime
 import decimal
+import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -32,18 +33,33 @@ _XF_UNION_DENSE = pytest.mark.xfail(
     reason="DuckDB's importer accepts only sparse unions; the scan defers import to the first query, so register() succeeds and execute fails as 'Unsupported Internal Arrow Type: \"d\" Union'",
     strict=True,
 )
+# The three below are fetch-vs-Arrow-consumer mismatches, not fetch bugs: since the row path
+# moved onto the v2 value API, fetchall() returns the right answer for all three and it is the
+# Arrow export that loses information. They stay strict so they fail loudly if DuckDB's exporter
+# starts tagging these types by default.
 _XF_BIGNUM_ARROW = pytest.mark.xfail(
-    reason="DuckDB exports BIGNUM as arrow.opaque storage bytes, which fetchall decodes to an int but an Arrow consumer sees as bytes",
+    reason="fetchall() decodes BIGNUM to an int via the value API; DuckDB exports it as arrow.opaque storage bytes, so an Arrow consumer sees bytes",
     strict=True,
 )
 _XF_BIT = pytest.mark.xfail(
-    reason="DuckDB exports BIT as untagged binary unless arrow_lossless_conversion is on, so fetchall has no tag to decode and returns the storage bytes",
+    reason="fetchall() decodes BIT to its bit string via the value API; DuckDB exports BIT as untagged binary unless arrow_lossless_conversion is on, so an Arrow consumer sees the storage bytes",
     strict=True,
 )
 _XF_TIMETZ = pytest.mark.xfail(
-    reason="DuckDB writes the TIMETZ wall clock and drops the offset, so fetchall returns a naive time rather than the tz-aware one the row API reports",
+    reason="fetchall() keeps the TIMETZ offset via the value API; DuckDB's exporter writes the wall clock and drops it, so an Arrow consumer sees a naive time",
     strict=True,
 )
+
+
+# Cases where the row API and the Arrow export disagree about representation rather than value,
+# because each matches what its own ecosystem expects. fetchall() matches the official duckdb
+# client here; test_rows_matches_official_client is the oracle for that.
+_ROW_VS_ARROW_REPRESENTATION = {
+    "tuple",  # tuple, against Arrow's struct<element1, element2>
+    "uuid",  # uuid.UUID, against Arrow's string
+    "map_str_int",  # dict, against Arrow's list of key/value pairs
+    "map_nested_value",
+}
 
 
 # ENUM index width is chosen from the label count, so an above-uint8 enum needs 257+ labels.
@@ -74,10 +90,10 @@ TYPE_CASES = [
          "SELECT 18000000000000000000::UBIGINT AS c", [18000000000000000000]),
     Case("hugeint", "HUGEINT", None,
          "SELECT (2**100)::HUGEINT AS c",
-         [decimal.Decimal("1267650600228229401496703205376")]),
+         [1267650600228229401496703205376]),
     Case("uhugeint", "UHUGEINT", None,
          "SELECT (2**100)::UHUGEINT AS c",
-         [decimal.Decimal("1267650600228229401496703205376")]),
+         [1267650600228229401496703205376]),
     Case("float32", "FLOAT", pa.array([1.5, -2.5, None], pa.float32()),
          "SELECT 1.5::FLOAT AS c", [1.5]),
     Case("float64", "DOUBLE", pa.array([1.5, -2.5, None], pa.float64()),
@@ -115,7 +131,7 @@ TYPE_CASES = [
          "SELECT '2020-01-01 12:30:00+00'::TIMESTAMPTZ_NS AS c", None),
     # DuckDB's exporter names TUPLE fields element1/element2, not the catalog's v0/v1; fetchall() reads the Arrow names.
     Case("tuple", "TUPLE", None,
-         "SELECT (1, 2) AS c", [{"element1": 1, "element2": 2}]),
+         "SELECT (1, 2) AS c", [(1, 2)]),
     Case("timestamp_us_tz", "TIMESTAMP WITH TIME ZONE",
          pa.array([datetime.datetime(2020, 1, 1, 12, 30), None],
                   pa.timestamp("us", "UTC"))),
@@ -135,7 +151,7 @@ TYPE_CASES = [
     Case("large_string", "VARCHAR", pa.array(["a", "bb", None], pa.large_string())),
     Case("uuid", "UUID", None,
          "SELECT '4ac7a9e9-607c-4c8a-84f3-843f0191e3fd'::UUID AS c",
-         ["4ac7a9e9-607c-4c8a-84f3-843f0191e3fd"]),
+         [uuid.UUID("4ac7a9e9-607c-4c8a-84f3-843f0191e3fd")]),
     Case("blob", "BLOB", pa.array([b"x", b"yy", None], pa.binary()),
          "SELECT 'abc'::BLOB AS c", [b"abc"]),
     Case("binary_view", "BLOB", pa.array([b"x", b"yy", None], pa.binary_view())),
@@ -151,17 +167,17 @@ TYPE_CASES = [
          pa.array([[1, 2], [3], None], pa.large_list(pa.int32()))),
     Case("fixed_size_list", "ARRAY",
          pa.array([[1, 2], [3, 4], None], pa.list_(pa.int32(), 2)),
-         "SELECT [1,2,3]::INTEGER[3] AS c", [[1, 2, 3]]),
+         "SELECT [1,2,3]::INTEGER[3] AS c", [(1, 2, 3)]),
     Case("struct", "STRUCT",
          pa.array([{"a": 1, "b": "x"}, {"a": 2, "b": None}, None],
                   pa.struct([("a", pa.int32()), ("b", pa.string())])),
          "SELECT {'a':1,'b':'x'} AS c", [{"a": 1, "b": "x"}]),
     Case("map_str_int", "MAP",
          pa.array([[("a", 1), ("b", 2)], None], pa.map_(pa.string(), pa.int32())),
-         "SELECT MAP(['a'],[1]) AS c", [[("a", 1)]]),
+         "SELECT MAP(['a'],[1]) AS c", [{"a": 1}]),
     Case("map_nested_value", "MAP",
          pa.array([[("a", [1, 2])], None], pa.map_(pa.string(), pa.list_(pa.int32()))),
-         "SELECT MAP(['a'], [[1,2]]) AS c", [[("a", [1, 2])]]),
+         "SELECT MAP(['a'], [[1,2]]) AS c", [{"a": [1, 2]}]),
     Case("list_struct", "LIST",
          pa.array([[{"a": 1}], None], pa.list_(pa.struct([("a", pa.int32())])))),
     Case("struct_list", "STRUCT",
@@ -262,7 +278,7 @@ FETCH_ARROW_TYPES = {
 
 
 def _expected_fetch_type(conn, case_id):
-    """The pinned Arrow type string, with the session TimeZone filled in."""
+    """The pinned Arrow type string, with the session TimeZone filled in"""
     expected = FETCH_ARROW_TYPES[case_id]
     if expected is None or "{tz}" not in expected:
         return expected
@@ -319,7 +335,7 @@ REGISTER_ARROW_TYPES = {
 
 
 def _expected_register_type(conn, case_id):
-    """The pinned Arrow type string, with the session TimeZone filled in."""
+    """The pinned Arrow type string, with the session TimeZone filled in"""
     expected = REGISTER_ARROW_TYPES[case_id]
     if expected is None or "{tz}" not in expected:
         return expected
@@ -431,7 +447,7 @@ def test_fetch_arrow_type(case):
 
 @pytest.mark.parametrize("case", _register_params())
 def test_register_arrow_type(case):
-    """A registered array reads back as the Arrow type DuckDB round-trips it to."""
+    """A registered array reads back as the Arrow type DuckDB round-trips it to"""
     conn = bareduckdb.connect()
     try:
         expected = _expected_register_type(conn, case.id)
@@ -446,7 +462,7 @@ def test_register_arrow_type(case):
 
 @pytest.mark.parametrize("case", _register_params())
 def test_empty_register_arrow_type(case):
-    """Every layout survives the zero-row register path with its type intact."""
+    """Every layout survives the zero-row register path with its type intact"""
     conn = bareduckdb.connect()
     try:
         expected = _expected_register_type(conn, case.id)
@@ -460,7 +476,7 @@ def test_empty_register_arrow_type(case):
 
 
 def test_register_values_round_trip():
-    """Values, not just types, survive register for the layouts that carry them."""
+    """Values, not just types, survive register for the layouts that carry them"""
     conn = bareduckdb.connect()
     try:
         for case in TYPE_CASES:
@@ -495,14 +511,19 @@ def test_timestamptz_preserves_instant():
 
 
 def test_bit_is_indistinguishable_from_blob_by_default():
-    """DuckDB tags BIT only under arrow_lossless_conversion; the default is bare binary."""
+    """DuckDB tags BIT only under arrow_lossless_conversion; the default is bare binary"""
     conn = bareduckdb.connect()
     try:
         bit_type = conn.execute("SELECT '101010'::BIT AS c").arrow_table().schema.field(0).type
         blob_type = conn.execute("SELECT 'abc'::BLOB AS c").arrow_table().schema.field(0).type
         assert bit_type == blob_type
         assert getattr(bit_type, "extension_name", None) is None
-        assert conn.execute("SELECT '101010'::BIT AS c").fetchall() == [(bytes([0x02, 0xEA]),)]
+        # The Arrow schema cannot tell BIT from BLOB, but fetchall() reads the value API rather
+        # than the export, so the row path still returns the bit string.
+        assert conn.execute("SELECT '101010'::BIT AS c").fetchall() == [("101010",)]
+        assert conn.execute("SELECT '101010'::BIT AS c").arrow_table().column(0).to_pylist() == [
+            bytes([0x02, 0xEA])
+        ]
     finally:
         conn.close()
 
@@ -549,7 +570,82 @@ def test_fetch_roundtrip(case):
 
         if case.sql_expected is not None:
             assert fetch_vals == case.sql_expected
-        assert _normalize(fetch_vals) == _normalize(arrow_vals)
+        if case.id not in _ROW_VS_ARROW_REPRESENTATION:
+            assert _normalize(fetch_vals) == _normalize(arrow_vals)
         assert df_vals == _normalize(arrow_vals)
     finally:
         conn.close()
+
+
+_ROW_ORACLE_DIVERGENCES = {
+    "timestamptz_ns": (
+        "the official client's catalog has no TIMESTAMPTZ_NS type, so it cannot run the query "
+        "at all: 'Catalog Error: Type with name TIMESTAMPTZ_NS does not exist'. Not a value "
+        "disagreement; drop this entry once the oracle wheel carries the type"
+    ),
+    "varint_bignum": (
+        "sanctioned divergence: rows() returns int(123) where the official client returns "
+        "'123', a str. A string for an arbitrary-precision integer loses arithmetic for no "
+        "gain, and the Arrow path already returns an int, so matching duckdb here would be a "
+        "regression on both of our own surfaces"
+    ),
+    "variant": (
+        "VARIANT has no v2 value-API decode route, so rows() raises NotImplementedError where "
+        "the official client decodes it. The Arrow export refuses VARIANT too, see _XF_VARIANT"
+    ),
+}
+
+
+def _row_values(case):
+    """Read case.sql through CApiResult.rows(), the decoder the DBAPI surface will use"""
+    from bareduckdb.capi.impl.connection import CApiEnvironment
+    from bareduckdb.capi.impl.result import execute
+
+    conn = CApiEnvironment().connect()
+    if case.needs_ext is not None:
+        try:
+            list(execute(conn, f"INSTALL {case.needs_ext}").rows())
+            list(execute(conn, f"LOAD {case.needs_ext}").rows())
+        except Exception as exc:
+            pytest.skip(f"{case.needs_ext} extension unavailable: {exc}")
+    for stmt in case.setup:
+        list(execute(conn, stmt).rows())
+    return [row[0] for row in execute(conn, case.sql).rows()]
+
+
+def _official_values(case):
+    """The same query through the official duckdb client, which is the oracle"""
+    duckdb = pytest.importorskip("duckdb")
+
+    conn = duckdb.connect()
+    try:
+        if case.needs_ext is not None:
+            try:
+                conn.install_extension(case.needs_ext)
+                conn.load_extension(case.needs_ext)
+            except Exception as exc:
+                pytest.skip(f"{case.needs_ext} extension unavailable: {exc}")
+        for stmt in case.setup:
+            conn.execute(stmt)
+        return [row[0] for row in conn.execute(case.sql).fetchall()]
+    finally:
+        conn.close()
+
+
+def _row_oracle_params():
+    return [
+        pytest.param(
+            c,
+            id=c.id,
+            marks=[pytest.mark.xfail(reason=reason, strict=True)]
+            if (reason := _ROW_ORACLE_DIVERGENCES.get(c.id))
+            else [],
+        )
+        for c in TYPE_CASES
+        if c.sql is not None
+    ]
+
+
+@pytest.mark.parametrize("case", _row_oracle_params())
+def test_rows_matches_official_client(case):
+    assert _row_values(case) == _official_values(case)

@@ -1,4 +1,4 @@
-"""bareduckdb imports and queries with nothing else installed, via the capsule path that never imports pyarrow."""
+"""bareduckdb imports and queries with nothing else installed, via the capsule path that never imports pyarrow"""
 
 import os
 import subprocess
@@ -6,7 +6,7 @@ import sys
 
 
 def test_import_and_query_with_empty_environment() -> None:
-    """A subprocess with a scrubbed environment can import, connect and query."""
+    """A subprocess with a scrubbed environment can import, connect and query"""
     env = {k: v for k, v in os.environ.items() if k in ("SYSTEMROOT", "PATH", "TEMP", "TMP")}
     env["PYTHONNOUSERSITE"] = "1"
     code = (
@@ -24,7 +24,7 @@ def test_import_and_query_with_empty_environment() -> None:
 
 
 def test_wheel_declares_no_dependencies() -> None:
-    """The installed distribution declares no runtime requirements."""
+    """The installed distribution declares no runtime requirements"""
     from importlib.metadata import requires
 
     assert not [r for r in (requires("bareduckdb") or []) if "extra ==" not in r]

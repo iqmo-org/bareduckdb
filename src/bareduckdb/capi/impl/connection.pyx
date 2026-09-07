@@ -1,7 +1,7 @@
 # cython: language_level=3
 # cython: freethreading_compatible=True
 
-"""Environment, database, and connection lifecycle on the DuckDB C API v2."""
+"""Environment, database, and connection lifecycle on the DuckDB C API v2"""
 
 import atexit
 import logging
@@ -143,7 +143,7 @@ cdef long _env_shutdown = 0
 
 
 cdef duckdb_v2_environment_handle _ensure_environment() except NULL:
-    """Return the shared environment, creating it once under a C-level lock."""
+    """Return the shared environment, creating it once under a C-level lock"""
     global _ENV
     cdef duckdb_v2_environment_handle env
     cdef duckdb_v2_error_info_handle err = NULL
@@ -168,7 +168,7 @@ cdef duckdb_v2_environment_handle _ensure_environment() except NULL:
 
 
 cdef void _destroy_environment_if_idle() noexcept nogil:
-    """Destroy the shared environment once exit has begun and no database is open."""
+    """Destroy the shared environment once exit has begun and no database is open"""
     if not bdv2_load_acquire(&_env_shutdown) or not bdv2_load_acquire(&_env_ready):
         return
     # A try-lock, not a wait: this runs from __dealloc__, where blocking would be worse.
@@ -182,7 +182,7 @@ cdef void _destroy_environment_if_idle() noexcept nogil:
 
 
 def _destroy_environment():
-    """Arm the environment teardown at interpreter exit, running it if nothing is open."""
+    """Arm the environment teardown at interpreter exit, running it if nothing is open"""
     bdv2_store_release(&_env_shutdown, 1)
     with nogil:
         _destroy_environment_if_idle()
@@ -194,7 +194,7 @@ def _destroy_environment():
 
 
 def _environment_is_active():
-    """Report whether the shared environment currently exists, for teardown diagnostics."""
+    """Report whether the shared environment currently exists, for teardown diagnostics"""
     return _ENV != NULL
 
 
@@ -223,7 +223,7 @@ cdef struct bd_scan_state:
 
 
 cdef void _bd_copy_text(char *dst, const char *src, idx_t length) noexcept nogil:
-    """Copy at most BD_ERR_TEXT_CAP - 1 bytes into dst and terminate it."""
+    """Copy at most BD_ERR_TEXT_CAP - 1 bytes into dst and terminate it"""
     cdef idx_t n = length
     if n > <idx_t>(BD_ERR_TEXT_CAP - 1):
         n = <idx_t>(BD_ERR_TEXT_CAP - 1)
@@ -233,7 +233,7 @@ cdef void _bd_copy_text(char *dst, const char *src, idx_t length) noexcept nogil
 
 
 cdef void _bd_fail(bd_reg_entry *entry, const char *message) noexcept nogil:
-    """Record a fixed message on the entry and mark the import terminally failed."""
+    """Record a fixed message on the entry and mark the import terminally failed"""
     cdef idx_t n = 0
     while message[n] != 0:
         n += 1
@@ -242,7 +242,7 @@ cdef void _bd_fail(bd_reg_entry *entry, const char *message) noexcept nogil:
 
 
 cdef void _bd_fail_from_info(bd_reg_entry *entry, duckdb_v2_error_info_handle info) noexcept nogil:
-    """Record a v2 error's text on the entry, destroying the info handle."""
+    """Record a v2 error's text on the entry, destroying the info handle"""
     cdef duckdb_v2_str_t text
     cdef const char *fallback = "unknown DuckDB error"
     text.ptr = NULL
@@ -257,7 +257,7 @@ cdef void _bd_fail_from_info(bd_reg_entry *entry, duckdb_v2_error_info_handle in
 
 
 cdef void _bd_fail_from_stream(bd_reg_entry *entry, const char *fallback) noexcept nogil:
-    """Record the Arrow stream's own last error, falling back to a fixed message."""
+    """Record the Arrow stream's own last error, falling back to a fixed message"""
     cdef const char *text = NULL
     cdef idx_t n = 0
     if entry.stream.get_last_error != NULL:
@@ -272,7 +272,7 @@ cdef void _bd_fail_from_stream(bd_reg_entry *entry, const char *fallback) noexce
 
 
 cdef void _bd_chunks_destroy(bd_reg_entry *entry) noexcept nogil:
-    """Destroy every imported chunk, which is what releases the Arrow buffers they alias."""
+    """Destroy every imported chunk, which is what releases the Arrow buffers they alias"""
     cdef idx_t i
     for i in range(entry.chunk_count):
         duckdb_v2_data_chunk_destroy(&entry.chunks[i])
@@ -284,7 +284,7 @@ cdef void _bd_chunks_destroy(bd_reg_entry *entry) noexcept nogil:
 
 
 cdef void _bd_entry_destroy(bd_reg_entry *entry) noexcept nogil:
-    """Release everything one registry entry owns, then free the entry."""
+    """Release everything one registry entry owns, then free the entry"""
     if entry == NULL:
         return
     _bd_chunks_destroy(entry)
@@ -300,7 +300,7 @@ cdef void _bd_entry_destroy(bd_reg_entry *entry) noexcept nogil:
 
 
 cdef void _bd_registry_destroy(bd_registry *reg) noexcept nogil:
-    """Free the registry and every entry it still holds, live or retired."""
+    """Free the registry and every entry it still holds, live or retired"""
     cdef idx_t i
     if reg == NULL:
         return
@@ -318,7 +318,7 @@ cdef void _bd_registry_destroy(bd_registry *reg) noexcept nogil:
 
 
 cdef bd_registry *_bd_registry_create() except NULL:
-    """Allocate the registry the dispatcher and the scan function share."""
+    """Allocate the registry the dispatcher and the scan function share"""
     cdef bd_registry *reg = <bd_registry *>malloc(sizeof(bd_registry))
     cdef duckdb_v2_identifier_t part
     cdef duckdb_v2_qname_handle qname = NULL
@@ -362,13 +362,13 @@ cdef void _bd_sweep_retired(bd_registry *reg) noexcept nogil:
 
 
 cdef void bd_registry_acquire(bd_registry *reg) noexcept nogil:
-    """Register one more possible reader of the registry's imported chunks."""
+    """Register one more possible reader of the registry's imported chunks"""
     if reg != NULL:
         bdv2_add(&reg.borrows, 1)
 
 
 cdef void bd_registry_release(bd_registry *reg) noexcept nogil:
-    """Drop one reader, tearing the registry and its database down when the last one goes."""
+    """Drop one reader, tearing the registry and its database down when the last one goes"""
     cdef duckdb_v2_database_handle db
     if reg == NULL:
         return
@@ -390,7 +390,7 @@ cdef void bd_registry_release(bd_registry *reg) noexcept nogil:
 
 
 cdef bint _bd_push(bd_reg_entry ***slots, idx_t *count, idx_t *capacity, bd_reg_entry *entry) noexcept nogil:
-    """Append one entry pointer to a growable array of entry pointers."""
+    """Append one entry pointer to a growable array of entry pointers"""
     cdef idx_t new_capacity
     cdef bd_reg_entry **grown
     if count[0] == capacity[0]:
@@ -409,7 +409,7 @@ cdef bint _bd_push(bd_reg_entry ***slots, idx_t *count, idx_t *capacity, bd_reg_
 
 
 cdef bint _bd_entry_matches(bd_reg_entry *entry, duckdb_v2_qname_handle qname) noexcept nogil:
-    """Report whether either of the entry's names equals qname under DuckDB's identifier rules."""
+    """Report whether either of the entry's names equals qname under DuckDB's identifier rules"""
     cdef duckdb_v2_bool_t hit = False
     if duckdb_v2_qname_equals(entry.name, qname, &hit, NULL) == DUCKDB_V2_ERROR_NONE and hit:
         return True
@@ -426,7 +426,7 @@ cdef idx_t _bd_retire_matching(
     duckdb_v2_qname_handle qname,
     duckdb_v2_qname_handle alt,
 ) noexcept nogil:
-    """Move every live entry of an equal name out of entries, freeing the ones never claimed. Caller holds reg.lock."""
+    """Move every live entry of an equal name out of entries, freeing the ones never claimed. Caller holds reg.lock"""
     cdef bd_reg_entry *entry
     cdef idx_t i = 0
     cdef idx_t removed = 0
@@ -449,7 +449,7 @@ cdef idx_t _bd_retire_matching(
 
 
 cdef bint _bd_chunk_push(bd_reg_entry *entry, duckdb_v2_data_chunk_handle chunk) noexcept nogil:
-    """Append one imported chunk to the entry's geometrically grown chunk array."""
+    """Append one imported chunk to the entry's geometrically grown chunk array"""
     cdef idx_t new_capacity
     cdef duckdb_v2_data_chunk_handle *grown
     if entry.chunk_count == entry.chunk_capacity:
@@ -468,7 +468,7 @@ cdef bint _bd_chunk_push(bd_reg_entry *entry, duckdb_v2_data_chunk_handle chunk)
 
 
 cdef bint _bd_drain(bd_reg_entry *entry, duckdb_v2_arrow_importer_handle importer) noexcept nogil:
-    """Move every chunk the importer is holding onto the entry, reporting failure on the entry."""
+    """Move every chunk the importer is holding onto the entry, reporting failure on the entry"""
     cdef duckdb_v2_data_chunk_handle chunk = NULL
     cdef duckdb_v2_error_info_handle err = NULL
     cdef idx_t size = 0
@@ -582,13 +582,13 @@ cdef void _bd_materialize(bd_reg_entry *entry, duckdb_v2_context_handle context)
 
 
 cdef void _bd_free_opaque(void *data) noexcept nogil:
-    """Free one callback-owned C allocation; never touches a Python object."""
+    """Free one callback-owned C allocation; never touches a Python object"""
     if data != NULL:
         free(data)
 
 
 cdef void _bd_report(duckdb_v2_error_info_handle *err, const char *message) noexcept nogil:
-    """Report a fixed message through the err slot DuckDB handed the callback."""
+    """Report a fixed message through the err slot DuckDB handed the callback"""
     cdef duckdb_v2_str_t text
     if err == NULL or err[0] == NULL:
         return
@@ -599,7 +599,7 @@ cdef void _bd_report(duckdb_v2_error_info_handle *err, const char *message) noex
 
 
 cdef bd_reg_entry *_bd_find_slot(bd_registry *reg, idx_t slot) noexcept nogil:
-    """Return the entry carrying this slot id, live or retired. Caller holds reg.lock."""
+    """Return the entry carrying this slot id, live or retired. Caller holds reg.lock"""
     cdef idx_t i
     for i in range(reg.count):
         if reg.entries[i].slot == slot:
@@ -615,7 +615,7 @@ cdef void _bd_tf_bind(
     duckdb_v2_context_handle context,
     duckdb_v2_error_info_handle *err,
 ) noexcept nogil:
-    """Declare the registered source's columns and hand the scan a self-contained slot id."""
+    """Declare the registered source's columns and hand the scan a self-contained slot id"""
     cdef void *user_data = NULL
     cdef bd_registry *reg
     cdef duckdb_v2_value_handle value = NULL
@@ -682,7 +682,7 @@ cdef void _bd_tf_init_global(
     duckdb_v2_context_handle context,
     duckdb_v2_error_info_handle *err,
 ) noexcept nogil:
-    """Create this scan's own cursor, so a reused plan starts over rather than resuming."""
+    """Create this scan's own cursor, so a reused plan starts over rather than resuming"""
     cdef void *data_ptr = NULL
     cdef bd_bind_data *bind_data
     cdef bd_reg_entry *entry = NULL
@@ -722,7 +722,7 @@ cdef void _bd_tf_exec(
     duckdb_v2_context_handle context,
     duckdb_v2_error_info_handle *err,
 ) noexcept nogil:
-    """Point the output chunk's vectors at one imported chunk's, moving no data at all."""
+    """Point the output chunk's vectors at one imported chunk's, moving no data at all"""
     cdef void *data_ptr = NULL
     cdef bd_scan_state *state
     cdef bd_reg_entry *entry
@@ -778,7 +778,7 @@ cdef void _bd_dispatch(
     duckdb_v2_context_handle context,
     duckdb_v2_error_info_handle *err,
 ) noexcept nogil:
-    """Claim a registered name with the scan function and its slot id, importing on the first claim."""
+    """Claim a registered name with the scan function and its slot id, importing on the first claim"""
     cdef void *user_data = NULL
     cdef bd_registry *reg
     cdef duckdb_v2_qname_handle qname = NULL
@@ -832,7 +832,7 @@ cdef void _bd_dispatch(
 
 
 cdef void _bd_parse_name(str name, duckdb_v2_qname_handle *out_name, duckdb_v2_qname_handle *out_alt) except *:
-    """Parse a registration name into a qname, plus a single-part fallback when it qualified."""
+    """Parse a registration name into a qname, plus a single-part fallback when it qualified"""
     cdef bytes raw = name.encode("utf-8")
     cdef duckdb_v2_str_t text
     cdef duckdb_v2_identifier_t part
@@ -878,7 +878,7 @@ cdef void _bd_parse_name(str name, duckdb_v2_qname_handle *out_name, duckdb_v2_q
 
 
 cdef void _configure_dispatcher(duckdb_v2_replacement_scan_handle scan, bd_registry *reg) except *:
-    """Point one freshly created scan at the registry and register it, then destroy the builder."""
+    """Point one freshly created scan at the registry and register it, then destroy the builder"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_opaque data
@@ -905,7 +905,7 @@ cdef void _configure_dispatcher(duckdb_v2_replacement_scan_handle scan, bd_regis
 
 
 cdef void _install_database_dispatcher(duckdb_v2_database_handle db, bd_registry *reg) except *:
-    """Register the dispatcher database-wide, so any connection to this database sees registrations."""
+    """Register the dispatcher database-wide, so any connection to this database sees registrations"""
     cdef duckdb_v2_replacement_scan_handle scan = NULL
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
@@ -916,7 +916,7 @@ cdef void _install_database_dispatcher(duckdb_v2_database_handle db, bd_registry
 
 
 cdef void _install_connection_dispatcher(duckdb_v2_connection_handle conn, bd_registry *reg) except *:
-    """Register the same dispatcher connection-scoped, which the binder consults before the built-in file scans."""
+    """Register the same dispatcher connection-scoped, which the binder consults before the built-in file scans"""
     cdef duckdb_v2_replacement_scan_handle scan = NULL
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
@@ -927,7 +927,7 @@ cdef void _install_connection_dispatcher(duckdb_v2_connection_handle conn, bd_re
 
 
 cdef void _install_table_function(duckdb_v2_connection_handle conn, bd_registry *reg) except *:
-    """Register the scan function on this connection's database, once, before any query binds."""
+    """Register the scan function on this connection's database, once, before any query binds"""
     cdef duckdb_v2_table_function_handle func = NULL
     cdef duckdb_v2_function_signature_handle sig = NULL
     cdef duckdb_v2_logical_type_handle bigint = NULL
@@ -991,18 +991,18 @@ cdef void _install_table_function(duckdb_v2_connection_handle conn, bd_registry 
 
 
 cdef class CApiEnvironment:
-    """The v2 root object: owns the environment every database is opened under."""
+    """The v2 root object: owns the environment every database is opened under"""
 
     def __cinit__(self):
         self._env = NULL
 
     def connect(self, database=None, config=None, read_only=False):
-        """Open a database and return a new CApiConnectionImpl on it."""
+        """Open a database and return a new CApiConnectionImpl on it"""
         self._env = _ensure_environment()
         return CApiConnectionImpl(database, config=config, read_only=read_only)
 
     def database_count(self):
-        """Return how many databases are open under the shared environment."""
+        """Return how many databases are open under the shared environment"""
         self._env = _ensure_environment()
         cdef idx_t count = 0
         cdef duckdb_v2_error_info_handle err = NULL
@@ -1014,14 +1014,14 @@ cdef class CApiEnvironment:
 
 
 cdef class _DatabaseHandle:
-    """Owns a duckdb_v2_database, closed when the last connection drops it."""
+    """Owns a duckdb_v2_database, closed when the last connection drops it"""
 
     def __cinit__(self):
         self._db = NULL
         self._registry = NULL
 
     cdef void _adopt(self, duckdb_v2_database_handle db) noexcept:
-        """Take ownership of an open database and count it against the environment."""
+        """Take ownership of an open database and count it against the environment"""
         self._db = db
         bdv2_add(&_open_databases, 1)
 
@@ -1060,7 +1060,7 @@ cdef dict _parse_result_error(str message):
 
 
 cdef class CApiConnectionImpl:
-    """The nine-member _impl seam over a duckdb_v2_connection."""
+    """The nine-member _impl seam over a duckdb_v2_connection"""
 
     def __cinit__(self, database=None, config=None, read_only=False):
         self._db = None
@@ -1070,7 +1070,7 @@ cdef class CApiConnectionImpl:
         self._close_claimed = 0
 
     def __init__(self, database=None, config=None, read_only=False):
-        """Open a database under the shared environment and connect to it."""
+        """Open a database under the shared environment and connect to it"""
         cdef duckdb_v2_environment_handle env
         cdef duckdb_v2_database_handle db = NULL
         cdef duckdb_v2_connection_handle conn = NULL
@@ -1157,7 +1157,7 @@ cdef class CApiConnectionImpl:
         _install_connection_dispatcher(conn, handle._registry)
 
     def call_impl(self, *, str query, str mode, uint64_t batch_size, object parameters=None):
-        """Route a query onto the v2 execution path and return its CApiResult."""
+        """Route a query onto the v2 execution path and return its CApiResult"""
         if self._closed:
             raise RuntimeError("Connection is closed")
 
@@ -1166,14 +1166,14 @@ cdef class CApiConnectionImpl:
         return execute(self, query, parameters, batch_size)
 
     def close(self):
-        """Disconnect and drop this connection's reference to the database."""
+        """Disconnect and drop this connection's reference to the database"""
         self._do_close()
 
     def __dealloc__(self):
         self._do_close()
 
     cdef void _do_close(self) noexcept:
-        """Disconnect exactly once."""
+        """Disconnect exactly once"""
         if not bdv2_cas(&self._close_claimed, 0, 1):
             return
         if self._conn != NULL:
@@ -1185,7 +1185,7 @@ cdef class CApiConnectionImpl:
 
     @property
     def database_path(self):
-        """Return the path this connection was opened with."""
+        """Return the path this connection was opened with"""
         return self._database_path
 
     def __repr__(self):
@@ -1194,7 +1194,7 @@ cdef class CApiConnectionImpl:
         return f"<CApiConnection({self._database_path!r})>"
 
     def create_cursor(self):
-        """Create a new connection sharing this connection's database."""
+        """Create a new connection sharing this connection's database"""
         if self._closed:
             raise RuntimeError("Cannot create cursor from closed connection")
 
@@ -1219,7 +1219,7 @@ cdef class CApiConnectionImpl:
         return cursor
 
     cdef bd_registry *_registry(self) except NULL:
-        """Return the database's registry, refusing a closed or half-built connection."""
+        """Return the database's registry, refusing a closed or half-built connection"""
         if self._closed or self._db is None:
             raise RuntimeError("Connection is closed")
         if self._db._registry == NULL:
@@ -1227,13 +1227,13 @@ cdef class CApiConnectionImpl:
         return self._db._registry
 
     cdef bd_registry *_registry_or_null(self) noexcept:
-        """Return the database's registry, or NULL when there is none to borrow."""
+        """Return the database's registry, or NULL when there is none to borrow"""
         if self._db is None:
             return NULL
         return self._db._registry
 
     def register_capsule(self, str name, object stream_capsule, int64_t cardinality=-1, bint replace=True):
-        """Register an Arrow C Stream capsule under name, imported on the first query that reads it."""
+        """Register an Arrow C Stream capsule under name, imported on the first query that reads it"""
         cdef bd_registry *reg = self._registry()
         cdef ArrowArrayStream *source
         cdef bd_reg_entry *entry
@@ -1319,7 +1319,7 @@ cdef class CApiConnectionImpl:
         return removed
 
     def _registry_stats(self):
-        """Report registry counts for tests: live entries, retired entries and imports run."""
+        """Report registry counts for tests: live entries, retired entries and imports run"""
         cdef bd_registry *reg = self._registry()
         cdef idx_t live
         cdef idx_t retired
@@ -1333,7 +1333,7 @@ cdef class CApiConnectionImpl:
         return {"live": live, "retired": retired, "imports": imports}
 
     def _registered_row_count(self, str name):
-        """Report the row count of a name's imported chunks, or None if never claimed."""
+        """Report the row count of a name's imported chunks, or None if never claimed"""
         cdef bd_registry *reg = self._registry()
         cdef duckdb_v2_qname_handle qname = NULL
         cdef duckdb_v2_qname_handle alt = NULL
@@ -1364,7 +1364,7 @@ cdef class CApiConnectionImpl:
         return rows if ready else None
 
     def parse_sql(self, str query):
-        """Parse through v2 and report what the sql_statement surface allows."""
+        """Parse through v2 and report what the sql_statement surface allows"""
         if self._closed:
             raise RuntimeError("Connection is closed")
 

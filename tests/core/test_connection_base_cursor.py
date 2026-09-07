@@ -1,4 +1,4 @@
-"""ConnectionBase.cursor(): a connection sharing the database, catalog and registry."""
+"""ConnectionBase.cursor(): a connection sharing the database, catalog and registry"""
 
 import pytest
 
@@ -29,7 +29,7 @@ def test_cursor_ddl_visible_to_parent():
 
 
 def test_cursor_has_own_lock():
-    """Distinct locks are why cursors do not serialize: _call holds the lock across convert."""
+    """Distinct locks are why cursors do not serialize: _call holds the lock across convert"""
     with ConnectionBase(":memory:") as conn:
         cur = conn.cursor()
         try:
@@ -51,7 +51,7 @@ def test_cursor_survives_parent_close():
 
 @pytest.mark.parallel_threads(1)
 def test_database_closes_after_last_cursor(tmp_path):
-    """The file must be reopenable once the parent and every cursor are gone."""
+    """The file must be reopenable once the parent and every cursor are gone"""
     db = tmp_path / "cursor.db"
     conn = ConnectionBase(str(db))
     cursors = [conn.cursor() for _ in range(3)]

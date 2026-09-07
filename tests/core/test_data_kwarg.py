@@ -1,4 +1,4 @@
-"""The data= path registers and unregisters inside one call, so a loop can accumulate one imported chunk list per iteration; the loops here are the hook to profile that growth."""
+"""The data= path registers and unregisters inside one call, so a loop can accumulate one imported chunk list per iteration; the loops here are the hook to profile that growth"""
 
 import pytest
 

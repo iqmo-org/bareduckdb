@@ -114,7 +114,7 @@ int main(void) {
 
 
 def _embedded_c():
-    """Return the C block atomics.pxd embeds in its `cdef extern from *` declaration."""
+    """Return the C block atomics.pxd embeds in its `cdef extern from *` declaration"""
     text = ATOMICS_PXD.read_text(encoding="utf-8")
     # Past the module docstring: the block wanted is the one the extern declaration opens.
     start = text.index("cdef extern from *:")
@@ -124,14 +124,14 @@ def _embedded_c():
 
 
 def test_the_embedded_c_declares_the_acquire_release_pair():
-    """The double-checked-locking fast paths need both halves, not just the release."""
+    """The double-checked-locking fast paths need both halves, not just the release"""
     body = _embedded_c()
     assert "bdv2_load_acquire" in body, "no acquire load: a fast-path flag read is unordered"
     assert "bdv2_store_release" in body, "no release store: the flag can publish before the payload"
 
 
 def test_the_helpers_compile_and_publish_between_threads(tmp_path):
-    """Build the embedded C into a program that hands a payload across threads."""
+    """Build the embedded C into a program that hands a payload across threads"""
     src = tmp_path / "atomics_harness.c"
     src.write_text(_embedded_c() + HARNESS, encoding="utf-8")
 
@@ -177,7 +177,7 @@ GENERATED_C = _current_generated_c()
 @pytest.mark.skipif(not GENERATED_C, reason="no freshly generated C under build/ to inspect")
 @pytest.mark.parametrize("path", GENERATED_C, ids=lambda p: f"{p.parents[4].name}-{p.name}")
 def test_generated_c_carries_the_barrier_intrinsics(path):
-    """The barriers have to survive into the C Cython emits, not just the .pxd."""
+    """The barriers have to survive into the C Cython emits, not just the .pxd"""
     text = path.read_text(encoding="utf-8", errors="replace")
     assert "bdv2_load_acquire" in text, f"{path} has no acquire load on its fast path"
     assert "bdv2_store_release" in text, f"{path} never publishes with a release store"

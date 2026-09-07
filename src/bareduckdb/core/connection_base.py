@@ -26,16 +26,16 @@ logger = logging.getLogger(__name__)
 
 
 class InvalidInputException(Exception):  # noqa: N818
-    """Raised for an argument DuckDB would reject with its own InvalidInputException."""
+    """Raised for an argument DuckDB would reject with its own InvalidInputException"""
 
 
 def _is_arrow_stream_capsule(obj: object) -> bool:
-    """Report whether obj is a bare PyCapsule, which the Cython layer validates itself."""
+    """Report whether obj is a bare PyCapsule, which the Cython layer validates itself"""
     return type(obj).__name__ == "PyCapsule"
 
 
 class _LazyCollectSource:
-    """Collects a lazy source (e.g. Polars LazyFrame) each time a stream is produced."""
+    """Collects a lazy source (e.g. Polars LazyFrame) each time a stream is produced"""
 
     def __init__(self, lazy: object) -> None:
         self._lazy = lazy
@@ -129,7 +129,7 @@ class ConnectionBase:
 
     @staticmethod
     def _materialize(data: object) -> object:
-        """Collect a source into an in-memory object whose Arrow stream is implemented in C."""
+        """Collect a source into an in-memory object whose Arrow stream is implemented in C"""
         module = type(data).__module__.split(".")[0]
 
         if module == "pyarrow":
@@ -165,7 +165,7 @@ class ConnectionBase:
         statistics: "list[str] | Literal['numeric'] | str | bool | None" = None,
         replace: bool = True,
     ) -> None:
-        """Register any supported source under name, collecting it first if it is lazy."""
+        """Register any supported source under name, collecting it first if it is lazy"""
         if statistics is not None:
             logger.debug("Ignoring statistics=%r for '%s': the import counts the rows itself", statistics, name)
 
@@ -223,7 +223,7 @@ class ConnectionBase:
         self,
         query: str,
         *,
-        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
+        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] | None = "arrow_table",
         parameters: Sequence[Any] | Mapping[str, Any] | None = None,
         data: Mapping[str, Any] | None = None,
         batch_size: int = 0,
@@ -233,16 +233,19 @@ class ConnectionBase:
 
         Args:
             query: SQL query string
-            output_type: Output format ("arrow_table", "arrow_reader", "arrow_capsule")
+            output_type: Output format ("arrow_table", "arrow_reader", "arrow_capsule"), or None
+                to hand back the unconverted engine result for the caller to consume later
             parameters: Query parameters (positional list or named dict, keyword-only)
             data: dict of objects for replacement scanning
             batch_size: strict maximum rows per Arrow batch; 0 selects DuckDB's own default
 
         Returns:
-            Result in requested format (pa.Table, pa.RecordBatchReader, or capsule)
+            Result in requested format (pa.Table, pa.RecordBatchReader, capsule, or CApiResult)
         """
         with self._lock:
-            if output_type == "arrow_table":
+            if output_type is None:
+                mode = ConnectionBase._MODE_STREAM
+            elif output_type == "arrow_table":
                 mode = ConnectionBase._MODE_ARROW if self.arrow_table_collector == "arrow" else ConnectionBase._MODE_STREAM
             elif output_type == "arrow_reader":
                 mode = ConnectionBase._MODE_STREAM
@@ -272,6 +275,8 @@ class ConnectionBase:
 
                 # Convert
                 t_convert_start = time.perf_counter()
+                if output_type is None:
+                    return base_result
                 if output_type == "arrow_table":
                     try:
                         import pyarrow  # noqa: F401

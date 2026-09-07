@@ -23,7 +23,7 @@ def test_register_dataframe(conn):
 
 
 def test_register_lazyframe(conn):
-    """LazyFrame takes the .collect() branch in _materialize, a different path from DataFrame."""
+    """LazyFrame takes the .collect() branch in _materialize, a different path from DataFrame"""
     conn.register("t", pl.LazyFrame({"a": [1, 2, 3, 4]}))
     assert conn.execute("select sum(a) as n from t").pl()["n"][0] == 10
 
@@ -64,7 +64,7 @@ def _pyarrow_installed() -> bool:
     "uses a subprocess.",
 )
 def test_pyarrow_is_not_imported(conn):
-    """The whole point of this directory, asserted rather than assumed from the CI step."""
+    """The whole point of this directory, asserted rather than assumed from the CI step"""
     conn.register("t", pl.DataFrame({"a": [1, 2, 3]}))
     conn.execute("select a from t where a > 1").pl()
     assert not bareduckdb.pyarrow_available()

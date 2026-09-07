@@ -40,7 +40,7 @@ def test_like_no_param_pandas(conn_with_like_data):
 
 @pytest.mark.benchmark
 def test_like_with_param(conn_with_like_data):
-    """LIKE with parameter - known to be slow in duckdb."""
+    """LIKE with parameter - known to be slow in duckdb"""
     if "bareduckdb" in conn_with_like_data.__module__:  # temporary: bareduckdb takes parameters=, duckdb takes params=
         result = conn_with_like_data.sql(
             "SELECT t1.value FROM t1 JOIN t2 ON t1.t2_id = t2.id WHERE t2.code LIKE ?",

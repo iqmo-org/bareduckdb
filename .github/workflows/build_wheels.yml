@@ -22,6 +22,15 @@ jobs:
           - { os: macos-latest,      arch: arm64,      cibw_system: macosx }
           - { os: windows-latest,    arch: AMD64,      cibw_system: win }
           # - { os: macos-13,          arch: x86_64,     cibw_system: macosx }
+        include:
+          # GraalPy is listed explicitly rather than crossed with the platform matrix: it has
+          # no musllinux build, and cibuildwheel 4.2.0 carries exactly one GraalPy, 25.0 on
+          # 3.12. Its wheel tag pins the GraalPy version (graalpy250_312_native), so these
+          # wheels serve GraalPy 25.0 only - not the 25.3 the GraalPy test job runs.
+          - { python: gp312_250, platform: { os: ubuntu-latest,    arch: x86_64,  cibw_system: manylinux } }
+          - { python: gp312_250, platform: { os: ubuntu-24.04-arm, arch: aarch64, cibw_system: manylinux } }
+          - { python: gp312_250, platform: { os: macos-latest,     arch: arm64,   cibw_system: macosx } }
+          - { python: gp312_250, platform: { os: windows-latest,   arch: AMD64,   cibw_system: win } }
     runs-on: ${{ matrix.platform.os }}
 
     steps:
@@ -39,17 +48,23 @@ jobs:
 
       - name: Build and test wheels
         if: matrix.platform.cibw_system != 'musllinux'
-        uses: pypa/cibuildwheel@v4.2.0
+        uses: pypa/cibuildwheel@v4.2.1
         env:
           CIBW_TEST_COMMAND: pytest {project}/tests --import-mode=importlib --ignore={project}/tests/experimental --ignore={project}/tests/downstream --ignore={project}/tests/comparison --ignore={project}/tests/benchmarks -v -n auto --cov=bareduckdb --cov-report=term-missing
           CIBW_TEST_EXTRAS: "test"
           CIBW_TEST_REQUIRES: filelock
+          # graalpy.yml is where GraalPy is tested, against its own reduced selection and its
+          # own pyarrow index; the full suite here needs deps GraalPy has no wheels for.
+          CIBW_TEST_SKIP: "gp*"
+          CIBW_ENABLE: graalpy
+          # cibuildwheel documents a GraalPy incompatibility with the uv frontend.
+          CIBW_BUILD_FRONTEND: build
           CIBW_ARCHS: ${{ matrix.platform.arch }}
           CIBW_BUILD: ${{ matrix.python }}-${{ matrix.platform.cibw_system }}_${{ matrix.platform.arch }}
 
       - name: Build and test wheels (musllinux)
         if: matrix.platform.cibw_system == 'musllinux'
-        uses: pypa/cibuildwheel@v4.2.0
+        uses: pypa/cibuildwheel@v4.2.1
         env:
           CIBW_TEST_COMMAND: |
             set -e

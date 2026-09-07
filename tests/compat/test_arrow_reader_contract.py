@@ -1,4 +1,7 @@
-"""arrow_reader must stream or say why it cannot, never silently materialize
+"""arrow_reader must stream or say why it cannot, never silently materialize.
+
+The default output type is arrow_capsule, so these pass output_type="arrow_table" explicitly
+to get the materialized result whose contract they are pinning.
 """
 
 import pytest
@@ -16,34 +19,35 @@ def test_arrow_reader_streams_when_asked_for():
 
 def test_arrow_reader_raises_when_result_was_materialized():
     with bareduckdb.connect() as conn:
-        result = conn.execute(QUERY)
+        result = conn.execute(QUERY, output_type="arrow_table")
         with pytest.raises(RuntimeError, match="arrow_reader"):
             result.arrow_reader()
 
 
 def test_fetch_record_batch_alias_raises_the_same_way():
     with bareduckdb.connect() as conn:
-        result = conn.execute(QUERY)
+        result = conn.execute(QUERY, output_type="arrow_table")
         with pytest.raises(RuntimeError, match="arrow_reader"):
             result.fetch_record_batch()
 
 
 def test_arrow_alias_raises_the_same_way():
     with bareduckdb.connect() as conn:
-        result = conn.execute(QUERY)
+        result = conn.execute(QUERY, output_type="arrow_table")
         with pytest.raises(RuntimeError, match="arrow_reader"):
             result.arrow()
 
 
 def test_error_message_names_the_fix():
     with bareduckdb.connect() as conn:
-        result = conn.execute(QUERY)
+        result = conn.execute(QUERY, output_type="arrow_table")
         with pytest.raises(RuntimeError) as excinfo:
             result.arrow_reader()
         assert "output_type='arrow_reader'" in str(excinfo.value)
 
 
-def test_default_output_type_on_the_connection_also_works():
+def test_output_type_set_on_the_connection_also_works():
+    """The connection-level output_type is not the default one; see tests/compat/test_default_output_type_surfaces.py for that"""
     with bareduckdb.connect(output_type="arrow_reader") as conn:
         reader = conn.execute(QUERY).arrow_reader()
         assert sum(batch.num_rows for batch in reader) == 1000
@@ -63,6 +67,6 @@ def test_arrow_table_is_unaffected():
 
 
 def test_arrow_table_still_works_in_reader_mode():
-    """A reader-mode result can still be materialized, which pa.table() relies on."""
+    """A reader-mode result can still be materialized, which pa.table() relies on"""
     with bareduckdb.connect() as conn:
         assert conn.execute(QUERY, output_type="arrow_reader").arrow_table().num_rows == 1000

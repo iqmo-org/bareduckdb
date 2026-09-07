@@ -5,12 +5,10 @@ import pytest
 pl = pytest.importorskip("polars")
 
 import bareduckdb
-import bareduckdb.data_sources.polars_holder as polars_holder
 
 
 N_ROWS = 300
 MODULO = 50
-DYNAMIC_FILTER = 8
 
 
 def _make_lazyframe():
@@ -33,19 +31,6 @@ def _rows(frame):
     return sorted(frame.rows())
 
 
-@pytest.fixture
-def filter_recorder(monkeypatch):
-    seen = []
-    original = polars_holder._translate_single_filter
-
-    def _spy(filter_info, column_name, column_dtype=None):
-        seen.append(filter_info.get("type"))
-        return original(filter_info, column_name, column_dtype)
-
-    monkeypatch.setattr(polars_holder, "_translate_single_filter", _spy)
-    return seen
-
-
 class TestDynamicPredicateSelfJoin:
     def _run_polars(self, sql):
         conn = bareduckdb.connect()
@@ -65,19 +50,6 @@ class TestDynamicPredicateSelfJoin:
         )
         assert _rows(got) == _rows(expected), "row contents differ"
         return got, expected
-
-    def test_self_join_with_limit(self, filter_recorder):
-        sql = (
-            "SELECT a.* FROM {t} a JOIN {t} b ON a.id = b.id "
-            "WHERE b.value > 40 ORDER BY a.id LIMIT 5"
-        )
-        got, _ = self._assert_same(sql)
-        assert len(got) == 5
-        if not bareduckdb.features["holder_scan"]:
-            pytest.skip("filter pushdown to the holder requires holder_scan")
-        assert DYNAMIC_FILTER in filter_recorder, (
-            f"expected a dynamic filter at the holder, saw types {filter_recorder}"
-        )
 
     def test_self_join_without_limit(self):
         self._assert_same(

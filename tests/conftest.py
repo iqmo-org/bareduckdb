@@ -27,11 +27,17 @@ _test_counter_lock = threading.Lock()
 
 @pytest.fixture(scope="session", autouse=True)
 def install_test_extensions(tmp_path_factory):
-    """Avoid install race by pre-installing
+    """Avoid install race by pre-installing.
+
+    Returns a dict of extension name -> whether the install succeeded, so
+    tests that require a real install/load can skip cleanly (instead of
+    failing) when the running DuckDB build has no extension repository
+    available, e.g. an unreleased preview/nightly build.
     """
     from filelock import FileLock
 
     lock_file = tmp_path_factory.getbasetemp().parent / "extensions_install.lock"
+    results = {}
 
     with FileLock(str(lock_file)):
         for ext_name, repository in (("httpfs", None), ("json", None), ("h3", "community")):
@@ -40,8 +46,28 @@ def install_test_extensions(tmp_path_factory):
                 logger.info("Installing %s extension (with file lock)", ext_name)
                 conn.install_extension(ext_name, repository=repository)
                 conn.close()
+                results[ext_name] = True
             except Exception as e:
                 logger.warning("Failed to install %s extension: %s", ext_name, e)
+                results[ext_name] = False
+
+    return results
+
+
+@pytest.fixture(scope="session")
+def extension_repository_available(install_test_extensions):
+    """Skip the requesting test if this DuckDB build has no usable extension repository.
+
+    Unreleased preview/nightly DuckDB builds (e.g. v2.0.0-alphaNNNNN) are not
+    always published to extensions.duckdb.org, so `INSTALL httpfs` 404s
+    through no fault of bareduckdb. Tests that need a real extension install
+    should depend on this fixture so they skip in that situation instead of
+    failing, while still running for real against a released DuckDB build
+    where the install succeeds.
+    """
+    if not install_test_extensions.get("httpfs", False):
+        pytest.skip("extension repository unavailable for this DuckDB build (httpfs failed to install)")
+
 
 @pytest.fixture
 def unique_table_name(request):

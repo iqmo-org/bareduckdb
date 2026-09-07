@@ -26,53 +26,39 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           submodules: false
 
-      - name: Initialize DuckDB submodule (headers only)
-        shell: bash
-        run: |
-          # Initialize the duckdb submodule with sparse checkout (headers only)
-          git submodule update --init external/duckdb
-          cd external/duckdb
-          git sparse-checkout init --cone
-          git sparse-checkout set src/include
-          cd ../..
-
       - name: Install Astral UV
-        uses: astral-sh/setup-uv@v10.0.0
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           cache-suffix: -${{ matrix.python }}-${{ matrix.platform.cibw_system }}_${{ matrix.platform.arch }}
 
-      - name: Setup Compiler
-        shell: bash
-        run: |
-          case "${{ matrix.platform.os }}" in
-            ubuntu*)
-              # Ubuntu: Install and configure GCC 14 for the host
-              # Note: cibuildwheel uses its own compilers inside the manylinux/musllinux containers
-              sudo apt-get update
-              sudo apt-get install -y gcc-14 g++-14
-              sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
-              sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
-              gcc --version
-              g++ --version
-              ;;
-            macos*)
-              # macOS: Use AppleClang (default) to match DuckDB's build
-              echo "Using default AppleClang compiler"
-              cc --version
-              c++ --version
-              ;;
-          esac
-
       - name: Build and test wheels
+        if: matrix.platform.cibw_system != 'musllinux'
         uses: pypa/cibuildwheel@v4.2.0
         env:
           CIBW_TEST_COMMAND: pytest {project}/tests --import-mode=importlib --ignore={project}/tests/experimental --ignore={project}/tests/downstream --ignore={project}/tests/comparison --ignore={project}/tests/benchmarks -v -n auto --cov=bareduckdb --cov-report=term-missing
+          CIBW_TEST_EXTRAS: "test"
+          CIBW_TEST_REQUIRES: filelock
+          CIBW_ARCHS: ${{ matrix.platform.arch }}
+          CIBW_BUILD: ${{ matrix.python }}-${{ matrix.platform.cibw_system }}_${{ matrix.platform.arch }}
+
+      - name: Build and test wheels (musllinux)
+        if: matrix.platform.cibw_system == 'musllinux'
+        uses: pypa/cibuildwheel@v4.2.0
+        env:
+          CIBW_TEST_COMMAND: |
+            set -e
+            LIB={project}/src/bareduckdb/_libs/libduckdb.so
+            test -f "$LIB" || { echo "ERROR: $LIB missing after build"; exit 1; }
+            PKG=$(python -c "import importlib.util as u; print(u.find_spec('bareduckdb').submodule_search_locations[0])")
+            mkdir -p "$PKG/_libs"
+            cp -f "$LIB" "$PKG/_libs/"
+            pytest {project}/tests --import-mode=importlib --ignore={project}/tests/experimental --ignore={project}/tests/downstream --ignore={project}/tests/comparison --ignore={project}/tests/benchmarks -v -n auto --cov=bareduckdb --cov-report=term-missing
           CIBW_TEST_EXTRAS: "test"
           CIBW_TEST_REQUIRES: filelock
           CIBW_ARCHS: ${{ matrix.platform.arch }}
@@ -95,7 +81,7 @@ jobs:
 
     steps:
       - name: Download all wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           path: dist/
           pattern: wheel-*
@@ -106,6 +92,6 @@ jobs:
           ls -lh dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/

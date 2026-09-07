@@ -2,6 +2,7 @@ import pytest
 import bareduckdb
 
 
+@pytest.mark.usefixtures("extension_repository_available")
 def test_install_extension_basic():
     conn = bareduckdb.connect()
     conn.install_extension("httpfs")
@@ -10,6 +11,7 @@ def test_install_extension_basic():
     assert bool(result["installed"][0]) is True
 
 
+@pytest.mark.usefixtures("extension_repository_available")
 def test_install_extension_force_reinstall():
     conn = bareduckdb.connect()
     conn.install_extension("json")
@@ -54,6 +56,7 @@ def test_install_extension_validation_empty_version():
         conn.install_extension("test", version="")
 
 
+@pytest.mark.usefixtures("extension_repository_available")
 def test_load_extension():
     conn = bareduckdb.connect()
     conn.install_extension("httpfs")
@@ -62,6 +65,7 @@ def test_load_extension():
     assert bool(result["loaded"][0]) is True
 
 
+@pytest.mark.usefixtures("extension_repository_available")
 def test_install_and_load_workflow():
     conn = bareduckdb.connect()
     conn.install_extension("json")
@@ -79,6 +83,7 @@ def test_load_extension_without_install_fails():
         conn.load_extension("fts")
 
 
+@pytest.mark.usefixtures("extension_repository_available")
 def test_cursor_sees_parent_installed_extensions():
     """Test that cursor sees extensions installed by parent"""
     conn = bareduckdb.connect()
@@ -90,6 +95,7 @@ def test_cursor_sees_parent_installed_extensions():
     assert bool(result["installed"][0]) is True
 
 
+@pytest.mark.usefixtures("extension_repository_available")
 def test_cursor_sees_parent_loaded_extensions():
     """Test that cursor sees extensions loaded by parent"""
     conn = bareduckdb.connect()
@@ -101,6 +107,7 @@ def test_cursor_sees_parent_loaded_extensions():
     assert len(result) == 1
 
 
+@pytest.mark.usefixtures("extension_repository_available")
 def test_extension_loaded_in_cursor_visible_to_parent():
     """Test that extension loaded in cursor is visible to parent"""
     conn = bareduckdb.connect()

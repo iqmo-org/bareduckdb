@@ -1,0 +1,3 @@
+from typing import Any
+
+def register_io_source(*args: Any, **kwargs: Any) -> Any: ...

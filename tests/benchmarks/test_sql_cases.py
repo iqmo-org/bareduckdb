@@ -7,7 +7,7 @@ except ImportError:
 
 
 def _check_result(result, expected_expr: str | None):
-    """Check result against expected_len expression."""
+    """Check result against expected_len expression"""
     if expected_expr is None:
         return
 
@@ -31,7 +31,7 @@ _SQL_CASES = discover_sql_cases()
 
 @pytest.fixture(scope="module")
 def data_files():
-    """Ensure test data exists."""
+    """Ensure test data exists"""
     setup_data()
 
 

@@ -3,10 +3,12 @@ import tempfile
 import os
 
 import bareduckdb
-bareduckdb.register_as_duckdb()
 
-import sqlalchemy
-import duckdb_engine
+sqlalchemy = pytest.importorskip("sqlalchemy")
+duckdb_engine = pytest.importorskip("duckdb_engine")
+
+# After the importorskip, so a collected-but-skipped module does not alias duckdb for the session.
+bareduckdb.register_as_duckdb()
 from sqlalchemy import create_engine, text, Table, Column, Integer, String, MetaData, select
 from sqlalchemy.orm import declarative_base, Session
 
@@ -72,7 +74,6 @@ class TestSQLAlchemyCore:
         metadata.create_all(engine)
         
         with engine.connect() as conn:
-            # Verify table exists
             result = conn.execute(text("SELECT COUNT(*) FROM information_schema.tables WHERE table_name='users'"))
             assert result.fetchone()[0] > 0
 
@@ -91,12 +92,10 @@ class TestSQLAlchemyCore:
         metadata.create_all(engine)
         
         with engine.connect() as conn:
-            # Insert data
             conn.execute(users.insert().values(id=1, name='Alice', age=30))
             conn.execute(users.insert().values(id=2, name='Bob', age=25))
             conn.commit()
-            
-            # Select data
+
             result = conn.execute(select(users).where(users.c.age > 26))
             rows = result.fetchall()
             assert len(rows) == 1
@@ -260,7 +259,6 @@ class TestAdvancedFeatures:
             assert rows[1][1] == 20 
 
     def test_join_operation(self):
-        """Test JOIN operations."""
         engine = create_engine("duckdb:///:memory:")
         
         with engine.connect() as conn:

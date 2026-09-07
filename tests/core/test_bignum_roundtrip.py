@@ -72,7 +72,7 @@ def test_varint_multiple_rows():
         ("SELECT {'a': 5::VARINT} AS c", [({"a": 5},)]),
         ("SELECT [{'a': 7::VARINT}] AS c", [([{"a": 7}],)]),
         ("SELECT {'l': [3::VARINT]} AS c", [({"l": [3]},)]),
-        ("SELECT MAP(['k'], [9::VARINT]) AS c", [([("k", 9)],)]),
+        ("SELECT MAP(['k'], [9::VARINT]) AS c", [({"k": 9},)]),
         ("SELECT [(-(2**100))::VARINT] AS c", [([-(2**100)],)]),
     ],
 )
@@ -83,7 +83,7 @@ def test_nested_varint_decodes(sql, expected):
 
 
 @pytest.mark.xfail(
-    reason="Arrow has no arbitrary-precision integer type; VARINT stays arrow.opaque",
+    reason="Arrow has no arbitrary-precision integer type; DuckDB exports VARINT as arrow.opaque bytes",
     strict=True,
 )
 def test_varint_arrow_table_roundtrip():

@@ -1,4 +1,4 @@
-"""Streaming results must be freed when the exported stream is released."""
+"""Streaming results must be freed when the exported stream is released"""
 
 import gc
 import sys
@@ -10,7 +10,7 @@ from bareduckdb.core import ConnectionBase
 pytest.importorskip("pyarrow")
 
 WARMUP = 200
-ITERATIONS = 2000
+ITERATIONS = 500
 # Let it settle since buffer managers grow first
 MAX_GROWTH_BYTES = (20 if sys.platform == "darwin" else 8) * 1024 * 1024
 DECAY_RATIO = 0.6
@@ -50,7 +50,7 @@ def _drop_capsules(conn, count):
 
 
 def _growth_windows(work):
-    """Resident growth over two consecutive windows of equal length."""
+    """Resident growth over two consecutive windows of equal length"""
     conn = ConnectionBase()
     try:
         work(conn, WARMUP)

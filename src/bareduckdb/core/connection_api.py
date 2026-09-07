@@ -31,7 +31,7 @@ class ConnectionAPI(ConnectionBase):
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
         default_statistics: "Literal['numeric'] | bool | None" = "numeric",
         udtf_functions: Optional[dict[str, Callable]] = None,
-        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_table",
+        output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_capsule",
         enable_replacement_scan: bool = False,
         _from_impl: Any = None,
     ) -> None:
@@ -138,14 +138,18 @@ class ConnectionAPI(ConnectionBase):
         *,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] | None = None,
         data: Mapping[str, Any] | None = None,
+        batch_size: int = 0,
     ):
+        """Run query. batch_size is a strict maximum on the rows in one Arrow batch - 0 selects DuckDB's default"""
         self._last_result = None
-        if output_type is None:
-            output_type = self._default_output_type
+        if output_type is None and self._default_output_type == "arrow_capsule":
+            call_output_type = None
+        else:
+            call_output_type = output_type if output_type is not None else self._default_output_type
 
         query, data = self._preprocess(query, data)
 
-        result = self._call(query=query, output_type=output_type, parameters=parameters, data=data)
+        result = self._call(query=query, output_type=call_output_type, parameters=parameters, data=data, batch_size=batch_size)
         result = Result(result)
         self._last_result = result
 
@@ -200,12 +204,13 @@ class ConnectionAPI(ConnectionBase):
         data = data or {}
 
         if self.enable_replacement_scan:
+            # A registered name never enters the catalog, so SHOW TABLES alone would miss it.
+            existing_tables = set(self._registered_objects)
             try:
                 tables_result = self._call("SHOW TABLES", output_type="arrow_table")
-                existing_tables = {row["name"] for row in tables_result.to_pylist()}
+                existing_tables |= {row["name"] for row in tables_result.to_pylist()}
             except Exception as e:
                 logger.warning("Failed to get table list: %s", e)
-                existing_tables = set()
 
             table_refs = set(parse_result.get("table_refs", []))
             unknown_tables = table_refs - existing_tables
@@ -251,14 +256,24 @@ class ConnectionAPI(ConnectionBase):
 
         return query, data
 
+    def close(self) -> None:
+        """Drop the last result before closing.
+
+        The default output type is arrow_capsule, so an unconsumed result holds a live stream
+        over this connection's data. Left in place it keeps the database open past close(),
+        which on a file database blocks reopening it.
+        """
+        self._last_result = None
+        super().close()
+
     def _last_result_get(self):
-        """Get last result or raise if none available."""
+        """Get last result or raise if none available"""
         if not self._last_result:
             raise RuntimeError("No last result")
         return self._last_result
 
-    def arrow_table(self):
-        return self._last_result_get().arrow_table()
+    def arrow_table(self, timetz_utc: bool = False):
+        return self._last_result_get().arrow_table(timetz_utc=timetz_utc)
 
     def arrow_reader(self):
         return self._last_result_get().arrow_reader()
@@ -266,8 +281,8 @@ class ConnectionAPI(ConnectionBase):
     def df(self):
         return self._last_result_get().df()
 
-    def pl(self, lazy: bool = False):
-        return self._last_result_get().pl(lazy=lazy)
+    def pl(self, lazy: bool = False, rechunk: bool = False):
+        return self._last_result_get().pl(lazy=lazy, rechunk=rechunk)
 
     def pl_lazy(self, batch_size: int | None = None):
         return self._last_result_get().pl_lazy(batch_size=batch_size)

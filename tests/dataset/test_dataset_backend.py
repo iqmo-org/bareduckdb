@@ -6,15 +6,15 @@ import uuid
 
 pa = pytest.importorskip("pyarrow")
 
-import bareduckdb
 from bareduckdb import Connection
 
 
-@pytest.mark.skipif(not bareduckdb.features["holder_scan"], reason="requires holder_scan experimental feature")
-def test_dataset_pushdown_in_explain(connect_config):
-    """
-    Verify that filter and projection pushdowns appear in EXPLAIN output
-    """
+@pytest.mark.xfail(
+    reason="the referencing Arrow scan takes neither filter nor projection pushdown, so both stay "
+    "in operators above it; this asserts the pushdown we want, not what we have",
+    strict=True,
+)
+def test_dataset_pushdown_in_explain(connect_config, explain_text, scan_block):
     test_db = f":memory:test_pushdown_explain_{uuid.uuid4().hex[:8]}"
     conn = Connection(database=test_db, **connect_config)
 
@@ -34,8 +34,8 @@ def test_dataset_pushdown_in_explain(connect_config):
         WHERE category = 'cat_5' AND value > 100
         """
 
-        explain_result = conn.execute(f"EXPLAIN {query}").fetchall()
-        explain_text = '\n'.join(str(row) for row in explain_result)
+        plan = explain_text(conn, query)
+        scan = scan_block(plan)
 
         result = conn.execute(query).fetchall()
 
@@ -45,15 +45,10 @@ def test_dataset_pushdown_in_explain(connect_config):
             assert f'cat_{id_val % 10}' == 'cat_5'
             assert value_val > 100
 
-        has_filter_pushdown = 'Filters:' in explain_text
-        has_projection_pushdown = 'Projections:' in explain_text
-        has_python_data_scan = 'PYTHON_DATA_SCAN' in explain_text
-        has_filter_operator = '|           FILTER          |' in explain_text
-
-        assert has_python_data_scan
-        assert has_filter_pushdown
-        assert has_projection_pushdown
-        assert not has_filter_operator
+        # A `Filters:` line elsewhere in the plan is a FILTER operator above the scan, which pushdown removes.
+        assert 'Filters:' in scan
+        assert 'Projections:' in scan
+        assert 'Filter' not in plan
 
     finally:
         conn.close()

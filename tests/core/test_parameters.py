@@ -20,6 +20,3 @@ def test_core_named_parameters():
         result = conn._call(query="select i, i || '_val' as j from range(10) t(i) where i=$my_i or j=$my_j", output_type="arrow_table", parameters={"my_i": 4, "my_j": "6_val"})
         assert(len(result) == 2)
         assert(result.to_pylist()[-1]["i"] == 6)
-
-
-test_core_named_parameters()

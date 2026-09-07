@@ -143,7 +143,6 @@ def test_udtf_error_not_registered(thread_index, iteration_index):
 
     conn = bareduckdb.connect(database=f":memory:udtf_error_{thread_index}_{iteration_index}")
 
-    # DuckDB raises RuntimeError for non-existent table functions
     with pytest.raises(RuntimeError, match="nonexistent does not exist"):
         conn.execute("SELECT * FROM nonexistent(5)")
 
@@ -187,7 +186,6 @@ def test_udtf_with_pandas(thread_index, iteration_index):
 
 
 def test_udtf_unique_naming(thread_index, iteration_index):
-    """Test that UDTF calls generate unique table names"""
     conn = bareduckdb.connect(database=f":memory:udtf_unique_{thread_index}_{iteration_index}")
 
     def test_func(n: int) -> pa.Table:
@@ -197,15 +195,12 @@ def test_udtf_unique_naming(thread_index, iteration_index):
 
     sql = "SELECT COUNT(*) as cnt FROM test_func(10)"
 
-    # Process same SQL twice - should get different table names (UUID-based)
     sql1, data1 = conn._preprocess(sql, None)
     sql2, data2 = conn._preprocess(sql, None)
 
-    # Table names should be different (UUID ensures uniqueness)
     assert sql1 != sql2, "Different UDTF calls should generate different table names"
     assert list(data1.keys()) != list(data2.keys())
 
-    # But both should have the prefix
     table1 = list(data1.keys())[0]
     table2 = list(data2.keys())[0]
     assert table1.startswith("_udtf_test_func_")

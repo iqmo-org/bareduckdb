@@ -1,21 +1,4 @@
-"""
-Python result wrapper
-
-Result wraps a result that has already been produced. It holds no query and no
-connection, so it cannot re-execute and cannot change how the data was fetched.
-
-The fetch mode is chosen earlier, by the output_type passed to execute() or set
-on the connection:
-
-- output_type="arrow_table"   -> a materialized pa.Table
-- output_type="arrow_reader"  -> a streaming pa.RecordBatchReader
-- output_type="arrow_capsule" -> an Arrow C stream capsule
-
-Consumption methods therefore convert what is already there; they do not select
-a mode. arrow_table() can materialize a reader, but arrow_reader() cannot stream
-a table, and raises rather than returning a reader over memory that is already
-fully populated.
-"""
+"""Wraps an already-produced result; the fetch mode was fixed by output_type at execute(), so consumption methods convert what is there rather than select a mode"""
 
 from __future__ import annotations
 
@@ -34,6 +17,8 @@ if TYPE_CHECKING:
     from ..core import PyArrowCapsule
 
 logger = logging.getLogger(__name__)
+
+_MATERIALIZING_BATCH_ROWS = 16_777_216
 
 _BIGNUM_HEADER_BYTES = 3
 _BIGNUM_LENGTH_MASK = 0x7FFFFF
@@ -159,49 +144,91 @@ class Result:
     Container that normalizes stream/table results and handles transformations
     """
 
-    # Instance attributes
+    _capi: Any | None  # unconverted engine result
     _table: pa.Table | None  # cached materialized table: None until needed
     _reader: PyArrowCapsule | pa.RecordBatchReader | None
+    _rows_iter: Any | None
     _offset: int  # fetch offset
     _read: bool
+    _consumed_by: str | None
     _result_lock: threading.Lock
 
-    def __init__(self, result_obj: pa.Table | PyArrowCapsule | pa.RecordBatchReader):
+    def __init__(self, result_obj: Any):
         """
-        Wrap an already-produced result.
+        Wrap an already-produced result, or an engine result whose conversion was deferred.
 
         Args:
-            result_obj: A PyArrow Table, RecordBatchReader, or Arrow C stream capsule.
+            result_obj: A CApiResult, PyArrow Table, RecordBatchReader, or Arrow C stream capsule.
         """
+        from ..capi.impl.result import CApiResult  # type: ignore[import-untyped]  # pyarrow-free
 
+        self._capi = None
+        self._table = None
+        self._reader = None
+
+        if isinstance(result_obj, CApiResult):
+            self._capi = result_obj
         # A little more complicated because we're avoiding importing pyarrow
         # TODO: Find a cleaner way to do this
-        if type(result_obj).__name__ == "Table" and type(result_obj).__module__.startswith("pyarrow"):
+        elif type(result_obj).__name__ == "Table" and type(result_obj).__module__.startswith("pyarrow"):
             self._table = result_obj
-            self._reader = None
         else:
-            self._table = None
             self._reader = result_obj
 
+        self._rows_iter = None
+        self._stream_batch_rows = None
+        self._was_deferred = self._capi is not None
+        self._schema: tuple[tuple[str, ...], tuple[str, ...]] | None = None
+        self._consumed_by = None
         self._read = False
         self._offset = 0  # Current row offset for fetchone/fetchmany
         self._result_lock = threading.Lock()
+
+    def _claim(self, consumer: str) -> None:
+        """Record which call took result so second can name the first"""
+        if self._consumed_by is not None and self._consumed_by != consumer:
+            raise RuntimeError(
+                f"this result was consumed by {self._consumed_by}; re-execute the query to call "
+                f"{consumer}. The rows are not cached, so there is nothing left to re-read."
+            )
+        self._consumed_by = consumer
 
     def _result_table(self) -> pa.Table:
         import pyarrow as pa
 
         if self._table is not None:
             return self._table
-        elif self._read:
+        if self._capi is not None:
+            self._claim("arrow_table()")
+            self._deferred_schema()
+
+            capi, self._capi = self._capi, None
+            self._table = capi.to_arrow()
+            return self._table
+        if self._consumed_by is not None:
+            raise RuntimeError(
+                f"this result was consumed by {self._consumed_by}; re-execute query to call "
+                "arrow_table(). The rows are not cached, so there is nothing left to re-read"
+            )
+        if self._read:
             raise RuntimeError("Can't materialize a Reader or Capsule if it's already been retrieved")
-        else:
-            self._table = pa.table(self)  # type: ignore
-            self._reader = None
-            return self._table  # type: ignore
+        self._table = pa.table(self)  # type: ignore
+        self._reader = None
+        return self._table  # type: ignore
 
     def arrow_reader(self, batch_size: int | None = None) -> pa.RecordBatchReader:
-        """Return the streaming reader, or raise if the result was materialized."""
+        """Return the streaming reader, or raise if the result was materialized"""
         with self._result_lock:
+            if self._capi is not None:
+                import pyarrow as pa
+
+                self._claim("arrow_reader()")
+                self._deferred_schema()
+                capsule = self._capi.__arrow_c_stream__(None)
+                self._capi = None
+                self._read = True
+                return pa.RecordBatchReader._import_from_c_capsule(capsule)  # type: ignore
+
             if self._reader is not None:
                 self._read = True
                 _reader = self._reader
@@ -211,13 +238,23 @@ class Result:
 
             if self._table is not None:
                 raise RuntimeError(
-                    """arrow_reader() requires output_type='arrow_reader'. This result was fetched in a materializing mode, so the rows are already in memory and a reader over them would stream nothing. Pass output_type='arrow_reader' to execute(), or set it on the connection."""
+                    """arrow_reader() requires output_type='arrow_reader'. This result was fetched in a materializing mode, so the rows are already in memory and a reader over them would stream nothing. Pass output_type='arrow_reader' to execute(), or set it on the connection"""
                 )
 
             raise RuntimeError("Reader already consumed")
 
     def __arrow_c_stream__(self, requested_schema=None):  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
         with self._result_lock:
+            if self._capi is not None:
+                # The engine's own stream; this is where the result handle is surrendered.
+                # The caller may have claimed already (arrow_table, pl); if not, name the export.
+                if self._consumed_by is None:
+                    self._consumed_by = "an Arrow export"
+                self._deferred_schema()
+                capi, self._capi = self._capi, None
+                self._read = True
+                return capi.__arrow_c_stream__(requested_schema, batch_rows=self._stream_batch_rows)
+
             self._read = True
             if self._reader is not None:
                 if hasattr(self._reader, "__arrow_c_stream__"):
@@ -259,8 +296,11 @@ class Result:
 
         import polars as pl
 
-        # Pass self to use __arrow_c_stream__() protocol, avoiding PyArrow import checks
-        return pl.from_arrow(self, rechunk=rechunk)  # pyright: ignore[reportReturnType]
+        self._claim("pl()")
+        self._stream_batch_rows = _MATERIALIZING_BATCH_ROWS
+        # Passing self uses the __arrow_c_stream__ protocol, so pyarrow is never imported
+        frame = pl.DataFrame(self)
+        return frame.rechunk() if rechunk else frame
 
     def pl_lazy(self, batch_size: int | None = None) -> pl.LazyFrame:
         """
@@ -281,16 +321,14 @@ class Result:
 
         self._read = True
 
-        # Fail fast if not using arrow_reader output type
         if self._table is not None:
             raise RuntimeError("pl_lazy() requires output_type='arrow_reader'")
 
-        if self._reader is None:
+        if self._capi is None and self._reader is None:
             raise RuntimeError("Reader already consumed or not available")
 
         reader = self.arrow_reader(batch_size=batch_size)
 
-        # Try to read first batch to get schema
         try:
             first_batch = reader.read_next_batch()
             first_df = pl.from_arrow(first_batch)
@@ -318,7 +356,6 @@ class Result:
                 df = first_df
                 first_batch_yielded = True
 
-                # Apply filters in Polars
                 if with_columns is not None:
                     df = df.select(with_columns)
                 if predicate is not None:
@@ -334,7 +371,6 @@ class Result:
                 if len(df) > 0:
                     yield df
 
-            # Yield remaining batches
             for record_batch in iter(reader.read_next_batch, None):
                 df = pl.from_arrow(record_batch)
 
@@ -356,15 +392,10 @@ class Result:
         return register_io_source(source_generator, schema=polars_schema)  # type: ignore
 
     def _fetch_rows(self, size: int | None = None) -> list[tuple[Any, ...]]:
-        """
-        Fetch rows starting from current offset.
+        """Fetch up to `size` rows from the current offset, or all remaining rows if size is None"""
+        if self._capi is not None or self._rows_iter is not None:
+            return self._fetch_rows_streaming(size)
 
-        Args:
-            size: Number of rows to fetch, or None for all remaining rows
-
-        Returns:
-            List of row tuples
-        """
         table = self.arrow_table()
 
         if self._offset >= len(table):
@@ -392,55 +423,78 @@ class Result:
         self._offset = end_idx
         return rows
 
+    def _fetch_rows_streaming(self, size: int | None) -> list[tuple[Any, ...]]:
+        """Step the engine's own row generator, so fetchmany never materializes the result"""
+        import itertools
+
+        with self._result_lock:
+            capi = self._capi
+            if self._rows_iter is None and capi is not None:
+                self._claim("a row fetch")
+                self._deferred_schema()
+                self._rows_iter = capi.rows()
+                self._capi = None
+
+            if size is None:
+                return list(self._rows_iter)
+            return list(itertools.islice(self._rows_iter, size))
+
     def fetchall(self) -> list[tuple[Any, ...]]:
-        """Fetch all remaining rows from current cursor position."""
+        """Fetch all remaining rows from current cursor position"""
         return self._fetch_rows(None)
 
     def fetchone(self) -> tuple[Any, ...] | None:
-        """Fetch the next row from current cursor position."""
+        """Fetch the next row from current cursor position"""
         rows = self._fetch_rows(1)
         return rows[0] if rows else None
 
     def fetchmany(self, size: int = 1) -> list[tuple[Any, ...]]:
-        """Fetch the next `size` rows from current cursor position."""
+        """Fetch the next `size` rows from current cursor position"""
         return self._fetch_rows(size)
+
+    def _deferred_schema(self) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+        """Column names and DuckDB type names while the conversion is deferred, else None"""
+        if self._capi is not None:
+            self._schema = (tuple(self._capi.columns), tuple(self._capi.column_types))
+        return self._schema
 
     @property
     def description(self) -> list[tuple[Any, ...]]:
-        """
-        DB-API 2.0: Column description.
-
-        Returns a sequence of 7-item tuples describing each result column:
-        (name, type_code, display_size, internal_size, precision, scale, null_ok)
-
-        Returns None if the result has not been materialized yet.
-        """
+        """DB-API 2.0 column description: 7-item tuples (name, type_code, display_size, internal_size, precision, scale, null_ok)"""
+        names_types = self._deferred_schema()
+        if names_types is not None:
+            return [(name, type_name, None, None, None, None, None) for name, type_name in zip(*names_types, strict=True)]
         return [(field.name, field.type, None, None, None, None, None) for field in self.arrow_table().schema]
 
     @property
     def rowcount(self) -> int:
-        """
-        DB-API 2.0: Row count.
-
-        Returns the number of rows in the result set.
-        Returns -1 if the result has not been materialized yet.
-        """
+        """DB-API 2.0 row count, or -1 when it cannot be known without draining the result"""
+        if self._table is None and self._was_deferred:
+            return -1
         return len(self.arrow_table())
 
     @property
     def columns(self) -> list[str]:
-        """
-        Return column names.
-
-        Returns an empty list if the result has not been materialized yet.
-        """
+        """Return column names"""
+        names_types = self._deferred_schema()
+        if names_types is not None:
+            return list(names_types[0])
 
         return [field.name for field in self.arrow_table().schema]  # pyright: ignore[reportUnknownVariableType]
 
     # Aliases for compatibility w/ duckdb API
     arrow = arrow_reader
 
-    arrow_table = _result_table
+    def arrow_table(self, timetz_utc: bool = False) -> pa.Table:
+        """Materialize the result, optionally normalizing lossless TIMETZ columns to UTC"""
+        table = self._result_table()
+        if not timetz_utc:
+            return table
+        from ..core.arrow_timetz import require_lossless_timetz, timetz_to_utc
+
+        require_lossless_timetz(table.schema)
+        return timetz_to_utc(table)
+
     fetch_arrow_table = arrow_table
     to_arrow = arrow_table
     to_arrow_table = arrow_table

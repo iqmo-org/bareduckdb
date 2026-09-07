@@ -23,10 +23,7 @@ jobs:
           - { os: windows-latest,    arch: AMD64,      cibw_system: win }
           # - { os: macos-13,          arch: x86_64,     cibw_system: macosx }
         include:
-          - { python: gp312_250, platform: { os: ubuntu-latest,    arch: x86_64,  cibw_system: manylinux } }
-          - { python: gp312_250, platform: { os: ubuntu-24.04-arm, arch: aarch64, cibw_system: manylinux } }
-          - { python: gp312_250, platform: { os: macos-latest,     arch: arm64,   cibw_system: macosx } }
-          - { python: gp312_250, platform: { os: windows-latest,   arch: AMD64,   cibw_system: win } }
+          - { python: gp312_250, platform: { os: ubuntu-latest, arch: x86_64, cibw_system: manylinux } }
     runs-on: ${{ matrix.platform.os }}
 
     steps:

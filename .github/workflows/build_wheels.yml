@@ -71,10 +71,11 @@ jobs:
           path: wheelhouse/*.whl
           compression-level: 0
 
-  # cibuildwheel has no GraalPy 25.3; its graalpy-wheel artifact stays out of the wheel-* publish set, being tagged linux_x86_64 rather than manylinux.
   graalpy_wheel:
     name: GraalPy wheel
     uses: ./.github/workflows/graalpy.yml
+    with:
+      versions: '["graalpy-25.0", "graalpy-25.3"]'
     permissions:
       contents: read
 

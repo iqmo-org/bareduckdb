@@ -200,7 +200,7 @@ environments = [ # no need to resolve packages beyond these platforms with uv...
 #    "python_version >= '3.13' and sys_platform == 'darwin' and platform_machine == 'arm64'",
 #    "python_version >= '3.13' and sys_platform == 'linux' and platform_machine == 'x86_64'",
 #]
-exclude-newer = "2 weeks"
+# Reenable after 3.15 exclude-newer = "2 weeks"
 exclude-newer-package = { cython = false, pyarrow = false, pandas = false, ipython = false, numpy = false, ipykernel = false }  # TODO: Remove after 3.15 release
 
 prerelease = "if-necessary"

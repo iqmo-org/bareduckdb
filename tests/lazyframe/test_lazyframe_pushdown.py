@@ -96,6 +96,8 @@ def test_lazyframe_aggregation():
     conn.close()
 
 
+# Patches polars class attributes process-wide, don't parallelize
+@pytest.mark.parallel_threads(1)
 def test_registering_a_lazyframe_never_collects_it():
     """a LazyFrame is streamed batch by batch, so the whole frame never exists"""
     collects = []
@@ -117,6 +119,8 @@ def test_registering_a_lazyframe_never_collects_it():
         pl.LazyFrame.collect = original
 
 
+# Patches polars class attributes process-wide, don't parallelize
+@pytest.mark.parallel_threads(1)
 def test_a_lazyframe_is_registered_as_a_batch_stream():
     """collect_batches() is makes streaming possible without pyarrow"""
     calls = []

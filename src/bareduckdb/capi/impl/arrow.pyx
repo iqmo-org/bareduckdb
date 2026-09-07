@@ -167,10 +167,11 @@ def arrow_table_from_result(CApiResult result, batch_rows=None):
 
     capsule = arrow_stream_from_result(result, batch_rows)
     reader = pyarrow.RecordBatchReader._import_from_c_capsule(capsule)
-    table = reader.read_all()
-    # Releases the stream, and with it the registry borrow, without waiting for the GC.
-    reader.close()
-    return table
+    try:
+        return reader.read_all()
+    finally:
+        # Releases the stream, and with it the registry borrow, without waiting for the GC.
+        reader.close()
 
 
 _VECTOR_TYPE_NAMES = {

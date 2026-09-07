@@ -96,6 +96,7 @@ def test_the_environment_outlives_a_dropped_database_before_exit():
 def test_closing_a_connection_closes_its_database():
     """close() releases the database itself, without waiting for the object to be collected"""
     env = CApiEnvironment()
+    gc.collect()
     before = env.database_count()
     conn = CApiConnectionImpl(None)
     assert env.database_count() == before + 1

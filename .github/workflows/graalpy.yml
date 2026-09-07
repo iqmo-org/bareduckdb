@@ -3,14 +3,31 @@ name: GraalPy
 # workflow_call so dev_versions.yml can chain it
 on:
   workflow_call:
+    inputs:
+      versions:
+        description: 'JSON array of GraalPy versions for setup-python, e.g. ["graalpy-25.0", "graalpy-25.3"]'
+        required: false
+        type: string
+        default: '["graalpy-25.3"]'
   workflow_dispatch:
+    inputs:
+      versions:
+        description: 'JSON array of GraalPy versions for setup-python, e.g. ["graalpy-25.0", "graalpy-25.3"]'
+        required: false
+        type: string
+        default: '["graalpy-25.3"]'
 
 jobs:
   graalpy:
-    name: 'GraalPy - graalpy-25.3 - ubuntu x86_64'
+    name: 'GraalPy - ${{ matrix.version }} - ubuntu x86_64'
     runs-on: ubuntu-latest
 
     continue-on-error: true
+
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(inputs.versions || '["graalpy-25.3"]') }}
 
     permissions:
       contents: read
@@ -29,7 +46,7 @@ jobs:
       - name: Set up GraalPy
         uses: actions/setup-python@v7.0.0
         with:
-          python-version: graalpy-25.3
+          python-version: ${{ matrix.version }}
 
       - name: Interpreter identity
         shell: bash
@@ -214,7 +231,6 @@ jobs:
       - name: Reduced test selection
         shell: bash
         run: |
-          # Oracle's index carries graalpy253_313 builds of pandas and numpy
           python -m pip install --extra-index-url "$GRAALPY_WHEELS" pytest filelock pytest-run-parallel pandas tzdata
           python -m pytest -o addopts= -p no:randomly -v \
             tests/capi/test_no_runtime_deps.py \
@@ -238,7 +254,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: graalpy-wheel
+          name: graalpy-wheel-${{ matrix.version }}
           path: |
             dist/*.whl
             build.log

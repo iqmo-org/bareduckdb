@@ -251,18 +251,26 @@ jobs:
           fetch-depth: 0
           submodules: false
 
+      - name: Cache uv downloads
+        uses: actions/cache@v6.1.0
+        with:
+          path: .uv-cache
+          key: uv-musl-${{ matrix.python }}-${{ hashFiles('uv.lock') }}
+          restore-keys: uv-musl-${{ matrix.python }}-
+
       - name: Build and test in musllinux_1_2
         shell: bash
         # Same image cibuildwheel uses
         run: |
           docker run --rm -v "$PWD:/build" -w /build \
+            -e UV_CACHE_DIR=/build/.uv-cache \
             quay.io/pypa/musllinux_1_2_x86_64 sh -c '
               set -e
               PY=/opt/python/${{ matrix.pydir }}/bin/python
               test -x "$PY" || { echo "ERROR: no interpreter at $PY"; ls /opt/python; exit 1; }
               gcc --version | head -1
               export UV_PYTHON="$PY"
-              uv sync --no-default-groups --extra test --reinstall-package bareduckdb -v
+              uv sync --no-default-groups --extra test --reinstall-package bareduckdb
 
               # libduckdb must be the musl build, not glibc
               LIB=$(find src/bareduckdb/_libs -name "libduckdb.so")
@@ -284,4 +292,12 @@ jobs:
               uv run --no-sync pytest tests --ignore=tests/experimental --ignore=tests/downstream \
                   --ignore=tests/comparison --ignore=tests/benchmarks \
                   -o addopts="" -q -n auto
+
+              # Drop the pre-built wheels that are cheaper to refetch than to store.
+              uv cache prune --ci
             '
+
+      - name: Make the uv cache readable by the runner
+        if: always()
+        shell: bash
+        run: sudo chown -R "$(id -u):$(id -g)" .uv-cache || true

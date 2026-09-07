@@ -217,6 +217,11 @@ cdef struct bd_bind_data:
     idx_t slot
 
 
+# Above any real thread count, since engine caps at its own
+# what DuckDB's built-in arrow scan uses (external/duckdb/src/function/table/arrow.cpp:113)
+DEF BD_SCAN_MAX_THREADS = 4096
+
+
 cdef struct bd_scan_state:
     bd_reg_entry *entry
     long cursor
@@ -713,8 +718,8 @@ cdef void _bd_tf_init_global(
     if duckdb_v2_table_function_init_global_set_global_state(info, &data, err) != DUCKDB_V2_ERROR_NONE:
         free(state)
         return
-    # One worker: the chunk list is immutable, but parallel scan over it was never measured.
-    duckdb_v2_table_function_init_global_set_max_threads(info, 1, NULL)
+    # parallel scan is safe: chunk list is immutable and _bd_tf_exec claims each index with an atomic fetch-add
+    duckdb_v2_table_function_init_global_set_max_threads(info, BD_SCAN_MAX_THREADS, NULL)
 
 
 cdef void _bd_tf_exec(

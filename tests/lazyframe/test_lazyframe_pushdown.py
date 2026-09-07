@@ -94,3 +94,45 @@ def test_lazyframe_aggregation():
     ).fetchall()
     assert result == [("x", 3), ("y", 12)]
     conn.close()
+
+
+def test_registering_a_lazyframe_never_collects_it():
+    """a LazyFrame is streamed batch by batch, so the whole frame never exists"""
+    collects = []
+    original = pl.LazyFrame.collect
+
+    def traced(self, *args, **kwargs):
+        collects.append("collect")
+        return original(self, *args, **kwargs)
+
+    pl.LazyFrame.collect = traced
+    try:
+        conn = Connection()
+        conn.register("t", pl.LazyFrame({"a": range(300000)}))
+        assert collects == []
+        assert conn.execute("SELECT count(*) c FROM t").fetchall() == [(300000,)]
+        assert conn.execute("SELECT sum(a) s FROM t").fetchall() == [(44999850000,)]
+        assert collects == []
+    finally:
+        pl.LazyFrame.collect = original
+
+
+def test_a_lazyframe_is_registered_as_a_batch_stream():
+    """collect_batches() is makes streaming possible without pyarrow"""
+    calls = []
+    original = pl.LazyFrame.collect_batches
+
+    def traced(self, *args, **kwargs):
+        calls.append(kwargs)
+        return original(self, *args, **kwargs)
+
+    pl.LazyFrame.collect_batches = traced
+    try:
+        conn = Connection()
+        conn.register("t", pl.LazyFrame({"a": range(300000)}))
+        assert len(calls) == 1, calls
+        assert calls[0]["lazy"] is True
+        assert calls[0]["chunk_size"] > 0
+        assert conn.execute("SELECT count(*) c FROM t").fetchall() == [(300000,)]
+    finally:
+        pl.LazyFrame.collect_batches = original

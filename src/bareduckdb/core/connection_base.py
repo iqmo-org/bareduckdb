@@ -34,6 +34,10 @@ def _is_arrow_stream_capsule(obj: object) -> bool:
     return type(obj).__name__ == "PyCapsule"
 
 
+# Rows pulled from a LazyFrame per batch
+_LAZY_PULL_ROWS = 131_072
+
+
 class _LazyCollectSource:
     """Collects a lazy source (e.g. Polars LazyFrame) each time a stream is produced"""
 
@@ -42,6 +46,19 @@ class _LazyCollectSource:
 
     def __arrow_c_stream__(self, requested_schema: object = None) -> object:
         return self._lazy.collect().__arrow_c_stream__(requested_schema)  # type: ignore[attr-defined]
+
+
+class _StreamingLazyFrameSource:
+    """Streams a polars LazyFrame batch by batch, so registering one never collects it"""
+
+    def __init__(self, lazy: object) -> None:
+        self._lazy = lazy
+
+    def __arrow_c_stream__(self, requested_schema: object = None) -> object:
+        batches = self._lazy.collect_batches(  # type: ignore[attr-defined]
+            chunk_size=_LAZY_PULL_ROWS, lazy=True
+        )
+        return batches.__arrow_c_stream__(requested_schema)
 
 
 class ConnectionBase:
@@ -129,19 +146,19 @@ class ConnectionBase:
 
     @staticmethod
     def _materialize(data: object) -> object:
-        """Collect a source into an in-memory object whose Arrow stream is implemented in C"""
+        """Hand back a source the importer can stream, materializing only when nothing else works"""
         module = type(data).__module__.split(".")[0]
 
         if module == "pyarrow":
             if hasattr(data, "read_all"):  # RecordBatchReader
                 return data.read_all()  # type: ignore[attr-defined]
-            if hasattr(data, "to_table"):  # dataset.Dataset, dataset.Scanner
-                return data.to_table()  # type: ignore[attr-defined]
             return data
 
         if module == "polars":
-            if hasattr(data, "collect"):  # LazyFrame
-                return data.collect()  # type: ignore[attr-defined]
+            if hasattr(data, "collect_batches"):  # LazyFrame, polars new enough to stream it
+                return _StreamingLazyFrameSource(data)
+            if hasattr(data, "collect"):  # LazyFrame on a polars too old to stream
+                raise InvalidInputException("Unable to collect from a LazyFrame")
             return data
 
         if module == "pandas":
@@ -149,13 +166,8 @@ class ConnectionBase:
 
             return pa.Table.from_pandas(data, preserve_index=False)  # type: ignore[arg-type]
 
-        # The dispatcher reads the stream with no GIL, so a Python get_next has to be avoided.
         if not hasattr(data, "__arrow_c_stream__") and hasattr(data, "collect"):
             return ConnectionBase._materialize(data.collect())  # type: ignore[attr-defined]
-        if hasattr(data, "to_table"):
-            return data.to_table()  # type: ignore[attr-defined]
-        if hasattr(data, "read_all"):
-            return data.read_all()  # type: ignore[attr-defined]
         return data
 
     def _register_arrow(

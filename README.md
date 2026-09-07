@@ -2,8 +2,6 @@
 
 Minimal Python bindings to DuckDB 2.0, built on the new stable C API 2.0 (`duckdb_v2_*`). 
 
-
-
 [![PyPI version](https://img.shields.io/pypi/v/bareduckdb.svg)](https://pypi.org/project/bareduckdb)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)

@@ -1,14 +1,9 @@
 name: Benchmarks
 
 on:
-  push:
-    branches: [main]
+  workflow_call:
   pull_request:
   workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   benchmark:

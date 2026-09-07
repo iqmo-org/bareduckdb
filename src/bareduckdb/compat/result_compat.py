@@ -482,6 +482,16 @@ class Result:
 
         return [field.name for field in self.arrow_table().schema]  # pyright: ignore[reportUnknownVariableType]
 
+    def _release(self) -> None:
+        """Drop the engine result and its registry borrow now"""
+        with self._result_lock:
+            rows_iter, self._rows_iter = self._rows_iter, None
+            capi, self._capi = self._capi, None
+        if rows_iter is not None:
+            rows_iter.close()
+        if capi is not None:
+            capi.close()
+
     # Aliases for compatibility w/ duckdb API
     arrow = arrow_reader
 

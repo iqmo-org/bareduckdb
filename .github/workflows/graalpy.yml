@@ -1,0 +1,246 @@
+name: GraalPy
+
+# workflow_call so dev_versions.yml can chain it
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  graalpy:
+    name: 'GraalPy - graalpy-25.3 - ubuntu x86_64'
+    runs-on: ubuntu-latest
+
+    continue-on-error: true
+
+    permissions:
+      contents: read
+
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      GRAALPY_WHEELS: https://www.graalvm.org/python/wheels/
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Set up GraalPy
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: graalpy-25.3
+
+      - name: Interpreter identity
+        shell: bash
+        run: |
+          python -VV
+          python -c "
+          import sys, sysconfig
+          print('implementation :', sys.implementation.name)
+          print('version        :', sys.version_info[:3])
+          print('sys.platform   :', sys.platform)
+          print('executable     :', sys.executable)
+          print('EXT_SUFFIX     :', sysconfig.get_config_var('EXT_SUFFIX'))
+          print('SOABI          :', sysconfig.get_config_var('SOABI'))
+          print('include        :', sysconfig.get_path('include'))
+          print('Py_GIL_DISABLED:', sysconfig.get_config_var('Py_GIL_DISABLED'))
+          "
+
+      - name: 'Gate: CMake FindPython under GraalPy'
+        id: findpython
+        shell: bash
+        run: |
+          set -uo pipefail
+          cmake --version | head -1
+          PY=$(python -c "import sys; print(sys.executable)")
+          INC=$(python -c "import sysconfig; print(sysconfig.get_path('include'))")
+          ROOT=$(python -c "import sys, os; print(os.path.dirname(os.path.dirname(sys.executable)))")
+          echo "Python_EXECUTABLE=$PY"
+          echo "Python_INCLUDE_DIR=$INC"
+          echo "Python_ROOT_DIR=$ROOT"
+
+          GATE=$RUNNER_TEMP/findpython-gate
+          rm -rf "$GATE" && mkdir -p "$GATE"
+          cat > "$GATE/CMakeLists.txt" <<'CMAKE_EOF'
+          cmake_minimum_required(VERSION 3.21...4.3)
+          project(findpython_gate LANGUAGES C)
+          find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
+          message(STATUS "GATE: Python_INTERPRETER_ID=${Python_INTERPRETER_ID}")
+          message(STATUS "GATE: Python_VERSION=${Python_VERSION}")
+          message(STATUS "GATE: Python_SOABI=${Python_SOABI}")
+          message(STATUS "GATE: Python_INCLUDE_DIRS=${Python_INCLUDE_DIRS}")
+          message(STATUS "GATE: Python_LIBRARIES=${Python_LIBRARIES}")
+          message(STATUS "GATE: Development.Module found=${Python_Development.Module_FOUND}")
+          CMAKE_EOF
+
+          run_gate () {
+            label="$1"; shift
+            rm -rf "$GATE/b-$label"
+            if cmake -S "$GATE" -B "$GATE/b-$label" "$@" > "$GATE/$label.log" 2>&1; then
+              echo "::notice title=FindPython gate ($label)::PASS"
+              grep -E '^-- GATE:' "$GATE/$label.log" || true
+              return 0
+            fi
+            echo "::warning title=FindPython gate ($label)::FAIL"
+            tail -n 40 "$GATE/$label.log"
+            return 1
+          }
+
+          bare=pass
+          run_gate bare -DPython_EXECUTABLE="$PY" || bare=fail
+          hinted=pass
+          run_gate hinted -DPython_EXECUTABLE="$PY" -DPython_INCLUDE_DIR="$INC" -DPython_ROOT_DIR="$ROOT" || hinted=fail
+
+          echo "bare=$bare"   >> "$GITHUB_OUTPUT"
+          echo "hinted=$hinted" >> "$GITHUB_OUTPUT"
+          {
+            echo "### GraalPy: CMake FindPython gate"
+            echo ""
+            echo "| configuration | result |"
+            echo "| --- | --- |"
+            echo "| \`Python_EXECUTABLE\` only | $bare |"
+            echo "| plus \`Python_INCLUDE_DIR\` / \`Python_ROOT_DIR\` | $hinted |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$bare" = fail ] && [ "$hinted" = fail ]; then
+            echo "FindPython cannot resolve GraalPy in either configuration. Nothing downstream can work until it does: this is upstream work in CMake's FindPython or scikit-build-core."
+            exit 1
+          fi
+
+      - name: Build wheel
+        id: build
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pip install build
+          python -m build --wheel --outdir dist 2>&1 | tee build.log
+          ls -l dist/
+
+      - name: 'Findings: SABI, module state, wheel tag'
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          PROBE=$(grep -E 'BAREDUCKDB_PROBE:' build.log 2>/dev/null || echo '(no BAREDUCKDB_PROBE lines; configure did not reach find_package)')
+          WHEEL=$(ls dist/*.whl 2>/dev/null | head -1 || true)
+          TAG='(no wheel produced)'
+          if [ -n "$WHEEL" ]; then
+            TAG=$(basename "$WHEEL")
+          fi
+          echo "$PROBE"
+          echo "wheel: $TAG"
+          {
+            echo "### GraalPy: build findings"
+            echo ""
+            echo '```'
+            echo "$PROBE"
+            echo "wheel: $TAG"
+            echo '```'
+            echo ""
+            echo "Expected if the plan's inference holds: \`SKBUILD_SABI_VERSION=''\`, versioned branch, CYTHON_USE_MODULE_STATE not defined, and a \`graalpy313-graalpy253_313_native-linux_x86_64\` tag."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install wheel and place libduckdb
+        shell: bash
+        run: |
+          set -e
+          python -m pip install --no-index --find-links dist bareduckdb
+          LIB=src/bareduckdb/_libs/libduckdb.so
+          test -f "$LIB" || { echo "ERROR: $LIB missing after build"; exit 1; }
+          PKG=$(python -c "import importlib.util as u; print(u.find_spec('bareduckdb').submodule_search_locations[0])")
+          mkdir -p "$PKG/_libs"
+          cp -f "$LIB" "$PKG/_libs/"
+          echo "Copied $LIB into $PKG/_libs/"
+
+      # Oracle's index
+      - name: Install pyarrow from Oracle's GraalPy index
+        id: pyarrow
+        continue-on-error: true
+        shell: bash
+        run: |
+          python -m pip install --extra-index-url "$GRAALPY_WHEELS" pyarrow
+          python -c "import pyarrow; print('pyarrow', pyarrow.__version__)"
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          python -c "
+          import bareduckdb
+          from bareduckdb.core import ConnectionBase
+
+          print('bareduckdb', bareduckdb.__version__)
+          print('duckdb    ', bareduckdb.__duckdb_version__)
+
+          # This much needs no third party at all
+          raw = ConnectionBase()
+          capsule = raw._call('select 42 as x', output_type='arrow_capsule')
+          assert capsule is not None, 'capsule'
+          print('connect + query + capsule ok')
+
+          # Everything below needs pyarrow
+          try:
+              import pyarrow as pa
+          except ImportError as exc:
+              print('SMOKE PARTIAL (no pyarrow:', exc, ')')
+              raise SystemExit(0)
+
+          con = bareduckdb.Connection()
+          assert con.execute('select 42 as x').fetchall() == [(42,)], 'query'
+
+          rows = con.execute('select i, i * 2 from range(5) t(i)').fetchall()
+          assert rows == [(i, i * 2) for i in range(5)], rows
+          print('rows ok')
+
+          t = pa.table({'a': [1, 2, 3], 'b': ['x', 'y', 'z']})
+          con.register('t', t)
+          assert con.execute('select sum(a) from t').fetchall() == [(6,)], 'registered scan'
+          # execute() returns the Connection, not the Result, so it is not itself
+          # streamable. fetch_arrow_table() is the public accessor and still goes
+          # through Result.__arrow_c_stream__ internally.
+          back = con.execute('select a, b from t order by a').fetch_arrow_table()
+          assert back.num_rows == 3 and back.column('b')[2].as_py() == 'z', 'arrow roundtrip'
+          con.unregister('t')
+          print('register + arrow roundtrip ok')
+
+          con.close()
+          print('SMOKE OK')
+          "
+
+      # Explicit file list
+      - name: Reduced test selection
+        shell: bash
+        run: |
+          # Oracle's index carries graalpy253_313 builds of pandas and numpy
+          python -m pip install --extra-index-url "$GRAALPY_WHEELS" pytest filelock pytest-run-parallel pandas tzdata
+          python -m pytest -o addopts= -p no:randomly -v \
+            tests/capi/test_no_runtime_deps.py \
+            tests/capi/test_connection.py \
+            tests/capi/test_result.py \
+            tests/capi/test_arrow.py \
+            tests/capi/test_register.py \
+            tests/capi/test_errors.py \
+            tests/capi/test_lifetime.py \
+            tests/capi/test_locking.py \
+            tests/capi/test_atomics.py \
+            tests/capi/test_duckdb_runtime.py \
+            tests/core/test_connect.py \
+            tests/core/test_register.py \
+            tests/core/test_arrow_in.py \
+            tests/core/test_type_roundtrip_matrix.py \
+            tests/compat/test_compat_basic.py \
+            tests/compat/test_arrow_reader_contract.py
+
+      - name: Upload GraalPy wheel
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: graalpy-wheel
+          path: |
+            dist/*.whl
+            build.log
+          if-no-files-found: warn
+          compression-level: 0

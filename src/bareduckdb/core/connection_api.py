@@ -257,13 +257,10 @@ class ConnectionAPI(ConnectionBase):
         return query, data
 
     def close(self) -> None:
-        """Drop the last result before closing.
-
-        The default output type is arrow_capsule, so an unconsumed result holds a live stream
-        over this connection's data. Left in place it keeps the database open past close(),
-        which on a file database blocks reopening it.
-        """
-        self._last_result = None
+        """Drop the last result before closing"""
+        last, self._last_result = self._last_result, None
+        if last is not None:
+            last._release()
         super().close()
 
     def _last_result_get(self):

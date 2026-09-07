@@ -1024,14 +1024,25 @@ cdef class _DatabaseHandle:
     def __cinit__(self):
         self._db = NULL
         self._registry = NULL
+        self._holders = 0
 
     cdef void _adopt(self, duckdb_v2_database_handle db) noexcept:
         """Take ownership of an open database and count it against the environment"""
         self._db = db
         bdv2_add(&_open_databases, 1)
 
-    def __dealloc__(self):
+    cdef void _acquire(self) noexcept:
+        """Count one more connection or cursor holding this database open"""
+        bdv2_add(&self._holders, 1)
+
+    cdef void _release(self) noexcept:
+        """Drop one holder, tearing the database down when the last one goes
+        """
         cdef bd_registry *reg
+        if self._db == NULL and self._registry == NULL:
+            return
+        if bdv2_add(&self._holders, -1) > 0:
+            return
         if self._registry != NULL:
             # The registry owns the close from here, so the database outlives the last borrow.
             reg = self._registry
@@ -1046,6 +1057,10 @@ cdef class _DatabaseHandle:
                 if bdv2_add(&_open_databases, -1) == 0:
                     # Here rather than at exit: the exit hook still sees open connections.
                     _destroy_environment_if_idle()
+
+    def __dealloc__(self):
+        if self._db != NULL or self._registry != NULL:
+            self._release()
 
 
 _UNAVAILABLE_MESSAGE = (
@@ -1156,6 +1171,7 @@ cdef class CApiConnectionImpl:
             self._db = None
             check_v2(rc, err, "duckdb_v2_connect")
         self._conn = conn
+        handle._acquire()
         # On the database, so every cursor and later connection can bind a dispatcher claim.
         _install_table_function(conn, handle._registry)
         # Also connection-scoped: the binder consults those before the built-in file scans.
@@ -1185,6 +1201,8 @@ cdef class CApiConnectionImpl:
             with nogil:
                 duckdb_v2_disconnect(&self._conn)
         self._conn = NULL
+        if self._db is not None:
+            self._db._release()
         self._db = None
         self._closed = True
 
@@ -1219,6 +1237,7 @@ cdef class CApiConnectionImpl:
             cursor._db = None
             check_v2(rc, err, "duckdb_v2_connect")
         cursor._conn = conn
+        self._db._acquire()
         if self._db._registry != NULL:
             _install_connection_dispatcher(conn, self._db._registry)
         return cursor

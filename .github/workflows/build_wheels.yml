@@ -39,7 +39,7 @@ jobs:
 
       - name: Build and test wheels
         if: matrix.platform.cibw_system != 'musllinux'
-        uses: pypa/cibuildwheel@v4.2.0
+        uses: pypa/cibuildwheel@v4.2.1
         env:
           CIBW_TEST_COMMAND: pytest {project}/tests --import-mode=importlib --ignore={project}/tests/experimental --ignore={project}/tests/downstream --ignore={project}/tests/comparison --ignore={project}/tests/benchmarks -v -n auto --cov=bareduckdb --cov-report=term-missing
           CIBW_TEST_EXTRAS: "test"
@@ -49,7 +49,7 @@ jobs:
 
       - name: Build and test wheels (musllinux)
         if: matrix.platform.cibw_system == 'musllinux'
-        uses: pypa/cibuildwheel@v4.2.0
+        uses: pypa/cibuildwheel@v4.2.1
         env:
           CIBW_TEST_COMMAND: |
             set -e
@@ -70,6 +70,13 @@ jobs:
           name: wheel-${{ matrix.python }}-${{ matrix.platform.cibw_system }}_${{ matrix.platform.arch }}
           path: wheelhouse/*.whl
           compression-level: 0
+
+  # cibuildwheel has no GraalPy 25.3; its graalpy-wheel artifact stays out of the wheel-* publish set, being tagged linux_x86_64 rather than manylinux.
+  graalpy_wheel:
+    name: GraalPy wheel
+    uses: ./.github/workflows/graalpy.yml
+    permissions:
+      contents: read
 
   publish-wheels:
     name: Publish Wheels to PyPI

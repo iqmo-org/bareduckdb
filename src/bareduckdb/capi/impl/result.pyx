@@ -1032,15 +1032,18 @@ cdef class CApiResult:
         """Yield each result row as a tuple of Python scalars, consuming the stream"""
         cdef duckdb_v2_data_chunk_handle chunk
         self._ensure_schema()
-        while True:
-            chunk = self._next_chunk()
-            if chunk == NULL:
-                return
-            try:
-                for row in _decode_chunk(chunk, self._column_decoders, self._conn_obj._conn):
-                    yield row
-            finally:
-                _destroy_chunk(chunk)
+        try:
+            while True:
+                chunk = self._next_chunk()
+                if chunk == NULL:
+                    return
+                try:
+                    for row in _decode_chunk(chunk, self._column_decoders, self._conn_obj._conn):
+                        yield row
+                finally:
+                    _destroy_chunk(chunk)
+        finally:
+            self._destroy()
 
     cdef duckdb_v2_data_chunk_handle _take_pending_chunk(self) noexcept:
         """Hand over the buffered chunk, if schema resolution had to step to produce one"""

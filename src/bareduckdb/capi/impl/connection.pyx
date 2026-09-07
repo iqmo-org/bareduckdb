@@ -1201,6 +1201,8 @@ cdef class CApiConnectionImpl:
             with nogil:
                 duckdb_v2_disconnect(&self._conn)
         self._conn = NULL
+        if self._db is not None:
+            self._db._release()
         self._db = None
         self._closed = True
 

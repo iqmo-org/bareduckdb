@@ -119,6 +119,26 @@ jobs:
           python -m build --wheel --outdir dist 2>&1 | tee build.log
           ls -l dist/
 
+      # PyPI requires a manylinux or musllinux tag. cibuildwheel does this for the CPython wheels
+      - name: Repair wheel tag for PyPI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install auditwheel
+          for whl in dist/*.whl; do
+            auditwheel repair               --exclude 'libarrow.so.*'               --exclude 'libarrow_python.so.*'               --exclude 'libduckdb.so*'               -w dist_repaired "$whl"
+          done
+          ls -l dist_repaired/
+          rm -f dist/*.whl
+          mv dist_repaired/*.whl dist/
+          # The repair is the whole point of this step prove it happened
+          if ls dist/*-linux_x86_64.whl dist/*-linux_aarch64.whl >/dev/null 2>&1; then
+            echo "ERROR: wheel still carries an unrepaired linux tag; PyPI would reject it"
+            ls -l dist/
+            exit 1
+          fi
+          ls -l dist/
+
       - name: 'Findings: SABI, module state, wheel tag'
         if: always()
         shell: bash

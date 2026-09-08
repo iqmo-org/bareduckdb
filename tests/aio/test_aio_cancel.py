@@ -9,8 +9,8 @@ from bareduckdb.aio import AsyncConnectionPool
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.parallel_threads(1)]
 
-# Runs for about a minute at one engine thread, so an early slot release is unambiguous.
-SLOW = "select count(*) from range(200000000) t(i) where i % 7 = 0"
+# So slow that the only way to complete is an interrupt
+SLOW = "select count(*) from range(1000000000000) t(i) where i % 7 = 0"
 
 
 async def test_cancelled_query_frees_its_slot_without_waiting_for_completion():

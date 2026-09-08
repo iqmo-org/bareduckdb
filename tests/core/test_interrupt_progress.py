@@ -8,8 +8,8 @@ import pytest
 import bareduckdb
 from bareduckdb import QueryCancelled, enable_progress, poll_progress
 
-# Long enough that an interrupt lands well before it finishes, at one engine thread.
-SLOW = "select count(*) from range(200000000) t(i) where i % 7 = 0"
+# So slow that the only way to complete is an interrupt
+SLOW = "select count(*) from range(1000000000000) t(i) where i % 7 = 0"
 
 
 def _run_in_thread(conn, sql, out):

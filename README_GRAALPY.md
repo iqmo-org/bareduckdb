@@ -101,8 +101,25 @@ with bareduckdb.connect() as conn:
 
 ## Running the tests locally
 
-CI runs linux x86_64. On Windows or macOS use Docker rather than `uv`, which only offers older
-GraalPy builds for those hosts:
+CI runs linux x86_64. `uv` cannot provide the interpreter on other hosts: it offers no GraalPy
+3.13 (25.3) build, only older ones. On Windows, fetch the release yourself and point `uv` at
+it; on macOS, use Docker.
+
+### Windows, native
+
+```powershell
+del graalpy.zip
+curl -fL -o graalpy.zip https://github.com/oracle/graalpython/releases/download/graal-25.3.4/graalpy3.13-25.3.4.1-windows-amd64.zip
+tar -xf graalpy.zip
+uv venv --python .\graalpy3.13-25.3.4.1-windows-amd64\bin\graalpy.exe
+uv sync --python .\graalpy3.13-25.3.4.1-windows-amd64\bin\graalpy.exe
+```
+
+Pass `--python` to both: `uv sync` needs the interpreter named explicitly, not just the
+environment `uv venv` created. The `del` is only to clear a previous download and errors
+harmlessly on a first run.
+
+### Any host, via Docker
 
 ```bash
 docker run --rm -v "$PWD:/src" -v "$HOME/.cache/bareduckdb:/root/.cache/bareduckdb" \

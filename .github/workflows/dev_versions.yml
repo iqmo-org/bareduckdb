@@ -100,13 +100,14 @@ jobs:
           uv sync --no-install-project
           uv sync --reinstall-package bareduckdb -v
 
-      - name: Install polars
+      - name: Install GIL-only deps (polars, vortex-data)
         shell: bash
-        # TODO: 3.14t: no polars support yet for free threading
-        # TODO: 3.15: pola-rs/polars#28347
-        if: matrix.python-version != '3.14t' && !startsWith(matrix.python-version, '3.15')
         run: |
-          uv pip install --only-binary :all: polars
+          if uv run --no-sync python -c "import sysconfig, sys; sys.exit(1 if sysconfig.get_config_var('Py_GIL_DISABLED') else 0)"; then
+            uv pip install --group dev-gil --only-binary :all:
+          else
+            echo "free-threaded interpreter: skipping the dev-gil group"
+          fi
 
       - name: Run core tests 1
         shell: bash

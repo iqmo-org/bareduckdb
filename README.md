@@ -173,6 +173,8 @@ uv pip install -e .          # scikit-build-core + CMake; downloads libduckdb on
                              # Windows needs MSVC; no submodules, the v2 header is vendored
 uv run pytest
 uv run pre-commit run --all-files
+
+uv pip install --group dev-gil --only-binary :all:
 ```
 
 Editing a `.pyx` or `.pxd` requires a rebuild.

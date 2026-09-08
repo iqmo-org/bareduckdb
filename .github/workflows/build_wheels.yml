@@ -115,17 +115,27 @@ jobs:
       id-token: write
 
     steps:
-      - name: Download all distributables
+      - name: Download wheels
         uses: actions/download-artifact@v8.0.1
         with:
           path: dist/
+          pattern: "*wheel*"
           merge-multiple: true
+
+      - name: Download sdist
+        uses: actions/download-artifact@v8.0.1
+        with:
+          path: dist/
+          name: sdist
 
       - name: List distributables
         run: |
-          ls -lh dist/
+          ls -lhR dist/
           test -n "$(ls dist/*.tar.gz 2>/dev/null)" || { echo "ERROR: no sdist"; exit 1; }
           test -n "$(ls dist/*graalpy*.whl 2>/dev/null)" || { echo "ERROR: no GraalPy wheel"; exit 1; }
+          # Anything else in packages-dir fails the upload
+          stray=$(find dist -mindepth 1 ! -name '*.whl' ! -name '*.tar.gz')
+          test -z "$stray" || { echo "ERROR: unexpected entries in dist/:"; echo "$stray"; exit 1; }
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

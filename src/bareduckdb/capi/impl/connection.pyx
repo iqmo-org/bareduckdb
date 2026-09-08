@@ -29,6 +29,8 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_connect,
     duckdb_v2_connection_create_type_from_id,
     duckdb_v2_connection_handle,
+    duckdb_v2_connection_interrupt,
+    duckdb_v2_connection_query_progress,
     duckdb_v2_context_handle,
     duckdb_v2_create_environment,
     duckdb_v2_data_chunk_destroy,
@@ -63,6 +65,11 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_qname_get_part_count,
     duckdb_v2_qname_handle,
     duckdb_v2_qname_parse,
+    duckdb_v2_query_progress_destroy,
+    duckdb_v2_query_progress_get_percentage,
+    duckdb_v2_query_progress_get_rows_processed,
+    duckdb_v2_query_progress_get_total_rows_to_process,
+    duckdb_v2_query_progress_handle,
     duckdb_v2_replacement_scan_add_argument,
     duckdb_v2_replacement_scan_create_with_connection,
     duckdb_v2_replacement_scan_create_with_database,
@@ -1185,6 +1192,55 @@ cdef class CApiConnectionImpl:
         # v2 has one streamed fetch path, so mode is ignored; batch_size is the Arrow coalescing target.
         from bareduckdb.capi.impl.result import execute
         return execute(self, query, parameters, batch_size)
+
+    def interrupt(self):
+        """Interrupt the query running on this connection; a no-op when none is active"""
+        cdef duckdb_v2_error_info_handle err = NULL
+        cdef duckdb_v2_error_t rc
+
+        if self._closed:
+            raise RuntimeError("Connection is closed")
+
+        with nogil:
+            rc = duckdb_v2_connection_interrupt(self._conn, &err)
+        check_v2(rc, err, "duckdb_v2_connection_interrupt")
+
+    def query_progress(self):
+        """Snapshot the running query's progress, or None when nothing is published"""
+        cdef duckdb_v2_query_progress_handle progress = NULL
+        cdef duckdb_v2_error_info_handle err = NULL
+        cdef duckdb_v2_error_t rc
+        cdef double percentage = -1.0
+        cdef uint64_t rows_processed = 0
+        cdef uint64_t total_rows = 0
+
+        if self._closed:
+            raise RuntimeError("Connection is closed")
+
+        with nogil:
+            rc = duckdb_v2_connection_query_progress(self._conn, &progress, &err)
+        check_v2(rc, err, "duckdb_v2_connection_query_progress")
+
+        try:
+            with nogil:
+                rc = duckdb_v2_query_progress_get_percentage(progress, &percentage, &err)
+            check_v2(rc, err, "duckdb_v2_query_progress_get_percentage")
+
+            with nogil:
+                rc = duckdb_v2_query_progress_get_rows_processed(progress, &rows_processed, &err)
+            check_v2(rc, err, "duckdb_v2_query_progress_get_rows_processed")
+
+            with nogil:
+                rc = duckdb_v2_query_progress_get_total_rows_to_process(progress, &total_rows, &err)
+            check_v2(rc, err, "duckdb_v2_query_progress_get_total_rows_to_process")
+        finally:
+            with nogil:
+                duckdb_v2_query_progress_destroy(&progress)
+
+        # duckdb_v2.h:5500: -1 with both counts zero is "no information available".
+        if percentage < 0 and rows_processed == 0 and total_rows == 0:
+            return None
+        return (percentage, rows_processed, total_rows)
 
     def close(self):
         """Disconnect and drop this connection's reference to the database"""

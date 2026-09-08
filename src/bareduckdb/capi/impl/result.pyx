@@ -183,6 +183,8 @@ from bareduckdb.capi.impl.errors cimport (
     str_view_to_str,
 )
 
+from bareduckdb.capi.impl.errors import QueryCancelled
+
 
 _EPOCH_DATE = datetime.date(1970, 1, 1)
 _EPOCH_DATETIME = datetime.datetime(1970, 1, 1)
@@ -981,7 +983,7 @@ cdef class CApiResult:
             return 1
         self._finished = True
         if status == DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED:
-            raise RuntimeError("query was cancelled")
+            raise QueryCancelled("query was cancelled by connection interrupt")
         return 1
 
     cdef void _build_column_metadata(self) except *:
@@ -1072,7 +1074,7 @@ cdef class CApiResult:
         check_v2(rc, err, "duckdb_v2_result_step")
 
         if status == DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED:
-            raise RuntimeError("query was cancelled")
+            raise QueryCancelled("query was cancelled by connection interrupt")
         return chunk
 
     cdef void _claim_for_export(self) except *:

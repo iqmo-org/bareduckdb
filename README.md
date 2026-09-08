@@ -65,6 +65,7 @@ Features dropped:
 - Python UDFs require duckdb worker threads to call back into the Python interpreter. This significantly increases complexity. Instead, this project plans to add Cython/Numba/C-style function UDFs that are "nogil" only
 - Relations API: Use [ibis](https://ibis-project.org/) or [narwhals](https://github.com/narwhals-dev/narwhals) instead
 - fsspec filesystems: Similar to UDFs, fsspec involves the duckdb threads calling back to the Python interpreter 
+- Implicit default connection and module-level API functions related to it, ie: `duckdb.sql`, `duckdb.read_parquet`, `duckdb.default_connection`, ...
 
 | | duckdb-python | bareduckdb |
 | --- | --- | --- |
@@ -139,6 +140,30 @@ from bareduckdb.aio.async_connection import AsyncConnectionPool
 
 async with AsyncConnectionPool(":memory:", pool_size=4) as pool:
     rows = await pool.execute("SELECT * FROM range(?)", parameters=(10,))
+```
+
+Progress and cancellation. See [README_PROGRESS.md](README_PROGRESS.md) for tqdm examples,
+the settings, and what the numbers mean:
+
+```python
+from bareduckdb import enable_progress, poll_progress
+
+with bareduckdb.connect() as conn:
+    enable_progress(conn)
+    with poll_progress(conn, lambda p: print(f"{p.percentage:.0f}%")):
+        conn.execute("SELECT ... FROM big").pl()
+
+    # Stops the query and raises bareduckdb.QueryCancelled
+    threading.Timer(5.0, conn.interrupt).start()
+```
+
+Cancelling an awaited pool query interrupts it, so the cursor comes straight back:
+
+```python
+try:
+    await asyncio.wait_for(pool.execute(slow_sql), timeout=0.5)
+except asyncio.TimeoutError:
+    ...
 ```
 
 ## Development

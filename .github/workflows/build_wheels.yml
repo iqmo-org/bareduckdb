@@ -136,6 +136,9 @@ jobs:
           # Anything else in packages-dir fails the upload
           stray=$(find dist -mindepth 1 ! -name '*.whl' ! -name '*.tar.gz')
           test -z "$stray" || { echo "ERROR: unexpected entries in dist/:"; echo "$stray"; exit 1; }
+          # PyPI rejects bare linux_* tags. Fail first.
+          bad=$(find dist \( -name '*-linux_x86_64.whl' -o -name '*-linux_aarch64.whl' -o -name '*-linux_i686.whl' \))
+          test -z "$bad" || { echo "ERROR: unrepaired linux tag, PyPI will reject:"; echo "$bad"; exit 1; }
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

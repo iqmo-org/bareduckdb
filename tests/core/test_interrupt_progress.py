@@ -12,13 +12,6 @@ from bareduckdb import QueryCancelled, enable_progress, poll_progress
 SLOW = "select count(*) from range(200000000) t(i) where i % 7 = 0"
 
 
-@pytest.fixture
-def slow_conn():
-    conn = bareduckdb.connect(config={"threads": "1"})
-    yield conn
-    conn.close()
-
-
 def _run_in_thread(conn, sql, out):
     def run():
         try:
@@ -54,22 +47,25 @@ def test_interrupt_after_close_raises():
         conn.interrupt()
 
 
-def test_interrupt_cancels_a_running_query(slow_conn):
-    raised: list = []
-    thread = _run_in_thread(slow_conn, SLOW, raised)
+def test_interrupt_cancels_a_running_query():
+    # A connection per test call, not a fixture
+    with bareduckdb.connect(config={"threads": "1"}) as conn:
+        raised: list = []
+        thread = _run_in_thread(conn, SLOW, raised)
 
-    assert _interrupt_until_stopped(slow_conn, thread), "interrupt did not stop the query"
-    assert isinstance(raised[0], QueryCancelled)
-    # QueryCancelled must stay catchable as RuntimeError; the hierarchy is deliberate.
-    assert isinstance(raised[0], RuntimeError)
+        assert _interrupt_until_stopped(conn, thread), "interrupt did not stop the query"
+        assert isinstance(raised[0], QueryCancelled)
+        # QueryCancelled must stay catchable as RuntimeError; the hierarchy is deliberate.
+        assert isinstance(raised[0], RuntimeError)
 
 
-def test_connection_is_reusable_after_an_interrupt(slow_conn):
-    raised: list = []
-    thread = _run_in_thread(slow_conn, SLOW, raised)
+def test_connection_is_reusable_after_an_interrupt():
+    with bareduckdb.connect(config={"threads": "1"}) as conn:
+        raised: list = []
+        thread = _run_in_thread(conn, SLOW, raised)
 
-    assert _interrupt_until_stopped(slow_conn, thread)
-    assert slow_conn.execute("select 42").fetchall() == [(42,)]
+        assert _interrupt_until_stopped(conn, thread)
+        assert conn.execute("select 42").fetchall() == [(42,)]
 
 
 def test_query_progress_is_none_while_the_bar_is_off():

@@ -179,7 +179,7 @@ Editing a `.pyx` or `.pxd` requires a rebuild.
 
 ## Disclaimer
 
-Not affiliated with DuckDB Labs or the DuckDB Foundation. Alpha software: the API may change.
+Not affiliated with DuckDB Labs or the DuckDB Foundation.
 
 ## License
 

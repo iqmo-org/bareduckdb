@@ -24,8 +24,21 @@ else:
 from . import functional
 from ._utils import pyarrow_available
 from ._version import __version__
+from .capi.impl.errors import QueryCancelled  # pyright: ignore[reportMissingImports]
 from .compat.connection_compat import Connection
+
+# duckdb's module-level API, present so a call fails explicitly rather than as AttributeError.
+from .compat.module_api import (
+    default_connection,
+    execute,
+    from_arrow,
+    query,
+    read_csv,
+    read_parquet,
+    sql,
+)
 from .core.connection_base import ConnectionBase, InvalidInputException
+from .progress import PROGRESS_SETTINGS, QueryProgress, enable_progress, poll_progress
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +104,19 @@ __all__ = [
     "pyarrow_available",
     "functional",
     "features",
+    "QueryCancelled",
+    "QueryProgress",
+    "poll_progress",
+    "enable_progress",
+    "PROGRESS_SETTINGS",
+    # duckdb's module-level API: present, and raising NotImplementedError.
+    "sql",
+    "execute",
+    "query",
+    "read_csv",
+    "read_parquet",
+    "from_arrow",
+    "default_connection",
 ]
 
 

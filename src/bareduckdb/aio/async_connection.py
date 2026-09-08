@@ -155,6 +155,13 @@ class AsyncConnectionPool:
                 executor,
                 partial(conn._call, query, parameters=parameters, data=data),  # type: ignore[reportPrivateUsage]
             )
+        except asyncio.CancelledError:
+            # Cancelling the future does not stop the worker thread; the interrupt does.
+            try:
+                conn.interrupt()
+            except Exception:
+                logger.warning("interrupt after cancellation failed", exc_info=True)
+            raise
         finally:
             # put_nowait, not await put: the queue is unbounded, and this must not be a
             # cancellation point or a cancelled task loses its pool slot.

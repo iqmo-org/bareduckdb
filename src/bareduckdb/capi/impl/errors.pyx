@@ -24,6 +24,10 @@ class V2Error(RuntimeError):
     """A v2 failure that returned no error_info handle, so only the code is known"""
 
 
+class QueryCancelled(V2Error):
+    """A query stopped because its connection was interrupted, rather than because it failed"""
+
+
 cdef str str_view_to_str(duckdb_v2_str_t view):
     """Decode a borrowed str view, which is never null-terminated, into a Python str"""
     if view.ptr == NULL or view.len == 0:

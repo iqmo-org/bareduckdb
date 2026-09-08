@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     import pyarrow as pa
     from pyarrow import dataset as ds
 
+    from ..progress import QueryProgress
     from . import PyArrowCapsule
     from .appender import Appender
 
@@ -339,6 +340,20 @@ class ConnectionBase:
             if not known and not retired:
                 logger.debug("unregister('%s'): no registration by that name", name)
         return self
+
+    def interrupt(self) -> None:
+        """Interrupt the query running on this connection; a no-op when none is active."""
+        logger.debug("Interrupting connection")
+        self._impl.interrupt()
+
+    def query_progress(self) -> "QueryProgress | None":
+        """Snapshot the running query's progress, or None when nothing is published."""
+        snapshot = self._impl.query_progress()
+        if snapshot is None:
+            return None
+        from ..progress import QueryProgress
+
+        return QueryProgress(*snapshot)
 
     def close(self) -> None:
         logger.debug("Closing connection")

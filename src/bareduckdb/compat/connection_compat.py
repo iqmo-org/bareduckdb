@@ -99,6 +99,16 @@ class Connection(ConnectionAPI):
 
         return super().execute(query=query, parameters=parameters, output_type=output_type, data=data, batch_size=batch_size)
 
+    def executemany(
+        self,
+        query: str,
+        parameters: Sequence[Sequence[Any]] | Sequence[Mapping[str, Any]] | None = None,
+    ) -> Connection:
+        """Not implemented; loop over execute(), or register the rows and INSERT from them"""
+        raise NotImplementedError(
+            "executemany() is not implemented. Loop over execute() for each parameter set, or register the rows and use INSERT INTO ... SELECT."
+        )
+
     def register(
         self,
         name: str,

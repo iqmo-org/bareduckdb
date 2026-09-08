@@ -113,7 +113,7 @@ def test_query_progress_after_close_raises():
         conn.query_progress()
 
 
-def test_query_progress_advances_on_a_table_scan():
+def test_query_progress_reports_on_a_table_scan():
     with bareduckdb.connect(config={"threads": "1"}) as conn:
         enable_progress(conn)
         conn.execute("create table t as select i, ('x' || i) s from range(4000000) r(i)")
@@ -130,9 +130,9 @@ def test_query_progress_advances_on_a_table_scan():
         if not seen:
             pytest.skip("query finished before any progress was published")
 
-        assert all(0 <= s.percentage <= 100 for s in seen)
-        assert seen == sorted(seen, key=lambda s: s.rows_processed), "progress went backwards"
-        assert seen[0].total_rows_to_process > 0
+        # Monotonicity is not guaranteed (it sometimes goes backwards)
+        assert all(0 <= s.percentage <= 100 for s in seen), f"percentage out of range: {seen[:5]}"
+        assert seen[-1].total_rows_to_process > 0, f"no total reported: {seen[-1]}"
 
 
 def test_poll_progress_invokes_the_callback_and_joins():

@@ -7,6 +7,7 @@ import logging
 
 from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_ERROR_NONE,
+    DUCKDB_V2_ERROR_RUNTIME_INTERRUPT,
     duckdb_v2_error_info_destroy,
     duckdb_v2_error_info_get_text,
     duckdb_v2_error_info_handle,
@@ -86,6 +87,11 @@ cdef void check_v2(duckdb_v2_error_t rc, duckdb_v2_error_info_handle err, str co
         if err != NULL:
             duckdb_v2_error_info_destroy(&err)
         return
+    if rc == DUCKDB_V2_ERROR_RUNTIME_INTERRUPT:
+        # An interrupt can land in any call, not only in result_step's CANCELLED status.
+        message = last_error_text(err) if err != NULL else "interrupted"
+        _logger.debug("v2 interrupt in %s: %s", context, message)
+        raise QueryCancelled(f"{context}: {message}")
     if err != NULL:
         v2_raise(err, context)
     raise V2Error(f"{context}: v2 error code {<int>rc} with no error info attached")

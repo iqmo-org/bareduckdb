@@ -248,3 +248,4 @@ notebooks/
 
 plans
 capi20
+.uv-cache/

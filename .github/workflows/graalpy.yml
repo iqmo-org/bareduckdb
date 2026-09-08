@@ -256,8 +256,15 @@ jobs:
         uses: actions/upload-artifact@v7.0.1
         with:
           name: graalpy-wheel
-          path: |
-            dist/*.whl
-            build.log
+          path: dist/*.whl
           if-no-files-found: warn
+          compression-level: 0
+
+      - name: Upload GraalPy build log
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: graalpy-build-log
+          path: build.log
+          if-no-files-found: ignore
           compression-level: 0

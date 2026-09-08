@@ -68,6 +68,39 @@ def test_connection_is_reusable_after_an_interrupt():
         assert conn.execute("select 42").fetchall() == [(42,)]
 
 
+def test_interrupt_during_execute_also_raises_query_cancelled():
+    """An interrupt can land in statement_execute, not only in a step."""
+    short = "select count(*) from range(2000000) t(i) where i % 7 = 0"
+    with bareduckdb.connect(config={"threads": "1"}) as conn:
+        stop = threading.Event()
+
+        def spin():
+            while not stop.is_set():
+                try:
+                    conn.interrupt()
+                except Exception:
+                    return
+
+        spinner = threading.Thread(target=spin, daemon=True)
+        spinner.start()
+        raised = None
+        try:
+            for _ in range(200):
+                try:
+                    conn.execute(short).fetchall()
+                except RuntimeError as exc:
+                    raised = exc
+                    break
+        finally:
+            stop.set()
+            spinner.join()
+
+        if raised is None:
+            pytest.skip("the interrupt never landed during execute")
+        assert isinstance(raised, QueryCancelled), f"cancellation surfaced as {type(raised).__name__}: {raised}"
+        assert conn.execute("select 42").fetchall() == [(42,)]
+
+
 def test_query_progress_is_none_while_the_bar_is_off():
     with bareduckdb.connect() as conn:
         assert conn.query_progress() is None

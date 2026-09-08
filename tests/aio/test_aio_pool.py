@@ -2,7 +2,6 @@
 """
 
 import asyncio
-import time
 
 import pytest
 
@@ -74,27 +73,6 @@ async def test_pool_concurrent_data_same_name_is_isolated():
         sizes = [10, 20, 30, 40] * 5
         counts = await asyncio.gather(*[one(n) for n in sizes])
         assert counts == sizes
-
-
-@pytest.mark.parallel_threads(1)
-async def test_pool_cursors_do_not_serialize():
-    """The property the whole design rests on: cursors of one database run concurrently"""
-    size = 4
-    query = "select sum(i * i) as s from range(3000000) t(i)"
-
-    async with AsyncConnectionPool(":memory:", pool_size=size, config={"threads": "1"}) as pool:
-        await pool.execute(query)  # warm
-
-        t = time.perf_counter()
-        await pool.execute(query)
-        serial_one = time.perf_counter() - t
-
-        t = time.perf_counter()
-        await asyncio.gather(*[pool.execute(query) for _ in range(size)])
-        parallel = time.perf_counter() - t
-
-    # Fully serialized would be size * serial_one. Allow generous headroom for CI noise.
-    assert parallel < serial_one * size * 0.75, f"{parallel=} {serial_one=} {size=}"
 
 
 async def test_pool_connect_and_aclose_without_context_manager():

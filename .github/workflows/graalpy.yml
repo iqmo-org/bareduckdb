@@ -238,6 +238,19 @@ jobs:
             tests/compat/test_compat_basic.py \
             tests/compat/test_arrow_reader_contract.py
 
+      # Same parallel pass as dev_versions.yml
+      - name: Parallel test pass
+        shell: bash
+        run: |
+          python -m pytest -o addopts= -p no:randomly --parallel-threads=4 --iterations=5 --tb=short \
+            -m "not asyncio and not parallel_threads" \
+            tests/capi/test_locking.py \
+            tests/capi/test_atomics.py \
+            tests/capi/test_result.py \
+            tests/capi/test_arrow.py \
+            tests/capi/test_connection.py \
+            tests/core/test_register.py
+
       - name: Upload GraalPy wheel
         if: always()
         uses: actions/upload-artifact@v7.0.1

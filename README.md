@@ -1,21 +1,36 @@
 # bareduckdb
 
-Minimal Python bindings to DuckDB 2.0, built on its new C API (`duckdb_v2_*`).
+Minimal Python bindings to DuckDB 2.0, dynamically linked to the new stable `duckdb_v2_*` ABI. Free-threaded w/ minimal dependencies.
 
 [![PyPI version](https://img.shields.io/pypi/v/bareduckdb.svg)](https://pypi.org/project/bareduckdb)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 # Highlights
-- **Free-threaded wheels for 3.14t and 3.15t**, plus a cp312 abi3 wheel covering 3.12+.
+- **Supports latest versions** CPython 3.15, GraalPy 25.3
+- **Free-threaded support for 3.14t and 3.15t**, plus a cp312 abi3 wheel covering 3.12+.
 - **DuckDB C API v2**, using only entry points upstream marks `stable`.
 - **Free threaded** Every engine call runs under `nogil`, every module that touches the engine sets `freethreading_compatible=True`, and no Python object guards an engine call.
 - **Minimal.** ~3.5k lines of Cython, ~1.2k of declarations, ~2.3k of Python. The Cython exists to cross the C boundary and hold the free-threading guarantees; everything else is Python.
 - **No runtime dependencies.** pyarrow, polars and pandas are all optional and imported on demand.
 - **Dynamically linked** against DuckDB's official shared library, resolved or downloaded at
   first import rather than vendored.
-- **Graalpy Supported**
-- **Native polars, end to end, with pyarrow never imported.**
+- **Native polars, end to end**
+
+# Key Differences
+- No relation API: Use [ibis](https://ibis-project.org/) or [narwhals](https://github.com/narwhals-dev/narwhals) instead
+- Replacement scans: No implicit registration, use explicit registration of arrow/polars/pandas frames.
+- Arrow-backed Pandas dataframes, not numpy
+
+# Roadmap
+These features were implemented in bareduckdb v0.12.155 but need to be ported to the 2.0 API:
+- **Pushdown Filters** Native arrow & polars pushdowns
+- **Appender**
+- **Table Functions**
+
+These features require interaction with the GIL from duckdb threads, so need some planning/thought:
+- **Scalar UDFs**
+- **Filesystems / fsspec**
 
 # Getting Started
 ```bash
@@ -53,45 +68,6 @@ with bareduckdb.connect() as conn:
 Both take polars DataFrames and LazyFrames, pyarrow Tables, Datasets, Scanners and
 RecordBatchReaders, pandas DataFrames, and anything exposing `__arrow_c_stream__`. A LazyFrame
 is streamed in batches, never collected.
-
-## Major differences from duckdb-python
-
-\* Not an exhaustive list
-
-Changes: 
-- PyArrow backed Pandas dataframes
-
-Features dropped: 
-- Python UDFs require duckdb worker threads to call back into the Python interpreter. This significantly increases complexity. Instead, this project plans to add Cython/Numba/C-style function UDFs that are "nogil" only
-- Relations API: Use [ibis](https://ibis-project.org/) or [narwhals](https://github.com/narwhals-dev/narwhals) instead
-- fsspec filesystems: Similar to UDFs, fsspec involves the duckdb threads calling back to the Python interpreter 
-- Implicit default connection and module-level API functions related to it, ie: `duckdb.sql`, `duckdb.read_parquet`, `duckdb.default_connection`, ...
-
-| | duckdb-python | bareduckdb |
-| --- | --- | --- |
-| `.pl()` | needs pyarrow | no pyarrow |
-| second terminal call on a result | returns empty | raises, naming the first consumer |
-| `register()` scope | connection-scoped temp view; a cursor cannot see it | database-scoped; a cursor sees it, but it never appears in `SHOW TABLES` |
-| `VARINT` / `BIGNUM` | `str` | `int` |
-| exceptions | PEP 249 hierarchy | `InvalidInputException(Exception)`, no hierarchy |
-
-Row values otherwise match duckdb-python, including `HUGEINT` as `int`, `MAP` as `dict`,
-`ARRAY` as `tuple` and `INTERVAL` as `timedelta`.
-
-## Roadmap
-
-To be ported from prior version of bareduckdb: 
-- polars/pyarrow filter pushdown
-- UDTFs
-
-New Features
-- Appender: Blocked on C API 2.0
-- Scalar UDFs: Using cython or numba
-
-TBD:
-- Implicit replacement scans: `SELECT * FROM some_local_df`
-- Filesystem spec
-- Row decoding for `UNION` and `VARIANT`, which raise
 
 ## Usage
 
@@ -146,15 +122,27 @@ Progress and cancellation. See [README_PROGRESS.md](README_PROGRESS.md) for tqdm
 the settings, and what the numbers mean:
 
 ```python
-from bareduckdb import enable_progress, poll_progress
+import threading
+
+from bareduckdb import QueryCancelled, enable_progress, poll_progress
 
 with bareduckdb.connect() as conn:
     enable_progress(conn)
     with poll_progress(conn, lambda p: print(f"{p.percentage:.0f}%")):
         conn.execute("SELECT ... FROM big").pl()
+```
 
-    # Stops the query and raises bareduckdb.QueryCancelled
-    threading.Timer(5.0, conn.interrupt).start()
+`interrupt()` stops the query running on that connection, from any thread. The query raises
+`QueryCancelled`, and the connection is reusable straight after:
+
+```python
+with bareduckdb.connect() as conn:
+    threading.Timer(5.0, conn.interrupt).start()  # a crude query timeout
+    try:
+        conn.execute("SELECT ... FROM big").fetchall()
+    except QueryCancelled:
+        ...
+    conn.execute("SELECT 42").fetchall()  # works
 ```
 
 Cancelling an awaited pool query interrupts it, so the cursor comes straight back:

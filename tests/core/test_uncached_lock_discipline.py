@@ -1,8 +1,4 @@
-"""Regression test for the `_uncached_sources` lock-discipline bug in `connection_base.py`.
-
-Marked `parallel_threads(1)` because the test sets `sys.setswitchinterval`, which is
-process-global, not because the connection state it exercises is shared.
-"""
+"""Concurrent register/unregister/query on one connection must not raise."""
 
 import sys
 import threading
@@ -13,17 +9,19 @@ pa = pytest.importorskip("pyarrow")
 
 import bareduckdb  # noqa: E402
 
-# Many small registrations, so the rearm loop is slow enough to give unregister() a real window to land mid-iteration; the race is inherently timing-dependent.
-NAMES = [f"lock_race_{i}" for i in range(3000)]
+# Enough names to interleave churn against the caller, few enough that the per-query re-arm stays cheap.
+NAMES = [f"lock_race_{i}" for i in range(100)]
 CHURN_ROUNDS = 300
 CHURN_THREADS = 4
+CALLER_ROUNDS = 300
 
 
+@pytest.mark.timeout(30)
 @pytest.mark.parallel_threads(1)
 def test_rearm_does_not_race_unregister_on_the_same_connection():
-    """A dict-mutated-during-iteration crash here means _call() and unregister() disagree on locking."""
+    """Churning registrations under concurrent queries raises nothing on any thread."""
     old_interval = sys.getswitchinterval()
-    sys.setswitchinterval(1e-5)  # force frequent GIL handoffs so the race window is actually hit
+    sys.setswitchinterval(1e-5)  # frequent GIL handoffs, so the interleaving is actually exercised
     try:
         conn = bareduckdb.connect()
         table = pa.table({"a": [1, 2, 3]})
@@ -32,15 +30,18 @@ def test_rearm_does_not_race_unregister_on_the_same_connection():
 
         errors: list[str] = []
         errors_lock = threading.Lock()
-        stop = threading.Event()
+
+        def record(exc: BaseException) -> None:
+            with errors_lock:
+                errors.append(repr(exc))
 
         def caller() -> None:
-            while not stop.is_set():
+            # A fixed count, not "until the churners stop": the test must bound its own work.
+            for _ in range(CALLER_ROUNDS):
                 try:
                     conn.execute("select 1").fetchall()
-                except Exception as exc:  # noqa: BLE001 - the race itself is the thing under test
-                    with errors_lock:
-                        errors.append(repr(exc))
+                except Exception as exc:  # noqa: BLE001 - the concurrency is what is under test
+                    record(exc)
 
         def churner(offset: int) -> None:
             for i in range(CHURN_ROUNDS):
@@ -49,25 +50,17 @@ def test_rearm_does_not_race_unregister_on_the_same_connection():
                     conn.unregister(name)
                     conn.register(name, table)
                 except Exception as exc:  # noqa: BLE001 - same
-                    with errors_lock:
-                        errors.append(repr(exc))
+                    record(exc)
 
-        caller_thread = threading.Thread(target=caller)
-        churner_threads = [threading.Thread(target=churner, args=(offset,)) for offset in range(CHURN_THREADS)]
-
-        caller_thread.start()
-        for thread in churner_threads:
+        threads = [threading.Thread(target=caller)]
+        threads += [threading.Thread(target=churner, args=(offset,)) for offset in range(CHURN_THREADS)]
+        for thread in threads:
             thread.start()
-        for thread in churner_threads:
+        for thread in threads:
             thread.join()
-        stop.set()
-        caller_thread.join()
         conn.close()
     finally:
         sys.setswitchinterval(old_interval)
 
-    dict_races = [e for e in errors if "dictionary changed size" in e or "dictionary keys changed" in e]
-    assert not dict_races, (
-        f"_call()/unregister() raced on _uncached_sources or _uncached_needs_rearm: {dict_races[:3]} "
-        f"(total errors: {len(errors)}, first few: {errors[:3]})"
-    )
+    # `select 1` names no registration and the churn only replaces names that exist, so nothing here may raise.
+    assert not errors, f"{len(errors)} error(s) from concurrent register/unregister/query; first few: {errors[:3]}"

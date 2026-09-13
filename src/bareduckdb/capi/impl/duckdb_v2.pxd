@@ -784,6 +784,7 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_bool_t *result,
         duckdb_v2_error_info_handle *err
     )
+    duckdb_v2_error_t duckdb_v2_qname_hash(duckdb_v2_qname_handle name, uint64_t *hash, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_qname_destroy(duckdb_v2_qname_handle *name)
 
     # arrow import and export (header MODULE: arrow)

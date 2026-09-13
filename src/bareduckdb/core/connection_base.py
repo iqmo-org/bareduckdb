@@ -88,7 +88,7 @@ class ConnectionBase:
 
     # Instance attributes
     _impl: Any
-    # RLock: _call() holds this across paths that re-enter _register_capsule; it also guards _uncached_sources/_uncached_needs_rearm against unregister().
+    # RLock: _call() holds this across paths that re-enter _register_capsule; it also guards the _uncached_* dicts against unregister().
     _lock: threading.RLock
     _registered_objects: dict[str, Any]
     _database_path: str | None
@@ -97,7 +97,8 @@ class ConnectionBase:
     _preserve_insertion_order: bool
     _default_statistics: "Literal['numeric'] | bool | None"
     _uncached_sources: dict[str, Any]
-    _uncached_needs_rearm: dict[str, bool]
+    _uncached_slot_of: dict[str, int]
+    _uncached_names_by_slot: dict[int, str]
 
     def __init__(
         self,
@@ -135,7 +136,8 @@ class ConnectionBase:
             self._lock = threading.RLock()
             self._registered_objects: dict[str, Any] = {}
             self._uncached_sources: dict[str, Any] = {}
-            self._uncached_needs_rearm: dict[str, bool] = {}
+            self._uncached_slot_of: dict[str, int] = {}
+            self._uncached_names_by_slot: dict[int, str] = {}
             self._database_path: str | None = _from_impl.database_path
             self.arrow_table_collector = arrow_table_collector
             self._default_statistics = default_statistics
@@ -155,7 +157,8 @@ class ConnectionBase:
             self._lock = threading.RLock()
             self._registered_objects: dict[str, Any] = {}
             self._uncached_sources: dict[str, Any] = {}
-            self._uncached_needs_rearm: dict[str, bool] = {}
+            self._uncached_slot_of: dict[str, int] = {}
+            self._uncached_names_by_slot: dict[int, str] = {}
             self._database_path: str | None = database
             self.arrow_table_collector = arrow_table_collector
             self._default_statistics = default_statistics
@@ -255,22 +258,27 @@ class ConnectionBase:
                 f"pyarrow Table, Dataset, RecordBatchReader, Scanner, or any object implementing __arrow_c_stream__"
             )
 
-        # self._lock guards _uncached_sources/_uncached_needs_rearm against unregister() and _call().
+        # self._lock guards the _uncached_* dicts against unregister() and _call().
         with self._lock:
-            self._impl.register_capsule(name, data, cardinality, replace=replace)
+            slot = self._impl.register_capsule(name, data, cardinality, replace=replace)
             # Kept so the source outlives the registration; the C side never reads it.
             self._registered_objects[name] = capsule
             # An entry's stream is single pass; keep the original so _rearm_uncached can make a fresh one.
             self._uncached_sources[name] = original
-            # Not yet scanned, so it needs no rearm; a bare PyCapsule cannot produce a second stream.
-            self._uncached_needs_rearm[name] = False
+            # The slot is how the backend names a consumed registration back to us.
+            self._uncached_names_by_slot.pop(self._uncached_slot_of.get(name, -1), None)
+            self._uncached_slot_of[name] = slot
+            self._uncached_names_by_slot[slot] = name
 
     def _rearm_uncached(self) -> None:
-        """Give a registration flagged in _uncached_needs_rearm a fresh Arrow stream, under self._lock."""
+        """Give a fresh Arrow stream to every one of our registrations a scan has consumed, under self._lock."""
         with self._lock:
-            # Snapshot: _register_capsule() below mutates the dicts on this same thread.
-            due = [name for name, needs in list(self._uncached_needs_rearm.items()) if needs]
-            for name in due:
+            # The backend lists only consumed slots, so this costs what was scanned, not what is registered.
+            for slot in self._impl.spent_slots():
+                name = self._uncached_names_by_slot.get(slot)
+                if name is None:
+                    # Registered by another cursor, which re-arms it from its own source.
+                    continue
                 source = self._uncached_sources.get(name)
                 if source is None:
                     continue
@@ -304,12 +312,9 @@ class ConnectionBase:
             Result in requested format (pa.Table, pa.RecordBatchReader, capsule, or CApiResult)
         """
         with self._lock:
-            # Rearm and flag under the same lock unregister() takes, or a racing unregister() is undone.
+            # Rearm under the same lock unregister() takes, or a racing unregister() is undone.
             if self._uncached_sources:
                 self._rearm_uncached()
-                # This call may consume any of these sources, so the next call must rearm them.
-                for name in list(self._uncached_sources):
-                    self._uncached_needs_rearm[name] = True
             if output_type is None:
                 mode = ConnectionBase._MODE_STREAM
             elif output_type == "arrow_table":
@@ -388,7 +393,7 @@ class ConnectionBase:
             known = self._registered_objects.pop(name, None) is not None
             # Otherwise the next _call's _rearm_uncached re-registers this name, undoing the unregister.
             self._uncached_sources.pop(name, None)
-            self._uncached_needs_rearm.pop(name, None)
+            self._uncached_names_by_slot.pop(self._uncached_slot_of.pop(name, -1), None)
             try:
                 retired = self._impl.unregister(name)
             except RuntimeError:

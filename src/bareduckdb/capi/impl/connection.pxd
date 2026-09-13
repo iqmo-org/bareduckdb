@@ -12,7 +12,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_schema_handle,
     idx_t,
 )
-from libc.stdint cimport int64_t
+from libc.stdint cimport int64_t, uint64_t
 
 # Entry states, release-stored so a lock-free reader sees the payload that precedes them.
 cdef enum:
@@ -32,9 +32,14 @@ cdef struct bd_reg_entry:
     long refs
     # Stable identity for the table function, unaffected by the entry array's swap-removes.
     idx_t slot
+    # This entry's index in reg.entries, so retiring it needs no scan; maintained under reg.lock.
+    idx_t pos
     duckdb_v2_qname_handle name
     # Single-part fallback, so register("data.csv") matches a quoted file reference too.
     duckdb_v2_qname_handle alt_name
+    # duckdb_v2_qname_hash of name and of alt_name, the keys this entry is indexed under.
+    uint64_t name_hash
+    uint64_t alt_hash
     ArrowArrayStream stream
     # Kept alive after schema resolution so exec can pull on demand; NULL once done or failed.
     duckdb_v2_arrow_importer_handle importer
@@ -57,6 +62,12 @@ cdef struct bd_reg_entry:
     char err_text[BD_ERR_TEXT_CAP]
 
 
+# One open-addressed index cell: entry NULL is empty and entry == 1 is a tombstone.
+cdef struct bd_index_slot:
+    uint64_t hash
+    bd_reg_entry *entry
+
+
 cdef struct bd_registry:
     long lock
     # Handed over by _DatabaseHandle; the registry closes it after the last borrow.
@@ -67,6 +78,14 @@ cdef struct bd_registry:
     bd_reg_entry **retired
     idx_t retired_count
     idx_t retired_capacity
+    # Name index over entries, so lookup and retire are O(1) rather than a scan of every entry.
+    bd_index_slot *index
+    idx_t index_capacity
+    idx_t index_used
+    # Slots whose stream a scan has consumed; the Python layer re-arms exactly these.
+    idx_t *spent
+    idx_t spent_count
+    idx_t spent_capacity
     long import_count
     idx_t next_slot
     # Built once, so the dispatcher never parses a string.

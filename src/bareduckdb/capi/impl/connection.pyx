@@ -64,6 +64,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_qname_equals,
     duckdb_v2_qname_get_part_count,
     duckdb_v2_qname_handle,
+    duckdb_v2_qname_hash,
     duckdb_v2_qname_parse,
     duckdb_v2_query_progress_destroy,
     duckdb_v2_query_progress_get_percentage,
@@ -359,6 +360,10 @@ cdef void _bd_registry_destroy(bd_registry *reg) noexcept nogil:
         free(reg.entries)
     if reg.retired != NULL:
         free(reg.retired)
+    if reg.index != NULL:
+        free(reg.index)
+    if reg.spent != NULL:
+        free(reg.spent)
     if reg.tf_name != NULL:
         duckdb_v2_qname_destroy(&reg.tf_name)
     free(reg)
@@ -455,6 +460,25 @@ cdef bint _bd_push(bd_reg_entry ***slots, idx_t *count, idx_t *capacity, bd_reg_
     return True
 
 
+cdef bint _bd_push_idx(idx_t **slots, idx_t *count, idx_t *capacity, idx_t value) noexcept nogil:
+    """Append one index value to a growable array of index values"""
+    cdef idx_t new_capacity
+    cdef idx_t *grown
+    if count[0] == capacity[0]:
+        new_capacity = 8 if capacity[0] == 0 else capacity[0] * 2
+        grown = <idx_t *>malloc(new_capacity * sizeof(idx_t))
+        if grown == NULL:
+            return False
+        if slots[0] != NULL:
+            memcpy(grown, slots[0], count[0] * sizeof(idx_t))
+            free(slots[0])
+        slots[0] = grown
+        capacity[0] = new_capacity
+    slots[0][count[0]] = value
+    count[0] += 1
+    return True
+
+
 cdef bint _bd_entry_matches(bd_reg_entry *entry, duckdb_v2_qname_handle qname) noexcept nogil:
     """Report whether either of the entry's names equals qname under DuckDB's identifier rules"""
     cdef duckdb_v2_bool_t hit = False
@@ -468,6 +492,143 @@ cdef bint _bd_entry_matches(bd_reg_entry *entry, duckdb_v2_qname_handle qname) n
     return False
 
 
+cdef inline bd_reg_entry *_bd_tombstone() noexcept nogil:
+    """The marker a removed index cell holds; probing passes over it rather than stopping"""
+    return <bd_reg_entry *>1
+
+
+cdef uint64_t _bd_qname_hash(duckdb_v2_qname_handle qname) noexcept nogil:
+    """Hash a qualified name the way duckdb_v2_qname_equals compares it; 0 stands in on failure"""
+    cdef uint64_t value = 0
+    if duckdb_v2_qname_hash(qname, &value, NULL) != DUCKDB_V2_ERROR_NONE:
+        return 0
+    return value
+
+
+cdef bint _bd_index_put(bd_index_slot *table, idx_t capacity, uint64_t hash_value, bd_reg_entry *entry) noexcept nogil:
+    """Place one (hash, entry) cell into an open-addressed table that has room to spare"""
+    cdef idx_t mask = capacity - 1
+    cdef idx_t i = (<idx_t>hash_value) & mask
+    cdef idx_t probed = 0
+    while probed < capacity:
+        if table[i].entry == NULL or table[i].entry == _bd_tombstone():
+            table[i].hash = hash_value
+            table[i].entry = entry
+            return True
+        i = (i + 1) & mask
+        probed += 1
+    return False
+
+
+cdef bint _bd_index_rebuild(bd_registry *reg, idx_t capacity) noexcept nogil:
+    """Rebuild the name index from reg.entries, which also clears every tombstone. Caller holds reg.lock"""
+    cdef bd_index_slot *table = <bd_index_slot *>malloc(capacity * sizeof(bd_index_slot))
+    cdef bd_reg_entry *entry
+    cdef idx_t i
+    if table == NULL:
+        return False
+    memset(table, 0, capacity * sizeof(bd_index_slot))
+    for i in range(reg.count):
+        entry = reg.entries[i]
+        _bd_index_put(table, capacity, entry.name_hash, entry)
+        if entry.alt_name != NULL:
+            _bd_index_put(table, capacity, entry.alt_hash, entry)
+    if reg.index != NULL:
+        free(reg.index)
+    reg.index = table
+    reg.index_capacity = capacity
+    # An entry without an alt name over-counts by one, which only rebuilds a little sooner.
+    reg.index_used = reg.count * 2
+    return True
+
+
+cdef bint _bd_index_reserve(bd_registry *reg, idx_t extra) noexcept nogil:
+    """Ensure the index stays under half full with `extra` more keys in it. Caller holds reg.lock"""
+    cdef idx_t needed = (reg.index_used + extra + 1) * 2
+    cdef idx_t capacity = 16
+    if reg.index != NULL and needed <= reg.index_capacity:
+        return True
+    while capacity < needed:
+        capacity *= 2
+    return _bd_index_rebuild(reg, capacity)
+
+
+cdef bd_reg_entry *_bd_index_find(bd_registry *reg, uint64_t hash_value, duckdb_v2_qname_handle qname) noexcept nogil:
+    """Return the live entry whose name equals qname, or NULL. Caller holds reg.lock"""
+    cdef idx_t mask
+    cdef idx_t i
+    cdef idx_t probed = 0
+    cdef bd_reg_entry *entry
+    if reg.index == NULL or reg.count == 0:
+        return NULL
+    mask = reg.index_capacity - 1
+    i = (<idx_t>hash_value) & mask
+    while probed < reg.index_capacity:
+        entry = reg.index[i].entry
+        if entry == NULL:
+            return NULL
+        # The hash only narrows the candidates; equality is still DuckDB's own identifier rule.
+        if entry != _bd_tombstone() and reg.index[i].hash == hash_value and _bd_entry_matches(entry, qname):
+            return entry
+        i = (i + 1) & mask
+        probed += 1
+    return NULL
+
+
+cdef void _bd_index_remove_key(bd_registry *reg, uint64_t hash_value, bd_reg_entry *entry) noexcept nogil:
+    """Tombstone the cells for this entry along one key's probe sequence. Caller holds reg.lock"""
+    cdef idx_t mask
+    cdef idx_t i
+    cdef idx_t probed = 0
+    if reg.index == NULL:
+        return
+    mask = reg.index_capacity - 1
+    i = (<idx_t>hash_value) & mask
+    while probed < reg.index_capacity:
+        if reg.index[i].entry == NULL:
+            return
+        if reg.index[i].entry == entry:
+            reg.index[i].entry = _bd_tombstone()
+        i = (i + 1) & mask
+        probed += 1
+
+
+cdef void _bd_index_remove(bd_registry *reg, bd_reg_entry *entry) noexcept nogil:
+    """Drop both of an entry's keys from the name index. Caller holds reg.lock"""
+    _bd_index_remove_key(reg, entry.name_hash, entry)
+    if entry.alt_name != NULL:
+        _bd_index_remove_key(reg, entry.alt_hash, entry)
+
+
+cdef void _bd_drop_spent(bd_registry *reg, idx_t slot) noexcept nogil:
+    """Forget a consumed slot, because its entry is gone. Caller holds reg.lock"""
+    cdef idx_t i = 0
+    while i < reg.spent_count:
+        if reg.spent[i] == slot:
+            reg.spent[i] = reg.spent[reg.spent_count - 1]
+            reg.spent_count -= 1
+            return
+        i += 1
+
+
+cdef void _bd_retire_entry(bd_registry *reg, bd_reg_entry *entry) noexcept nogil:
+    """Unlink one live entry, freeing it when provably unread. Caller holds reg.lock"""
+    cdef bd_reg_entry *moved
+    _bd_index_remove(reg, entry)
+    _bd_drop_spent(reg, entry.slot)
+    moved = reg.entries[reg.count - 1]
+    reg.entries[entry.pos] = moved
+    moved.pos = entry.pos
+    reg.count -= 1
+    if bdv2_load_acquire(&entry.state) == BD_ENTRY_EMPTY and bdv2_load_acquire(&entry.refs) == 0:
+        # Never claimed and unreferenced, so no borrow can be live.
+        _bd_entry_destroy(entry)
+    elif not _bd_push(&reg.retired, &reg.retired_count, &reg.retired_capacity, entry):
+        # The retired array could not grow; free only if provably unread, else leak.
+        if bdv2_load_acquire(&reg.borrows) == 1 and bdv2_load_acquire(&entry.refs) == 0:
+            _bd_entry_destroy(entry)
+
+
 cdef idx_t _bd_retire_matching(
     bd_registry *reg,
     duckdb_v2_qname_handle qname,
@@ -475,24 +636,40 @@ cdef idx_t _bd_retire_matching(
 ) noexcept nogil:
     """Move every live entry of an equal name out of entries, freeing the ones never claimed. Caller holds reg.lock"""
     cdef bd_reg_entry *entry
-    cdef idx_t i = 0
+    cdef uint64_t hash_value = _bd_qname_hash(qname)
     cdef idx_t removed = 0
-    while i < reg.count:
-        entry = reg.entries[i]
-        if _bd_entry_matches(entry, qname) or (alt != NULL and _bd_entry_matches(entry, alt)):
-            reg.entries[i] = reg.entries[reg.count - 1]
-            reg.count -= 1
+    while True:
+        entry = _bd_index_find(reg, hash_value, qname)
+        if entry == NULL:
+            break
+        _bd_retire_entry(reg, entry)
+        removed += 1
+    if alt != NULL:
+        hash_value = _bd_qname_hash(alt)
+        while True:
+            entry = _bd_index_find(reg, hash_value, alt)
+            if entry == NULL:
+                break
+            _bd_retire_entry(reg, entry)
             removed += 1
-            if bdv2_load_acquire(&entry.state) == BD_ENTRY_EMPTY and bdv2_load_acquire(&entry.refs) == 0:
-                # Never claimed and unreferenced, so no borrow can be live.
-                _bd_entry_destroy(entry)
-            elif not _bd_push(&reg.retired, &reg.retired_count, &reg.retired_capacity, entry):
-                # The retired array could not grow; free only if provably unread, else leak.
-                if bdv2_load_acquire(&reg.borrows) == 1 and bdv2_load_acquire(&entry.refs) == 0:
-                    _bd_entry_destroy(entry)
-            continue
-        i += 1
     return removed
+
+
+cdef bint _bd_mark_spent(bd_registry *reg, bd_reg_entry *entry) noexcept nogil:
+    """Record that a scan has consumed this entry's stream, if the entry is still live"""
+    cdef bint ok = True
+    cdef bint listed = False
+    cdef idx_t i
+    bdv2_lock(&reg.lock)
+    if entry.pos < reg.count and reg.entries[entry.pos] == entry:
+        for i in range(reg.spent_count):
+            if reg.spent[i] == entry.slot:
+                listed = True
+                break
+        if not listed:
+            ok = _bd_push_idx(&reg.spent, &reg.spent_count, &reg.spent_capacity, entry.slot)
+    bdv2_unlock(&reg.lock)
+    return ok
 
 
 cdef void _bd_resolve_schema(bd_reg_entry *entry, duckdb_v2_context_handle context) noexcept nogil:
@@ -829,6 +1006,11 @@ cdef void _bd_tf_init_global(
         )
         return
 
+    # The Python layer re-arms exactly the entries listed here, so failing to list one is fatal.
+    if not _bd_mark_spent(bind_data.reg, entry):
+        _bd_report(err, "out of memory while recording a consumed registration")
+        return
+
     state = <bd_scan_state *>malloc(sizeof(bd_scan_state))
     if state == NULL:
         _bd_report(err, "out of memory while starting the arrow scan")
@@ -1042,7 +1224,7 @@ cdef void _bd_dispatch(
     cdef duckdb_v2_qname_handle qname = NULL
     cdef bd_reg_entry *entry = NULL
     cdef duckdb_v2_value_handle value = NULL
-    cdef idx_t i
+    cdef uint64_t name_hash
 
     if duckdb_v2_replacement_scan_get_user_data(info, &user_data, NULL) != DUCKDB_V2_ERROR_NONE:
         return
@@ -1056,13 +1238,12 @@ cdef void _bd_dispatch(
     if qname == NULL:
         return
 
+    name_hash = _bd_qname_hash(qname)
     bdv2_lock(&reg.lock)
-    for i in range(reg.count):
-        if _bd_entry_matches(reg.entries[i], qname):
-            entry = reg.entries[i]
-            # Raised under the registry lock and dropped outside it, so both sides are atomic.
-            bdv2_add(&entry.refs, 1)
-            break
+    entry = _bd_index_find(reg, name_hash, qname)
+    if entry != NULL:
+        # Raised under the registry lock and dropped outside it, so both sides are atomic.
+        bdv2_add(&entry.refs, 1)
     bdv2_unlock(&reg.lock)
 
     duckdb_v2_qname_destroy(&qname)
@@ -1084,6 +1265,8 @@ cdef void _bd_dispatch(
             duckdb_v2_value_destroy(&value)
     else:
         # A failed import is an error, not a decline: declining would hide it behind "table does not exist".
+        # Listed as consumed too, so the next query re-arms it and retries the import.
+        _bd_mark_spent(reg, entry)
         _bd_report(err, entry.err_text)
 
     bdv2_add(&entry.refs, -1)
@@ -1566,7 +1749,7 @@ cdef class CApiConnectionImpl:
         return self._db._registry
 
     def register_capsule(self, str name, object stream_capsule, int64_t cardinality=-1, bint replace=True):
-        """Register an Arrow C Stream capsule under name, imported on the first query that reads it"""
+        """Register an Arrow C Stream capsule under name and return its slot id, imported on the first query that reads it"""
         cdef bd_registry *reg = self._registry()
         cdef ArrowArrayStream *source
         cdef bd_reg_entry *entry
@@ -1574,7 +1757,7 @@ cdef class CApiConnectionImpl:
         cdef duckdb_v2_qname_handle alt = NULL
         cdef bint pushed = False
         cdef bint duplicate = False
-        cdef idx_t i
+        cdef idx_t slot = 0
 
         if not PyCapsule_IsValid(stream_capsule, b"arrow_array_stream"):
             raise TypeError(f"register({name!r}) needs an arrow_array_stream PyCapsule")
@@ -1602,12 +1785,15 @@ cdef class CApiConnectionImpl:
 
         # Duplicate check and insert in one critical section; the capsule moves in only once the insert is certain.
         with nogil:
+            entry.name_hash = _bd_qname_hash(qname)
+            if alt != NULL:
+                entry.alt_hash = _bd_qname_hash(alt)
             bdv2_lock(&reg.lock)
             if not replace:
-                for i in range(reg.count):
-                    if _bd_entry_matches(reg.entries[i], qname):
-                        duplicate = True
-                        break
+                if _bd_index_find(reg, entry.name_hash, qname) != NULL:
+                    duplicate = True
+                elif alt != NULL and _bd_index_find(reg, entry.alt_hash, alt) != NULL:
+                    duplicate = True
             if not duplicate:
                 entry.stream = source[0]
                 memset(source, 0, sizeof(ArrowArrayStream))
@@ -1615,7 +1801,16 @@ cdef class CApiConnectionImpl:
                 entry.slot = reg.next_slot
                 reg.next_slot += 1
                 _bd_retire_matching(reg, qname, alt)
-                pushed = _bd_push(&reg.entries, &reg.count, &reg.capacity, entry)
+                if _bd_index_reserve(reg, 2):
+                    pushed = _bd_push(&reg.entries, &reg.count, &reg.capacity, entry)
+                if pushed:
+                    entry.pos = reg.count - 1
+                    _bd_index_put(reg.index, reg.index_capacity, entry.name_hash, entry)
+                    reg.index_used += 1
+                    if alt != NULL:
+                        _bd_index_put(reg.index, reg.index_capacity, entry.alt_hash, entry)
+                        reg.index_used += 1
+                    slot = entry.slot
                 _bd_sweep_retired(reg)
             bdv2_unlock(&reg.lock)
 
@@ -1628,6 +1823,35 @@ cdef class CApiConnectionImpl:
                 _bd_entry_destroy(entry)
             raise MemoryError("Failed to grow the replacement scan registry")
         _logger.debug("registered %r on database %r", name, self._database_path)
+        return slot
+
+    def spent_slots(self):
+        """Report the slot ids whose stream a scan has consumed, so the Python layer re-arms only those.
+
+        Non-destructive: a slot leaves the list when its entry is retired, which re-registering it does,
+        so one cursor draining the list cannot hide a consumed name from another.
+        """
+        cdef bd_registry *reg = self._registry()
+        cdef idx_t *copy = NULL
+        cdef idx_t count = 0
+        cdef idx_t i
+        # Copied out under the lock, so no Python object is built while a C spinlock is held.
+        with nogil:
+            bdv2_lock(&reg.lock)
+            count = reg.spent_count
+            if count > 0:
+                copy = <idx_t *>malloc(count * sizeof(idx_t))
+                if copy != NULL:
+                    memcpy(copy, reg.spent, count * sizeof(idx_t))
+            bdv2_unlock(&reg.lock)
+        if count == 0:
+            return []
+        if copy == NULL:
+            raise MemoryError("Failed to copy the consumed registration list")
+        try:
+            return [copy[i] for i in range(count)]
+        finally:
+            free(copy)
 
     def unregister(self, str name):
         """Make name unresolvable at once and report how many entries were retired.
@@ -1659,16 +1883,12 @@ cdef class CApiConnectionImpl:
         cdef duckdb_v2_qname_handle alt = NULL
         cdef bd_reg_entry *entry = NULL
         cdef long peak = 0
-        cdef idx_t i
         cdef bint ready = False
 
         _bd_parse_name(name, &qname, &alt)
         with nogil:
             bdv2_lock(&reg.lock)
-            for i in range(reg.count):
-                if _bd_entry_matches(reg.entries[i], qname):
-                    entry = reg.entries[i]
-                    break
+            entry = _bd_index_find(reg, _bd_qname_hash(qname), qname)
             if entry != NULL and bdv2_load_acquire(&entry.state) == BD_ENTRY_READY:
                 bdv2_add(&entry.refs, 1)
                 ready = True
@@ -1708,10 +1928,7 @@ cdef class CApiConnectionImpl:
         _bd_parse_name(name, &qname, &alt)
         with nogil:
             bdv2_lock(&reg.lock)
-            for i in range(reg.count):
-                if _bd_entry_matches(reg.entries[i], qname):
-                    entry = reg.entries[i]
-                    break
+            entry = _bd_index_find(reg, _bd_qname_hash(qname), qname)
             if entry == NULL:
                 for i in range(reg.retired_count):
                     if _bd_entry_matches(reg.retired[i], qname):

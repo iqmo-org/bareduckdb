@@ -109,8 +109,7 @@ def test_uncached_inflight_peak_does_not_grow_with_threads():
         finally:
             conn.close()
 
-    # The ceiling is linear in threads with a small coefficient, so 8x the threads must not give
-    # anywhere near 8x the peak.
+    # The ceiling is linear in threads with a small coefficient, so 8x the threads must not give anywhere near 8x the peak.
     assert peaks[8] <= peaks[1] + 8 + 4, (
         f"peak grew from {peaks[1]} at 1 thread to {peaks[8]} at 8 threads -- expected growth "
         f"bounded by roughly +threads (+12 here), not tracking the source's chunk count"
@@ -156,8 +155,7 @@ EMPTY_ARRAY_PATTERNS = [
 @pytest.mark.parametrize("lengths", EMPTY_ARRAY_PATTERNS)
 def test_uncached_empty_array_among_nonempty_ones_is_skipped_not_a_boundary_error(lengths):
     """An empty array anywhere among non-empty ones is skipped, not treated as end of scan."""
-    # Guards the uncached drive loop being a `while`, not an `if`, which would end the scan at
-    # the first empty array and drop every row after it.
+    # Guards the uncached drive loop being a `while`, not an `if`, which would end the scan at the first empty array and drop every row after it.
     total = sum(lengths)
     conn = bareduckdb.connect()
     try:

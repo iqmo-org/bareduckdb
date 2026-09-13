@@ -10,8 +10,7 @@ from bareduckdb.core.connection_base import _LAZY_PULL_ROWS
 
 pytestmark = pytest.mark.parallel_threads(1)
 
-# The claim unit is one whole Arrow array per worker, so a LIMIT only shows early termination on
-# a fixture with many more arrays than threads; sizes below were picked empirically.
+# The claim unit is one whole Arrow array per worker, so a LIMIT shows early termination only with arrays >> threads.
 
 
 @pytest.fixture
@@ -106,8 +105,7 @@ def test_limit_does_not_drain_a_lazyframe(conn):
     )
 
 
-# ~48,828 arrays from a generator-backed reader, whose claim timing has a heavy tail: hence the
-# large slack in the bound below; only the shape (well short of the total) is load-bearing.
+# A generator-backed reader's claim timing has a heavy tail, hence the slack below; only the shape is load-bearing.
 ROWS_ONESHOT = 100_000_000
 
 
@@ -160,8 +158,7 @@ def _malformed_reader(n_batches, batch_rows):
 
 def test_concurrent_conversion_failures_produce_one_clean_message():
     """Many worker threads failing conversion at once on one entry still yield one clean message."""
-    # The import is always narrowed, so _bd_narrow_array refuses the array and bareduckdb's own
-    # text reaches err_text rather than duckdb's child-count message.
+    # The import is always narrowed, so _bd_narrow_array refuses the array and bareduckdb's own text reaches err_text rather than duckdb's child-count message.
     mismatch_text = "the registered Arrow stream produced an array narrower than its schema"
 
     attempts = 10
@@ -214,8 +211,7 @@ def test_concurrent_conversion_failures_produce_one_clean_message():
 )
 def test_every_array_boundary_is_scanned_exactly_once(conn, lengths):
     """Every row of every array is emitted exactly once, at every array-length boundary."""
-    # The zero-length cases guard the drive loop being a `while`, not an `if`: an empty array
-    # drains to NULL immediately, and an `if` would emit nothing and stall the scan.
+    # The zero-length cases guard the drive loop being a `while`, not an `if`, which would emit nothing and stall.
     table = pa.Table.from_batches(
         [
             pa.RecordBatch.from_arrays([pa.array(range(n), type=pa.int64())], names=["i"])

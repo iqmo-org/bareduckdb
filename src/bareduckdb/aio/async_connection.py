@@ -195,8 +195,7 @@ class AsyncConnectionPool:
         finally:
             # The connection stays busy until the worker thread leaves _call; handing it back early is a use-after-free.
             if work.done():
-                # put_nowait, not await put: the queue is unbounded, and this must not be a
-                # cancellation point or a cancelled task loses its pool slot.
+                # put_nowait, not await put: the queue is unbounded, and this must not be a cancellation point or a cancelled task loses its pool slot.
                 available.put_nowait(conn)
             else:
                 work.add_done_callback(partial(self._release_later, loop, available, conn))

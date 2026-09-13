@@ -68,8 +68,7 @@ def run(conn, sql):
 @pytest.mark.parallel_threads(1)
 def test_oracle_agrees_on_a_simple_table(make_conn):
     """Cross-check one Arrow table against the official client when it is installed."""
-    # parallel_threads(1): duckdb.sql() uses the official client's process-global default
-    # connection, which several concurrent copies of this test cannot share.
+    # parallel_threads(1): duckdb.sql() uses the official client's process-global default connection, which several concurrent copies of this test cannot share.
     if not DUCKDB_CLIENT_AVAILABLE:
         if ORACLE_REQUIRED:
             pytest.fail(ORACLE_HOWTO)

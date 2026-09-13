@@ -250,8 +250,7 @@ cdef struct bd_scan_state:
     # Output vector i holds declared column projection[i]. Per scan, not per plan.
     idx_t *projection
     idx_t projection_count
-    # The only fact exec may consult to pick a source vector: 1 means the import was already
-    # narrowed, so source index is i; 0 means full-width chunks, so map through projection[].
+    # The only fact exec may consult for a source vector: 1 means narrowed import (index i), 0 means map through projection[].
     int chunks_narrow
 
 
@@ -1601,8 +1600,7 @@ cdef class CApiConnectionImpl:
         # The caller's cheap len(), if any; -1 means unknown. Bind reports it as a cardinality hint.
         entry.declared_cardinality = cardinality
 
-        # Duplicate check and insert in one critical section; the capsule moves in only once
-        # the insert is certain, so a refused registration leaves it consumable.
+        # Duplicate check and insert in one critical section; the capsule moves in only once the insert is certain.
         with nogil:
             bdv2_lock(&reg.lock)
             if not replace:

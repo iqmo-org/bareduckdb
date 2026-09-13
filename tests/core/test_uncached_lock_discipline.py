@@ -13,8 +13,7 @@ pa = pytest.importorskip("pyarrow")
 
 import bareduckdb  # noqa: E402
 
-# Many small registrations, so the rearm loop is slow enough to give unregister() a real window
-# to land mid-iteration; the race is inherently timing-dependent.
+# Many small registrations, so the rearm loop is slow enough to give unregister() a real window to land mid-iteration; the race is inherently timing-dependent.
 NAMES = [f"lock_race_{i}" for i in range(3000)]
 CHURN_ROUNDS = 300
 CHURN_THREADS = 4

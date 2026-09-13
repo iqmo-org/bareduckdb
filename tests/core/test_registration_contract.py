@@ -322,8 +322,7 @@ def test_source_mutation_after_registration_is_not_visible(conn):
 
 def test_concurrent_queries_against_one_registration(conn):
     """Four threads issuing queries on ONE connection each see the whole source."""
-    # `_call` holds the connection's RLock across the query and re-arms under it, so callers
-    # sharing a connection are serialized rather than racing.
+    # `_call` holds the connection's RLock across the query and re-arms under it, so callers sharing a connection are serialized rather than racing.
     import threading
 
     conn._register_arrow("t", pa.table({"i": list(range(5000))}))

@@ -19,8 +19,7 @@ pytestmark = pytest.mark.parallel_threads(1)
 ROWS = 4096
 COLUMNS = 20
 
-# The wide fixture is STRING, not int64: an int64 import is a reference and costs almost nothing,
-# so an unused int64 column would make this assert on noise.
+# The wide fixture is STRING, not int64: an int64 import is a reference and costs almost nothing, so an unused int64 column would make this assert on noise.
 WIDE_ROWS = 500_000
 WIDE_VALUE = "abcdefghijkl"
 

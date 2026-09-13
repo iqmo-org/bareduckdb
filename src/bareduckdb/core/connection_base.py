@@ -88,8 +88,7 @@ class ConnectionBase:
 
     # Instance attributes
     _impl: Any
-    # RLock: _call() holds this across paths that re-enter _register_capsule; it also guards
-    # _uncached_sources/_uncached_needs_rearm against unregister().
+    # RLock: _call() holds this across paths that re-enter _register_capsule; it also guards _uncached_sources/_uncached_needs_rearm against unregister().
     _lock: threading.RLock
     _registered_objects: dict[str, Any]
     _database_path: str | None

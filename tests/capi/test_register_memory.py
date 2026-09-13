@@ -79,8 +79,7 @@ def test_a_scan_reads_the_source_at_query_time():
 @pytest.mark.parametrize("threads", [1, 4, 8])
 def test_in_flight_chunks_are_bounded_not_proportional_to_the_source(threads):
     """The engine holds O(threads) converted chunks at once, never a count that tracks the source."""
-    # The bound is generous on purpose: the failure it catches is a peak that grows with the
-    # source, which here would reach 128.
+    # The bound is generous on purpose: the failure it catches is a peak that grows with the source, which here would reach 128.
     log = []
     _, batches = _fixture()
     connection = bareduckdb.connect(config={"threads": str(threads)})

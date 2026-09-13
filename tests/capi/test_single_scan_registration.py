@@ -61,8 +61,7 @@ def test_registration_refuses_a_second_scan(table, sql):
     )
 
 
-# No memory assertion here deliberately: RSS readings cannot show a dropped chunk, and the refusal
-# asserted above already proves it behaviourally.
+# No memory assertion here deliberately: RSS readings cannot show a dropped chunk, and the refusal asserted above already proves it behaviourally.
 
 
 def test_registration_never_returns_partial_rows_to_concurrent_cursors(table):

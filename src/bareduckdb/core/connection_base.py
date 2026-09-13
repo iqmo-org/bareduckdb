@@ -5,6 +5,7 @@ Core bindings to DuckDB Connections, Registration and Executions
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import TYPE_CHECKING
@@ -56,10 +57,18 @@ class _StreamingLazyFrameSource:
         self._lazy = lazy
 
     def __arrow_c_stream__(self, requested_schema: object = None) -> object:
+        if os.environ.get("BAREDUCKDB_COLLECT_LAZYFRAME") == "1":
+            # Measurement toggle, not a supported mode: collects the frame instead of streaming it.
+            logger.debug("BAREDUCKDB_COLLECT_LAZYFRAME=1: collecting the frame instead of streaming")
+            return self._lazy.collect().__arrow_c_stream__(requested_schema)  # type: ignore[attr-defined]
         batches = self._lazy.collect_batches(  # type: ignore[attr-defined]
             chunk_size=_LAZY_PULL_ROWS, lazy=True
         )
         return batches.__arrow_c_stream__(requested_schema)
+
+
+# The v2 C API cannot report a batch index, so insertion order forces a single-threaded scan.
+_PRESERVE_INSERTION_ORDER_OFF_SQL = "set preserve_insertion_order=false;"
 
 
 class ConnectionBase:
@@ -79,11 +88,17 @@ class ConnectionBase:
 
     # Instance attributes
     _impl: Any
-    _lock: threading.Lock
+    # RLock: _call() holds this across paths that re-enter _register_capsule; it also guards
+    # _uncached_sources/_uncached_needs_rearm against unregister().
+    _lock: threading.RLock
     _registered_objects: dict[str, Any]
     _database_path: str | None
     _arrow_table_collector: Literal["arrow", "stream"]
+    arrow_table_collector: Literal["arrow", "stream"]
+    _preserve_insertion_order: bool
     _default_statistics: "Literal['numeric'] | bool | None"
+    _uncached_sources: dict[str, Any]
+    _uncached_needs_rearm: dict[str, bool]
 
     def __init__(
         self,
@@ -93,6 +108,7 @@ class ConnectionBase:
         *,
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
         default_statistics: "Literal['numeric'] | bool | None" = "numeric",
+        preserve_insertion_order: bool = False,
         init_sql: str | None = None,
         _from_impl: Any = None,
     ) -> None:
@@ -105,15 +121,22 @@ class ConnectionBase:
             read_only: Whether to open database in read-only mode
             arrow_table_collector: Arrow collection mode ("arrow" or "stream")
             default_statistics: Default statistics mode for register() when statistics=None
+            preserve_insertion_order: Keep DuckDB's row ordering guarantee; False (default) diverges from DuckDB to allow a parallel scan
             init_sql: SQL to run when creating the connection
             _from_impl: Internal parameter for creating cursor with shared database
         """
 
+        self._preserve_insertion_order = preserve_insertion_order
+        if not preserve_insertion_order:
+            init_sql = _PRESERVE_INSERTION_ORDER_OFF_SQL + (init_sql or "")
+
         if _from_impl is not None:
             # Creating a cursor - use the provided ConnectionImpl directly
             self._impl = _from_impl
-            self._lock = threading.Lock()
+            self._lock = threading.RLock()
             self._registered_objects: dict[str, Any] = {}
+            self._uncached_sources: dict[str, Any] = {}
+            self._uncached_needs_rearm: dict[str, bool] = {}
             self._database_path: str | None = _from_impl.database_path
             self.arrow_table_collector = arrow_table_collector
             self._default_statistics = default_statistics
@@ -130,8 +153,10 @@ class ConnectionBase:
                     read_only=read_only,
                 )  # type: ignore[assignment]  # Cython module
 
-            self._lock = threading.Lock()
+            self._lock = threading.RLock()
             self._registered_objects: dict[str, Any] = {}
+            self._uncached_sources: dict[str, Any] = {}
+            self._uncached_needs_rearm: dict[str, bool] = {}
             self._database_path: str | None = database
             self.arrow_table_collector = arrow_table_collector
             self._default_statistics = default_statistics
@@ -198,6 +223,9 @@ class ConnectionBase:
             capsule: PyCapsule with ArrowArrayStream
         """
 
+        # Captured before the conversions below, which can replace a re-readable source with a single-use reader.
+        original = capsule
+
         if hasattr(capsule, "__len__"):
             cardinality = len(capsule)  # type: ignore
         else:
@@ -228,9 +256,30 @@ class ConnectionBase:
                 f"pyarrow Table, Dataset, RecordBatchReader, Scanner, or any object implementing __arrow_c_stream__"
             )
 
-        self._impl.register_capsule(name, data, cardinality, replace=replace)
-        # Kept so the source outlives the registration; the C side never reads it.
-        self._registered_objects[name] = capsule
+        # self._lock guards _uncached_sources/_uncached_needs_rearm against unregister() and _call().
+        with self._lock:
+            self._impl.register_capsule(name, data, cardinality, replace=replace)
+            # Kept so the source outlives the registration; the C side never reads it.
+            self._registered_objects[name] = capsule
+            # An entry's stream is single pass; keep the original so _rearm_uncached can make a fresh one.
+            self._uncached_sources[name] = original
+            # Not yet scanned, so it needs no rearm; a bare PyCapsule cannot produce a second stream.
+            self._uncached_needs_rearm[name] = False
+
+    def _rearm_uncached(self) -> None:
+        """Give a registration flagged in _uncached_needs_rearm a fresh Arrow stream, under self._lock."""
+        with self._lock:
+            # Snapshot: _register_capsule() below mutates the dicts on this same thread.
+            due = [name for name, needs in list(self._uncached_needs_rearm.items()) if needs]
+            for name in due:
+                source = self._uncached_sources.get(name)
+                if source is None:
+                    continue
+                try:
+                    self._register_capsule(name, source, replace=True)
+                except Exception:
+                    logger.exception("Could not re-arm uncached registration %r", name)
+                    raise
 
     def _call(
         self,
@@ -256,6 +305,12 @@ class ConnectionBase:
             Result in requested format (pa.Table, pa.RecordBatchReader, capsule, or CApiResult)
         """
         with self._lock:
+            # Rearm and flag under the same lock unregister() takes, or a racing unregister() is undone.
+            if self._uncached_sources:
+                self._rearm_uncached()
+                # This call may consume any of these sources, so the next call must rearm them.
+                for name in list(self._uncached_sources):
+                    self._uncached_needs_rearm[name] = True
             if output_type is None:
                 mode = ConnectionBase._MODE_STREAM
             elif output_type == "arrow_table":
@@ -329,8 +384,12 @@ class ConnectionBase:
             This connection, so calls chain.
         """
         logger.debug("Unregistering table: %s", name)
-        with self._DUCKDB_INIT_LOCK:
+        # self._lock, not _DUCKDB_INIT_LOCK: a _call() in flight would otherwise resurrect this name.
+        with self._lock:
             known = self._registered_objects.pop(name, None) is not None
+            # Otherwise the next _call's _rearm_uncached re-registers this name, undoing the unregister.
+            self._uncached_sources.pop(name, None)
+            self._uncached_needs_rearm.pop(name, None)
             try:
                 retired = self._impl.unregister(name)
             except RuntimeError:
@@ -369,6 +428,7 @@ class ConnectionBase:
             _from_impl=cursor_impl,
             arrow_table_collector=self.arrow_table_collector,
             default_statistics=self._default_statistics,
+            preserve_insertion_order=self._preserve_insertion_order,
         )
 
     def appender(

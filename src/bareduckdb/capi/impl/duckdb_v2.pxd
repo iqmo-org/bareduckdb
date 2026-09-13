@@ -368,6 +368,9 @@ cdef extern from "duckdb_v2.h" nogil:
     ctypedef struct _duckdb_v2_table_function_init_global_info "_duckdb_v2_table_function_init_global_info":
         void *internal_ptr
     ctypedef _duckdb_v2_table_function_init_global_info *duckdb_v2_table_function_init_global_info_handle "duckdb_v2_table_function_init_global_info_handle"
+    ctypedef struct _duckdb_v2_table_function_init_local_info "_duckdb_v2_table_function_init_local_info":
+        void *internal_ptr
+    ctypedef _duckdb_v2_table_function_init_local_info *duckdb_v2_table_function_init_local_info_handle "duckdb_v2_table_function_init_local_info_handle"
 
     ctypedef struct _duckdb_v2_table_function_exec_info "_duckdb_v2_table_function_exec_info":
         void *internal_ptr
@@ -886,6 +889,11 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_context_handle context,
         duckdb_v2_error_info_handle *err
     ) noexcept nogil
+    ctypedef void (*duckdb_v2_table_function_init_local_callback_fn)(
+        duckdb_v2_table_function_init_local_info_handle info,
+        duckdb_v2_context_handle context,
+        duckdb_v2_error_info_handle *err
+    ) noexcept nogil
     ctypedef void (*duckdb_v2_table_function_exec_callback_fn)(
         duckdb_v2_table_function_exec_info_handle info,
         duckdb_v2_context_handle context,
@@ -969,6 +977,33 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_opaque *data,
         duckdb_v2_error_info_handle *err
     )
+    duckdb_v2_error_t duckdb_v2_table_function_set_init_local_callback(
+        duckdb_v2_table_function_handle function,
+        duckdb_v2_table_function_init_local_callback_fn callback,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_init_local_get_bind_data(
+        duckdb_v2_table_function_init_local_info_handle info,
+        void **data,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_init_local_get_global_state(
+        duckdb_v2_table_function_init_local_info_handle info,
+        void **data,
+        duckdb_v2_error_info_handle *err
+    )
+    # Takes duckdb_v2_opaque*, not void*; the pxd gate checks arity only, so verify by hand.
+    duckdb_v2_error_t duckdb_v2_table_function_init_local_set_local_state(
+        duckdb_v2_table_function_init_local_info_handle info,
+        duckdb_v2_opaque *data,
+        duckdb_v2_error_info_handle *err
+    )
+    # void**, not duckdb_v2_opaque**.
+    duckdb_v2_error_t duckdb_v2_table_function_exec_get_local_state(
+        duckdb_v2_table_function_exec_info_handle info,
+        void **data,
+        duckdb_v2_error_info_handle *err
+    )
     duckdb_v2_error_t duckdb_v2_table_function_init_global_set_max_threads(
         duckdb_v2_table_function_init_global_info_handle info,
         idx_t max_threads,
@@ -988,5 +1023,39 @@ cdef extern from "duckdb_v2.h" nogil:
     duckdb_v2_error_t duckdb_v2_table_function_exec_get_column_count(
         duckdb_v2_table_function_exec_info_handle info,
         idx_t *count,
+        duckdb_v2_error_info_handle *err
+    )
+    # Projection pushdown. `enable` and `index` are by value; `column_index` is by pointer.
+    duckdb_v2_error_t duckdb_v2_table_function_set_projection_pushdown(
+        duckdb_v2_table_function_handle function,
+        duckdb_v2_bool_t enable,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_init_global_get_column_count(
+        duckdb_v2_table_function_init_global_info_handle info,
+        idx_t *count,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_init_global_get_column_index(
+        duckdb_v2_table_function_init_global_info_handle info,
+        idx_t index,
+        idx_t *column_index,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_init_local_get_column_count(
+        duckdb_v2_table_function_init_local_info_handle info,
+        idx_t *count,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_init_local_get_column_index(
+        duckdb_v2_table_function_init_local_info_handle info,
+        idx_t index,
+        idx_t *column_index,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_exec_get_column_index(
+        duckdb_v2_table_function_exec_info_handle info,
+        idx_t index,
+        idx_t *column_index,
         duckdb_v2_error_info_handle *err
     )

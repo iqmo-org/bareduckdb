@@ -60,14 +60,16 @@ def test_register_arrow_materialize():
         conn.unregister("mytable")
 
 def test_capsule_reuse_prevention():
+    """A bare capsule serves one scan; it cannot be re-armed, so the second query is refused."""
     with ConnectionBase() as conn:
         table = conn._call("SELECT * FROM range(10) t(x)", output_type="arrow_table")
-
         conn._register_arrow(name="test_table", data=table.__arrow_c_stream__())
 
         result1 = conn._call("SELECT * FROM test_table", output_type="arrow_table")
         assert len(result1) == 10
 
-        # The scan drains the capsule's stream once; later queries rescan the imported chunks.
-        result2 = conn._call("SELECT * FROM test_table", output_type="arrow_table")
-        assert len(result2) == 10
+        with pytest.raises(Exception) as excinfo:
+            conn._call("SELECT * FROM test_table", output_type="arrow_table")
+        assert "already been consumed" in str(excinfo.value), (
+            f"expected the spent-capsule refusal, got: {excinfo.value}"
+        )

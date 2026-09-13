@@ -3,14 +3,16 @@
 
 from bareduckdb.capi.impl.duckdb_v2 cimport (
     ArrowArrayStream,
+    ArrowSchema,
+    duckdb_v2_arrow_importer_handle,
     duckdb_v2_connection_handle,
-    duckdb_v2_data_chunk_handle,
     duckdb_v2_database_handle,
     duckdb_v2_environment_handle,
     duckdb_v2_qname_handle,
     duckdb_v2_schema_handle,
     idx_t,
 )
+from libc.stdint cimport int64_t
 
 # Entry states, release-stored so a lock-free reader sees the payload that precedes them.
 cdef enum:
@@ -34,14 +36,24 @@ cdef struct bd_reg_entry:
     # Single-part fallback, so register("data.csv") matches a quoted file reference too.
     duckdb_v2_qname_handle alt_name
     ArrowArrayStream stream
-    # Imported once, replayed by every scan; the vectors alias the caller's Arrow buffers.
-    duckdb_v2_data_chunk_handle *chunks
-    idx_t chunk_count
-    idx_t chunk_capacity
+    # Kept alive after schema resolution so exec can pull on demand; NULL once done or failed.
+    duckdb_v2_arrow_importer_handle importer
+    # Owned, retained for every later importer create; never copied. Released by _bd_entry_destroy.
+    ArrowSchema raw_schema
+    # The stream reported end of input; read and written under entry.lock only, never atomic.
+    bint stream_done
     # The importer's resolved column names and logical types, read by every bind.
     duckdb_v2_schema_handle ddb_schema
     idx_t col_count
+    # Rows pulled off the source stream so far; bumped in _bd_claim_array under entry.lock.
     idx_t row_count
+    # The caller's cheaply-known length at registration, or -1; an exact optimizer hint when known.
+    int64_t declared_cardinality
+    # Scans started, fetch-added by _bd_tf_init_global; an uncached entry serves exactly one.
+    long scans_started
+    # Converted-but-not-yet-emitted chunks across a scan's workers, and its high-water mark.
+    long inflight
+    long inflight_peak
     char err_text[BD_ERR_TEXT_CAP]
 
 

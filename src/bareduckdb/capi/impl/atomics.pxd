@@ -55,6 +55,9 @@ cdef extern from *:
         }
     }
     """
+    # Hands the OS thread over, so a waiter does not burn a core while the holder works.
+    void bdv2_yield() nogil
+
     # Acquires a lock, or flips a one-shot flag. Full barrier.
     int bdv2_cas(long *ptr, long oldv, long newv) nogil
 

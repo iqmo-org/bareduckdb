@@ -1,7 +1,28 @@
-name: Sanitizer Testing (TSAN/ASAN)
+name: Sanitizer Testing (TSAN/ASAN/UBSAN)
 
+# Trigger history: this workflow shipped with `push:` commented out and only
+# `workflow_dispatch`, so it had never actually run (see
+# plans/capi_v2/filter_backends/GAP_HUNTING/RACE_AND_MEMORY_TEST_GAPS.md, G1). A full TSAN+ASAN
+# pass rebuilds a sanitizer-instrumented CPython image's extension and runs (close to) the
+# whole suite once sequentially (ASAN) and once under --parallel-threads (TSAN); that is
+# 30-60+ minutes per arm and not something to run on every push. Two real triggers instead of
+# one imaginary one:
+#   - push to main, but only when the C boundary changed (capi/ Cython+C, or this workflow
+#     file itself) - this is where a signature drift against duckdb_v2.h or a lock-discipline
+#     regression actually lives, and it is also the lowest-frequency directory in the repo, so
+#     the cost is bounded.
+#   - a nightly schedule, as the safety net for anything the path filter misses (a Python-level
+#     change in core/ or compat/ that shifts call timing enough to expose a race that was
+#     already latent in unchanged capi/ code).
+# workflow_dispatch stays for manual runs (e.g. testing a suspected race by hand).
 on:
-  # push:
+  push:
+    branches: [main]
+    paths:
+      - 'src/bareduckdb/capi/**'
+      - '.github/workflows/sanitizers.yml'
+  schedule:
+    - cron: '17 7 * * *' # nightly, off the hour to avoid the GH Actions top-of-hour pile-up
   workflow_dispatch:
 
 jobs:
@@ -252,17 +273,35 @@ jobs:
                 fi
               }
 
+              # -o addopts= wipes pyproject.toml's [tool.pytest.ini_options] addopts
+              # (-n auto, --maxprocesses=8, --maxfail=10, --cov=..., timeout=90 stays because
+              # it is a separate ini key, so --timeout below is what actually raises it).
+              # Rationale: 90s per test at -O0 under a sanitizer, against fixtures built for
+              # a normal build (some >=100M rows), times out before a real defect surfaces;
+              # 20 minutes is still bounded but gives a slow ASAN/TSAN run room to finish.
+              # Reducing the fixture sizes themselves is a tests/ change (out of scope here,
+              # see the follow-ups in CI_COVERAGE_FIXES.md) - this only fixes the CI-side half.
               if [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
-                # TSAN: Run parallel tests to expose race conditions
+                # TSAN: Run parallel tests to expose race conditions.
+                # NOTE: 'not asyncio' used to be here, which deselects all of tests/aio
+                # (pytest-asyncio's auto mode marks every async test 'asyncio'). That is the
+                # one place this repo's aio connection pool - the exact code that produced
+                # 'free(): chunks in smallbin corrupted' this week - would see any concurrent
+                # exercise at all, so the exclusion is dropped. This has NOT been run: if
+                # pytest-run-parallel and pytest-asyncio conflict (e.g. an event loop being
+                # driven from more than one of the --parallel-threads copies), the first real
+                # run of this workflow is where that surfaces, not a local test here.
                 set +e
                 THREADS=\$(($(nproc) < 4 ? $(nproc) : 4))
                 python -m pytest tests/ \
+                  -o addopts= \
                   --parallel-threads=\$THREADS \
                   -n 0 \
                   --iterations=5 \
                   --tb=short \
+                  --timeout=1200 \
+                  --maxfail=5 \
                   -v \
-                  -m 'not asyncio' \
                   --ignore=tests/experimental \
                   --ignore=tests/downstream \
                   --ignore=tests/comparison \
@@ -277,11 +316,16 @@ jobs:
                 # ASAN: Run tests sequentially without --forked
                 # NOTE: --forked uses os.fork() which is incompatible with ASAN
                 # in multi-threaded Python 3.14t (causes CHECK failed in __cxa_throw)
+                # -x (stop on first failure) is kept: ASAN is exploratory here (first real
+                # finding is the signal), and with --timeout raised to 1200s it no longer
+                # times out before it can reach one.
                 set +e
                 python -m pytest tests/ \
+                  -o addopts= \
                   -x \
                   -n 0 \
                   --tb=short \
+                  --timeout=1200 \
                   -v \
                   --ignore=tests/experimental \
                   --ignore=tests/downstream \
@@ -308,4 +352,94 @@ jobs:
           name: ${{ matrix.sanitizer }}-results
           path: |
             ${{ matrix.sanitizer }}_output.txt
+          retention-days: 7
+
+  ubsan:
+    name: 'Sanitizer Tests - UBSAN'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      # UBSAN does not need a specially instrumented CPython the way TSAN/ASAN do (it does not
+      # replace the allocator and does not need libpthread-level instrumentation): it just
+      # needs -fsanitize=undefined on the code being checked. So this runs on a stock
+      # setup-python interpreter instead of the nascheme docker images, with the flags applied
+      # only to bareduckdb's own compiled Cython/C - the boundary duckdb_v2.pxd describes.
+      #
+      # What this catches that ASAN/TSAN do not: CLAUDE.md's own warning about
+      # test_pxd_declarations_match_header - it compares only declared names and top-level
+      # parameter count, never argument types, pointer depth, const-ness, or return type. A
+      # duckdb_v2_str_t swapped for a const char*, a dropped level of indirection, or an idx_t*
+      # that became an idx_t all pass that gate. Some of those show up as misaligned loads,
+      # invalid pointer arithmetic, or signed-overflow in the *generated* C - exactly what
+      # -fsanitize=undefined instruments. It does NOT need libduckdb.so itself to be
+      # instrumented (it is an uninstrumented prebuilt either way; see the ASAN caveat above),
+      # because the hazard here is a wrong call shape on our side of the boundary, not a bug
+      # inside DuckDB.
+      #
+      # What it will NOT catch: anything requiring the allocator interception ASAN provides
+      # (use-after-free/double-free such as the smallbin corruption this week - see the ASAN
+      # job's own limits above) or anything requiring TSAN's happens-before tracking. UBSAN is
+      # a narrow, cheap, complementary arm, not a replacement for either.
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.14'
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-suffix: -ubsan
+
+      - name: Build with UBSAN instrumentation
+        shell: bash
+        env:
+          BAREDUCKDB_OPTIMIZATION: debug
+        run: |
+          set -euo pipefail
+          export CFLAGS="-fsanitize=undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g ${CFLAGS:-}"
+          export CXXFLAGS="-fsanitize=undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g ${CXXFLAGS:-}"
+          export LDFLAGS="-fsanitize=undefined ${LDFLAGS:-}"
+          uv sync --no-install-project
+          uv sync --reinstall-package bareduckdb -v
+
+      - name: Run UBSAN tests
+        shell: bash
+        env:
+          UBSAN_OPTIONS: 'halt_on_error=1:print_stacktrace=1'
+        run: |
+          set +e
+          # Scoped to the C boundary rather than the full suite: this arm exists to catch a
+          # wrong duckdb_v2.pxd signature or an alignment bug in our own generated C, which is
+          # exercised by tests/capi and tests/core, not by, say, tests/downstream or
+          # tests/comparison (third-party client code we do not compile). Full-suite UBSAN
+          # would roughly double this job's cost for coverage that is already provided by the
+          # TSAN/ASAN full-suite runs in the sibling job.
+          uv run --no-sync pytest tests/capi tests/core \
+            -o addopts= \
+            -x \
+            -n 0 \
+            --tb=short \
+            --timeout=1200 \
+            -v \
+            2>&1 | tee UBSAN_output.txt
+          exit_code=$?
+          exit $exit_code
+
+      - name: Upload UBSAN results
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: UBSAN-results
+          path: |
+            UBSAN_output.txt
           retention-days: 7

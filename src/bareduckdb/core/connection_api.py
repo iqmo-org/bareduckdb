@@ -30,6 +30,7 @@ class ConnectionAPI(ConnectionBase):
         *,
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
         default_statistics: "Literal['numeric'] | bool | None" = "numeric",
+        preserve_insertion_order: bool = False,
         udtf_functions: Optional[dict[str, Callable]] = None,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_capsule",
         enable_replacement_scan: bool = False,
@@ -42,6 +43,7 @@ class ConnectionAPI(ConnectionBase):
             read_only: Whether to open in read-only mode
             arrow_table_collector: Arrow collection mode
             default_statistics: Default statistics mode for register() ("numeric", True, or None)
+            preserve_insertion_order: Keep DuckDB's row ordering guarantee; defaults to False, see ConnectionBase
             udtf_functions: Dict of UDTF name -> function
             output_type: Default output format for queries
             _from_impl: Internal parameter for creating cursor with shared database
@@ -52,6 +54,7 @@ class ConnectionAPI(ConnectionBase):
             read_only=read_only,
             arrow_table_collector=arrow_table_collector,
             default_statistics=default_statistics,
+            preserve_insertion_order=preserve_insertion_order,
             _from_impl=_from_impl,
         )
 

@@ -111,9 +111,31 @@ def pytest_addoption(parser):
         help="Explicit JSONL output path, opened in append mode so interleaved repetitions of one arm share a file",
     )
     parser.addoption(
+        "--connection-settings",
+        default="",
+        help=(
+            "Semicolon-separated SET statements applied to every connection, e.g. "
+            "\"disabled_optimizers='unused_columns,filter_pushdown'\". Lets the duckdb arm be "
+            "stripped of optimizations bareduckdb does not implement, so a ratio compares scan "
+            "work rather than missing features."
+        ),
+    )
+    parser.addoption(
         "--registration-modes",
         default="parquet",
-        help="Comma-separated list of data registration modes: parquet,arrow,polars,polars_lazy",
+        help="Comma-separated list of data registration modes: parquet,arrow,polars,polars_lazy,dataset",
+    )
+    parser.addoption(
+        "--registration-cache",
+        default="true",
+        help=(
+            "Comma-separated list of register() cache settings to sweep: true,false. Only "
+            "bareduckdb's register() has this setting; the duckdb baseline arm has none, so its "
+            "rows are always recorded with cache='n/a' regardless of this option, and it is run "
+            "once per case rather than once per requested value. Default 'true' matches "
+            "register()'s own default, so a run that never sets this stays comparable to every "
+            "result recorded before this option existed."
+        ),
     )
     parser.addoption(
         "--allow-missing-metrics",
@@ -124,11 +146,36 @@ def pytest_addoption(parser):
 
 
 def pytest_generate_tests(metafunc):
-    """Generate test variants for each registration mode"""
+    """Generate test variants for each registration mode, and for the register() cache setting"""
     if "registration_mode" in metafunc.fixturenames:
         modes_str = metafunc.config.getoption("--registration-modes")
         modes = [m.strip() for m in modes_str.split(",")]
         metafunc.parametrize("registration_mode", modes)
+
+    if "register_cache" in metafunc.fixturenames:
+        # The duckdb baseline arm has no cache= setting, so it gets a single None-valued run.
+        if metafunc.config.getoption("--use-duckdb"):
+            metafunc.parametrize("register_cache", [None], indirect=True, ids=["cache_na"])
+        else:
+            raw = metafunc.config.getoption("--registration-cache")
+            values = [v.strip().lower() for v in raw.split(",") if v.strip()]
+            for v in values:
+                if v not in ("true", "false"):
+                    raise pytest.UsageError(
+                        f"--registration-cache values must be 'true' or 'false', got {v!r}"
+                    )
+            metafunc.parametrize(
+                "register_cache",
+                [v == "true" for v in values],
+                indirect=True,
+                ids=[f"cache_{v}" for v in values],
+            )
+
+
+@pytest.fixture
+def register_cache(request):
+    """The cache= value to pass to register(); None on the duckdb baseline arm."""
+    return getattr(request, "param", True)
 
 
 def _check_metric_availability(config):
@@ -273,8 +320,11 @@ def pytest_runtest_call(item):
     test_name = item.name.split("[")[0] if "[" in item.name else item.name
     test_run = 1
     test_total = 1
+    connection_settings = item.config.getoption("--connection-settings") or ""
     sql_path = None
     mode = ""
+    # 'n/a': the duckdb baseline arm, or a bareduckdb run where no source was registered.
+    cache = "n/a"
 
     if hasattr(item, "callspec") and item.callspec:
         params = item.callspec.params
@@ -283,6 +333,11 @@ def pytest_runtest_call(item):
         elif params.get("sql_path"):
             mode = "parquet"
         sql_path = params.get("sql_path")
+
+        if _lib_info.get("library") == "bareduckdb" and mode != "parquet" and "register_cache" in params:
+            register_cache = params["register_cache"]
+            if register_cache is not None:
+                cache = "true" if register_cache else "false"
 
         if sql_path:
             # e.g., "tests/benchmarks/cases/filters/string_comparison.sql" -> "filters_string_comparison"
@@ -313,6 +368,8 @@ def pytest_runtest_call(item):
         "python": sys.version.split(" ")[0],
         "bench": BENCHMARK_SUFFIX,
         "mode": mode,
+        "cache": cache,
+        "connection_settings": connection_settings,
         "test_name": test_name,
         "test_run": test_run,
         "test_total": test_total,
@@ -340,7 +397,7 @@ def ensure_parquet_files():
 
 
 @pytest.fixture
-def registered_tables(conn, request):
+def registered_tables(conn, request, register_cache):
     if not hasattr(request.node, "callspec"):
         return {}
 
@@ -364,9 +421,9 @@ def registered_tables(conn, request):
     for table_name, filepath in tables_to_register.items():
         data = load_data_by_mode(filepath, mode)
         try:
-            # Only bareduckdb supports statistics parameter
+            # Only bareduckdb supports statistics/cache; register_cache is None on the duckdb arm.
             if hasattr(conn, '__class__') and 'bareduckdb' in conn.__class__.__module__:
-                conn.register(table_name, data, statistics=statistics_param)
+                conn.register(table_name, data, statistics=statistics_param, cache=register_cache)
             else:
                 conn.register(table_name, data)
         except NotImplementedError as e:
@@ -395,6 +452,17 @@ def conn_with_like_data(request, ensure_parquet_files):
     connection.close()
 
 
+def _apply_connection_settings(connection, request):
+    """Run any --connection-settings SET statements, recorded in the result rows."""
+    raw = request.config.getoption("--connection-settings")
+    if not raw:
+        return
+    for stmt in raw.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            connection.execute(f"SET {stmt}")
+
+
 @pytest.fixture
 def conn(request):
     """Basic connection fixture"""
@@ -408,6 +476,8 @@ def conn(request):
         import bareduckdb
 
         connection = bareduckdb.connect()
+
+    _apply_connection_settings(connection, request)
 
     # Warm the connection
     _ = connection.execute("select * from range(10)").fetch_arrow_table()

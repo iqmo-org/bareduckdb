@@ -23,7 +23,20 @@ DEV_VENV=${DEV_VENV:-.venv314}
 PYTHON_SPEC=${BENCHMARK_PYTHON:-3.14}
 REPS=${BENCHMARK_REPS:-3}
 MODES=${BENCHMARK_MODES:-polars_lazy,arrow,parquet}
+# register()'s cache= setting to sweep; when unset the default is resolved from DEV_VENV below.
+CACHE=${BENCHMARK_CACHE:-}
 RESULTS_DIR=${BENCHMARK_RESULTS_DIR:-benchmark-results}
+# BENCHMARK_CASES is a pytest -k expression scoping the run to a subset of cases.
+CASES=${BENCHMARK_CASES:-}
+# Semicolon-separated SET statements applied to each arm's connections.
+BASELINE_SETTINGS=${BENCHMARK_BASELINE_SETTINGS:-}
+DEV_SETTINGS=${BENCHMARK_DEV_SETTINGS:-}
+# POSIX sh has no arrays, so -k travels in its own variable that expands to nothing when unset.
+if [ -n "$CASES" ]; then
+    CASE_FLAG="-k"
+else
+    CASE_FLAG=""
+fi
 # Set BENCHMARK_FORK_FLAG= (empty) to drop --forked, which needs os.fork.
 if [ -n "${BENCHMARK_FORK_FLAG+set}" ]; then
     FORK_FLAG=$BENCHMARK_FORK_FLAG
@@ -37,6 +50,54 @@ venv_python() {
     else
         printf '%s\n' "$1/Scripts/python.exe"
     fi
+}
+
+stat_mtime() {
+    # Portable epoch mtime: GNU stat (Linux) then BSD/macOS stat.
+    stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1"
+}
+
+check_dev_build_freshness() {
+    # Fail if DEV_VENV's extension predates any .pyx/.pxd; BENCHMARK_ALLOW_STALE_BUILD=1 bypasses.
+    if [ "${BENCHMARK_ALLOW_STALE_BUILD:-0}" = "1" ]; then
+        echo "BENCHMARK_ALLOW_STALE_BUILD=1: skipping DEV_VENV build-freshness check"
+        return 0
+    fi
+
+    ext_path=$("$DEV_PY" -c "import bareduckdb.capi.impl.connection as m; print(m.__file__)" 2>&1) || {
+        echo "ERROR: could not import bareduckdb.capi.impl.connection from DEV_VENV ($DEV_VENV) to check build freshness:"
+        echo "$ext_path"
+        echo "Rebuild it: BAREDUCKDB_DUCKDB_DIR=<pinned duckdb dir> UV_PROJECT_ENVIRONMENT=$DEV_VENV uv sync --reinstall"
+        exit 1
+    }
+    ext_mtime=$(stat_mtime "$ext_path")
+
+    newest_line=$(find src -name '*.pyx' -o -name '*.pxd' | while read -r f; do
+        printf '%s %s\n' "$(stat_mtime "$f")" "$f"
+    done | sort -rn | head -1)
+    newest_mtime=${newest_line%% *}
+    newest_file=${newest_line#* }
+
+    if [ "$ext_mtime" -lt "$newest_mtime" ]; then
+        echo "ERROR: DEV_VENV's compiled extension is STALE relative to source."
+        echo "  DEV_VENV:            $DEV_VENV"
+        echo "  compiled extension:  $ext_path (mtime $(date -d "@$ext_mtime" 2>/dev/null || date -r "$ext_mtime"))"
+        echo "  newest source file:  $newest_file (mtime $(date -d "@$newest_mtime" 2>/dev/null || date -r "$newest_mtime"))"
+        echo "  The extension imports fine and runs, but it is running old code: this is silent,"
+        echo "  nothing else will warn you. Rebuild DEV_VENV before measuring:"
+        echo "    BAREDUCKDB_DUCKDB_DIR=<pinned duckdb dir> UV_PROJECT_ENVIRONMENT=$DEV_VENV uv sync --reinstall"
+        echo "  If you are deliberately measuring an old build (e.g. a pre/post-fix comparison),"
+        echo "  set BENCHMARK_ALLOW_STALE_BUILD=1 to bypass this check."
+        exit 1
+    fi
+}
+
+verify_engine_versions() {
+    # Print pragma_version() for both arms so the engine each one used is in the log.
+    baseline_version=$("$BASELINE_PY" -c "import duckdb; print(duckdb.execute(\"select library_version, source_id from pragma_version()\").fetchall())" 2>&1) || baseline_version="(failed: $baseline_version)"
+    dev_version=$("$DEV_PY" -c "import bareduckdb; c=bareduckdb.connect(); print(c.execute(\"select library_version, source_id from pragma_version()\").fetchall())" 2>&1) || dev_version="(failed: $dev_version)"
+    echo "engine version, baseline ($BASELINE_VENV): $baseline_version"
+    echo "engine version, dev ($DEV_VENV):           $dev_version"
 }
 
 BASELINE_PY=$(venv_python "$BASELINE_VENV")
@@ -75,6 +136,24 @@ if [ "${BENCHMARK_SKIP_ENV_SETUP:-0}" != "1" ]; then
         "pytest-asyncio==$PYTEST_ASYNCIO_VERSION"
 fi
 
+check_dev_build_freshness
+verify_engine_versions
+
+# Default BENCHMARK_CACHE to register()'s own cache= default in DEV_VENV.
+if [ -z "$CACHE" ]; then
+    CACHE=$("$DEV_PY" -c "
+import inspect
+import bareduckdb
+default = inspect.signature(bareduckdb.Connection.register).parameters['cache'].default
+print('true' if default else 'false')
+" 2>&1) || {
+        echo "ERROR: could not resolve register()'s cache= default from DEV_VENV ($DEV_VENV):"
+        echo "$CACHE"
+        exit 1
+    }
+    echo "BENCHMARK_CACHE not set; using register()'s own default: cache=$CACHE"
+fi
+
 # Generated before either arm, so neither one warms the page cache for the other.
 "$BASELINE_PY" tests/benchmarks/data_setup.py
 BENCHMARK_REQUIRE_PREGENERATED_DATA=1
@@ -91,15 +170,23 @@ DEV_OUT="$RESULTS_DIR/benchmark_bareduckdb-dev314_$TIMESTAMP.jsonl"
 PYTEST_COMMON="-o addopts= --confcutdir=tests/benchmarks -p no:randomly $FORK_FLAG --count=1 -v"
 
 ARM_FAILURES=0
+SKIP_BASELINE=${BENCHMARK_SKIP_BASELINE:-0}
 
 run_baseline() {
+    if [ "$SKIP_BASELINE" = "1" ]; then
+        echo "BENCHMARK_SKIP_BASELINE=1: skipping baseline arm"
+        return 0
+    fi
     "$BASELINE_PY" tests/benchmarks/data_setup.py --warm
     set +e
     "$BASELINE_PY" -m pytest tests/benchmarks \
         $PYTEST_COMMON \
+        $CASE_FLAG ${CASES:+"$CASES"} \
         --use-duckdb --benchmark-suffix=duckdb \
         --benchmark-output="$BASELINE_OUT" \
-        --registration-modes="$MODES"
+        --connection-settings="$BASELINE_SETTINGS" \
+        --registration-modes="$MODES" \
+        --registration-cache="$CACHE"
     status=$?
     set -e
     if [ $status -ne 0 ]; then
@@ -113,9 +200,12 @@ run_dev() {
     set +e
     "$DEV_PY" -m pytest tests/benchmarks \
         $PYTEST_COMMON \
+        $CASE_FLAG ${CASES:+"$CASES"} \
         --benchmark-suffix=dev314 \
         --benchmark-output="$DEV_OUT" \
-        --registration-modes="$MODES"
+        --connection-settings="$DEV_SETTINGS" \
+        --registration-modes="$MODES" \
+        --registration-cache="$CACHE"
     status=$?
     set -e
     if [ $status -ne 0 ]; then

@@ -25,6 +25,7 @@ class Connection(ConnectionAPI):
         *,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_capsule",
         default_statistics: "Literal['numeric'] | bool | None" = "numeric",
+        preserve_insertion_order: bool = False,
         udtf_functions: Optional[dict] = None,
         enable_replacement_scan: bool = False,
         _from_impl: Any = None,
@@ -54,6 +55,7 @@ class Connection(ConnectionAPI):
             udtf_functions=udtf_functions,
             output_type=output_type,
             enable_replacement_scan=enable_replacement_scan,
+            preserve_insertion_order=preserve_insertion_order,
             _from_impl=_from_impl,
         )
 
@@ -127,6 +129,9 @@ class Connection(ConnectionAPI):
                 the connection's default_statistics is used.
             replace: If True (default), replace existing registration with same name
 
+        Note:
+            A registration serves exactly one scan per query; a self-join or a concurrent query on another cursor raises.
+
         Returns:
             This connection, so calls chain.
         """
@@ -152,6 +157,7 @@ class Connection(ConnectionAPI):
             _from_impl=cursor_impl,
             output_type=self._default_output_type,
             default_statistics=self._default_statistics,
+            preserve_insertion_order=self._preserve_insertion_order,
         )
         return cursor_conn
 

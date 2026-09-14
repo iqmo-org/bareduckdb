@@ -49,6 +49,10 @@ _XF_TIMETZ = pytest.mark.xfail(
     reason="fetchall() keeps the TIMETZ offset via the value API; DuckDB's exporter writes the wall clock and drops it, so an Arrow consumer sees a naive time",
     strict=True,
 )
+_XF_GEOMETRY_ROWS = pytest.mark.xfail(
+    reason="GEOMETRY has no v2 value-API decode route, so rows() raises NotImplementedError; the Arrow export carries it as geoarrow.wkb-tagged binary",
+    strict=True,
+)
 
 
 # Cases where the row API and the Arrow export disagree about representation rather than value,
@@ -217,7 +221,7 @@ TYPE_CASES = [
     Case("varint_bignum", "BIGNUM", None,
          "SELECT (123)::VARINT AS c", [123], fetch_mark=_XF_BIGNUM_ARROW),
     Case("geometry", "GEOMETRY", None,
-         "SELECT ST_Point(1.0, 2.0) AS c", None, needs_ext="spatial"),
+         "SELECT ST_Point(1.0, 2.0) AS c", None, needs_ext="spatial", fetch_mark=_XF_GEOMETRY_ROWS),
     Case("variant", "VARIANT", None,
          "SELECT (123)::VARIANT AS c", None, fetch_mark=_XF_VARIANT),
 ]
@@ -272,7 +276,10 @@ FETCH_ARROW_TYPES = {
     "varint_bignum": (
         "extension<arrow.opaque[storage_type=binary, type_name=bignum, vendor_name=DuckDB]>"
     ),
-    "geometry": "extension<geoarrow.wkb[storage_type=binary]>",
+    # DuckDB tags GEOMETRY with the geoarrow.wkb extension metadata, but no pyarrow registers
+    # that extension type, so it materializes as plain binary. The tag itself is asserted by
+    # test_geometry_carries_geoarrow_extension_metadata.
+    "geometry": "binary",
     "variant": None,
 }
 
@@ -551,6 +558,26 @@ def test_empty_fetch_arrow_type(case):
         conn.close()
 
 
+def test_geometry_carries_geoarrow_extension_metadata():
+    """GEOMETRY exports as binary tagged with the geoarrow.wkb extension name, populated or empty."""
+    case = next(c for c in TYPE_CASES if c.id == "geometry")
+    conn = bareduckdb.connect()
+    try:
+        try:
+            conn.install_extension(case.needs_ext)
+            conn.load_extension(case.needs_ext)
+        except Exception as exc:
+            pytest.skip(f"{case.needs_ext} extension unavailable: {exc}")
+        for sql in (case.sql, f"SELECT * FROM ({case.sql}) WHERE FALSE"):
+            field = conn.execute(sql).arrow_table().schema.field(0)
+            assert field.metadata is not None, f"no field metadata at all for {sql!r}"
+            assert field.metadata.get(b"ARROW:extension:name") == b"geoarrow.wkb", (
+                f"expected geoarrow.wkb tag for {sql!r}, got {field.metadata!r}"
+            )
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize("case", _fetch_params())
 def test_fetch_roundtrip(case):
     conn = bareduckdb.connect()
@@ -592,6 +619,12 @@ _ROW_ORACLE_DIVERGENCES = {
     "variant": (
         "VARIANT has no v2 value-API decode route, so rows() raises NotImplementedError where "
         "the official client decodes it. The Arrow export refuses VARIANT too, see _XF_VARIANT"
+    ),
+    "geometry": (
+        "GEOMETRY has no v2 value-API decode route, so rows() raises NotImplementedError where "
+        "the official client returns WKB bytes. The SQL-level GEOMETRY->BLOB cast is "
+        "unimplemented in this library and a VARCHAR cast yields WKT, so no stable route "
+        "reaches the bytes; see _XF_GEOMETRY_ROWS"
     ),
 }
 

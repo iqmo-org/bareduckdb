@@ -70,6 +70,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_RESULT_STEP_STATUS_FINISHED,
     DUCKDB_V2_RESULT_STEP_STATUS_WAITING,
     DUCKDB_V2_RESULT_TYPE_QUERY_RESULT,
+    DUCKDB_V2_STATEMENT_TYPE_CREATE,
     idx_t,
     duckdb_v2_bignum_decode,
     duckdb_v2_bool_t,
@@ -98,6 +99,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_result_drain,
     duckdb_v2_result_get_result_type,
     duckdb_v2_result_get_schema,
+    duckdb_v2_result_get_statement_type,
     duckdb_v2_result_handle,
     duckdb_v2_result_step,
     duckdb_v2_result_step_status_t,
@@ -114,6 +116,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_statement_iterator_destroy,
     duckdb_v2_statement_iterator_handle,
     duckdb_v2_statement_iterator_next,
+    duckdb_v2_statement_type_t,
     duckdb_v2_str_t,
     duckdb_v2_uhugeint_t,
     duckdb_v2_value_cast_with_connection,
@@ -237,6 +240,8 @@ cdef object _execute_bound(
     cdef idx_t rows_changed = 0
     cdef CApiResult py_result
     cdef duckdb_v2_result_type_t result_type
+    cdef duckdb_v2_statement_type_t statement_type
+    cdef bint materialize = False
 
     with nogil:
         rc = duckdb_v2_parse_sql(c_conn, c_query, &iterator, &err)
@@ -292,6 +297,18 @@ cdef object _execute_bound(
             if rc != DUCKDB_V2_ERROR_NONE:
                 _destroy_result(current_result)
                 check_v2(rc, err, "duckdb_v2_result_drain")
+        else:
+            # CREATE SECRET is the one CREATE that returns rows, and it applies its effect from
+            # the source operator, so an unstepped result never creates the secret. Every other
+            # CREATE reports NOTHING or CHANGED_ROWS (CTAS) and is drained above, so nothing
+            # large is forced here. The rows are kept, matching duckdb-python's [(True,)].
+            with nogil:
+                rc = duckdb_v2_result_get_statement_type(current_result, &statement_type, &err)
+            if rc != DUCKDB_V2_ERROR_NONE:
+                if err != NULL:
+                    duckdb_v2_error_info_destroy(&err)
+            elif statement_type == DUCKDB_V2_STATEMENT_TYPE_CREATE:
+                materialize = True
 
     py_result = CApiResult.__new__(CApiResult)
     if batch_rows is not None:
@@ -301,6 +318,8 @@ cdef object _execute_bound(
     py_result._reg = reg
     py_result._borrow = 1
     transferred[0] = True
+    if materialize:
+        py_result._run_to_first_chunk()
     return py_result
 
 
@@ -958,7 +977,7 @@ cdef class CApiResult:
         # Released last: every write above must be visible to a thread that sees the flag.
         bdv2_store_release(&self._schema_ready, 1)
 
-    cdef int _step_once_for_schema(self) except -1:
+    cdef int _step_once_for_schema(self, bint counted=True) except -1:
         """Advance the result one step, keeping any chunk it produces. False when it cannot"""
         cdef duckdb_v2_data_chunk_handle chunk = NULL
         cdef duckdb_v2_result_step_status_t status
@@ -968,7 +987,8 @@ cdef class CApiResult:
         if self._finished or self._pending_chunk != NULL:
             return 0
 
-        self._schema_steps += 1
+        if counted:
+            self._schema_steps += 1
         with nogil:
             rc = duckdb_v2_result_step(self._result, &chunk, &status, &err)
         check_v2(rc, err, "duckdb_v2_result_step")
@@ -985,6 +1005,12 @@ cdef class CApiResult:
         if status == DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED:
             raise QueryCancelled("query was cancelled by connection interrupt")
         return 1
+
+    cdef void _run_to_first_chunk(self) except *:
+        """Step until the first chunk exists, retaining it, so the statement's source runs"""
+        while self._pending_chunk == NULL and not self._finished:
+            if not self._step_once_for_schema(False):
+                break
 
     cdef void _build_column_metadata(self) except *:
         """Read the resolved schema into the column-name and per-column decoder lists"""

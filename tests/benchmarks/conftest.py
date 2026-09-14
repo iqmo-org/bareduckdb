@@ -111,9 +111,19 @@ def pytest_addoption(parser):
         help="Explicit JSONL output path, opened in append mode so interleaved repetitions of one arm share a file",
     )
     parser.addoption(
+        "--connection-settings",
+        default="",
+        help=(
+            "Semicolon-separated SET statements applied to every connection, e.g. "
+            "\"disabled_optimizers='unused_columns,filter_pushdown'\". Lets the duckdb arm be "
+            "stripped of optimizations bareduckdb does not implement, so a ratio compares scan "
+            "work rather than missing features."
+        ),
+    )
+    parser.addoption(
         "--registration-modes",
         default="parquet",
-        help="Comma-separated list of data registration modes: parquet,arrow,polars,polars_lazy",
+        help="Comma-separated list of data registration modes: parquet,arrow,polars,polars_lazy,dataset",
     )
     parser.addoption(
         "--allow-missing-metrics",
@@ -124,7 +134,7 @@ def pytest_addoption(parser):
 
 
 def pytest_generate_tests(metafunc):
-    """Generate test variants for each registration mode"""
+    """Generate test variants for each registration mode."""
     if "registration_mode" in metafunc.fixturenames:
         modes_str = metafunc.config.getoption("--registration-modes")
         modes = [m.strip() for m in modes_str.split(",")]
@@ -273,8 +283,11 @@ def pytest_runtest_call(item):
     test_name = item.name.split("[")[0] if "[" in item.name else item.name
     test_run = 1
     test_total = 1
+    connection_settings = item.config.getoption("--connection-settings") or ""
     sql_path = None
     mode = ""
+    # Always 'n/a': register() no longer has a cache= setting, kept so old rows stay comparable.
+    cache = "n/a"
 
     if hasattr(item, "callspec") and item.callspec:
         params = item.callspec.params
@@ -313,6 +326,8 @@ def pytest_runtest_call(item):
         "python": sys.version.split(" ")[0],
         "bench": BENCHMARK_SUFFIX,
         "mode": mode,
+        "cache": cache,
+        "connection_settings": connection_settings,
         "test_name": test_name,
         "test_run": test_run,
         "test_total": test_total,
@@ -364,7 +379,7 @@ def registered_tables(conn, request):
     for table_name, filepath in tables_to_register.items():
         data = load_data_by_mode(filepath, mode)
         try:
-            # Only bareduckdb supports statistics parameter
+            # Only bareduckdb's register() takes statistics.
             if hasattr(conn, '__class__') and 'bareduckdb' in conn.__class__.__module__:
                 conn.register(table_name, data, statistics=statistics_param)
             else:
@@ -395,6 +410,17 @@ def conn_with_like_data(request, ensure_parquet_files):
     connection.close()
 
 
+def _apply_connection_settings(connection, request):
+    """Run any --connection-settings SET statements, recorded in the result rows."""
+    raw = request.config.getoption("--connection-settings")
+    if not raw:
+        return
+    for stmt in raw.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            connection.execute(f"SET {stmt}")
+
+
 @pytest.fixture
 def conn(request):
     """Basic connection fixture"""
@@ -408,6 +434,8 @@ def conn(request):
         import bareduckdb
 
         connection = bareduckdb.connect()
+
+    _apply_connection_settings(connection, request)
 
     # Warm the connection
     _ = connection.execute("select * from range(10)").fetch_arrow_table()

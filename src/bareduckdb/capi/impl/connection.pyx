@@ -12,8 +12,6 @@ from libc.stdlib cimport free, malloc
 from libc.string cimport memcpy, memset, strlen
 
 from bareduckdb.capi.impl.duckdb_v2 cimport (
-    DUCKDB_V2_ERROR_INPUT_INVALID,
-    DUCKDB_V2_ERROR_NONE,
     ArrowArray,
     ArrowArrayStream,
     ArrowSchema,
@@ -23,7 +21,6 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_arrow_importer_get_schema,
     duckdb_v2_arrow_importer_handle,
     duckdb_v2_arrow_importer_next_chunk,
-    DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT,
     duckdb_v2_bool_t,
     duckdb_v2_close,
     duckdb_v2_connect,
@@ -47,12 +44,15 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_error_info_handle,
     duckdb_v2_error_info_set_code,
     duckdb_v2_error_info_set_text,
+    DUCKDB_V2_ERROR_INPUT_INVALID,
+    DUCKDB_V2_ERROR_NONE,
     duckdb_v2_error_t,
     duckdb_v2_function_signature_add_parameter,
     duckdb_v2_function_signature_handle,
     duckdb_v2_identifier_t,
     duckdb_v2_logical_type_destroy,
     duckdb_v2_logical_type_handle,
+    DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT,
     duckdb_v2_opaque,
     duckdb_v2_open,
     duckdb_v2_option_create,
@@ -64,6 +64,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_qname_equals,
     duckdb_v2_qname_get_part_count,
     duckdb_v2_qname_handle,
+    duckdb_v2_qname_hash,
     duckdb_v2_qname_parse,
     duckdb_v2_query_progress_destroy,
     duckdb_v2_query_progress_get_percentage,
@@ -102,19 +103,27 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_table_function_destroy,
     duckdb_v2_table_function_exec_get_column_count,
     duckdb_v2_table_function_exec_get_global_state,
+    duckdb_v2_table_function_exec_get_local_state,
     duckdb_v2_table_function_exec_get_output_chunk,
     duckdb_v2_table_function_exec_info_handle,
     duckdb_v2_table_function_get_signature,
     duckdb_v2_table_function_handle,
     duckdb_v2_table_function_init_global_get_bind_data,
+    duckdb_v2_table_function_init_global_get_column_count,
+    duckdb_v2_table_function_init_global_get_column_index,
     duckdb_v2_table_function_init_global_info_handle,
     duckdb_v2_table_function_init_global_set_global_state,
     duckdb_v2_table_function_init_global_set_max_threads,
+    duckdb_v2_table_function_init_local_get_global_state,
+    duckdb_v2_table_function_init_local_info_handle,
+    duckdb_v2_table_function_init_local_set_local_state,
     duckdb_v2_table_function_register,
     duckdb_v2_table_function_set_bind_callback,
     duckdb_v2_table_function_set_exec_callback,
     duckdb_v2_table_function_set_init_global_callback,
+    duckdb_v2_table_function_set_init_local_callback,
     duckdb_v2_table_function_set_name,
+    duckdb_v2_table_function_set_projection_pushdown,
     duckdb_v2_table_function_set_user_data,
     duckdb_v2_value_create_bigint_with_context,
     duckdb_v2_value_destroy,
@@ -224,14 +233,37 @@ cdef struct bd_bind_data:
     idx_t slot
 
 
-# Above any real thread count, since engine caps at its own
-# what DuckDB's built-in arrow scan uses (external/duckdb/src/function/table/arrow.cpp:113)
+# Above any real thread count; the engine clamps whatever we pass to its own thread count.
 DEF BD_SCAN_MAX_THREADS = 4096
+
+# The Arrow format string for a struct, which is what a record batch's top-level array is.
+cdef const char *BD_STRUCT_FORMAT = "+s"
+
+
+cdef enum:
+    BD_CLAIM_OK = 0
+    BD_CLAIM_EOF = 1
+    BD_CLAIM_FAILED = 2
 
 
 cdef struct bd_scan_state:
     bd_reg_entry *entry
-    long cursor
+    # Output vector i holds declared column projection[i]. Per scan, not per plan.
+    idx_t *projection
+    idx_t projection_count
+    # The only fact exec may consult for a source vector: 1 means narrowed import (index i), 0 means map through projection[].
+    int chunks_narrow
+
+
+# Backs one narrowed ArrowArray; it owns the full array, and is reached only via private_data.
+cdef struct bd_narrow_array:
+    ArrowArray original
+    ArrowArray **children
+
+
+# Per worker thread, from init_local; an importer must not be used from two threads at once.
+cdef struct bd_local_state:
+    duckdb_v2_arrow_importer_handle importer
 
 
 cdef void _bd_copy_text(char *dst, const char *src, idx_t length) noexcept nogil:
@@ -244,32 +276,46 @@ cdef void _bd_copy_text(char *dst, const char *src, idx_t length) noexcept nogil
     dst[n] = 0
 
 
+cdef void _bd_fail_write(bd_reg_entry *entry, const char *text, idx_t n) noexcept nogil:
+    """CAS-claim the transition to BD_ENTRY_FAILED; only the winner writes err_text, and entry.lock is never taken."""
+    cdef long current = bdv2_load_acquire(&entry.state)
+    while current != BD_ENTRY_FAILED:
+        if bdv2_cas(&entry.state, current, BD_ENTRY_FAILED):
+            _bd_copy_text(entry.err_text, text, n)
+            return
+        current = bdv2_load_acquire(&entry.state)
+    # Already failed by another thread; its text stands, not ours.
+
+
 cdef void _bd_fail(bd_reg_entry *entry, const char *message) noexcept nogil:
-    """Record a fixed message on the entry and mark the import terminally failed"""
+    """Record a fixed message on the entry and mark the import terminally failed. First failure wins."""
     cdef idx_t n = 0
     while message[n] != 0:
         n += 1
-    _bd_copy_text(entry.err_text, message, n)
-    bdv2_store_release(&entry.state, BD_ENTRY_FAILED)
+    _bd_fail_write(entry, message, n)
 
 
 cdef void _bd_fail_from_info(bd_reg_entry *entry, duckdb_v2_error_info_handle info) noexcept nogil:
-    """Record a v2 error's text on the entry, destroying the info handle"""
+    """Record a v2 error's text on the entry, destroying the info handle. First failure wins."""
     cdef duckdb_v2_str_t text
     cdef const char *fallback = "unknown DuckDB error"
+    cdef char local_buf[BD_ERR_TEXT_CAP]
+    cdef idx_t n = 0
     text.ptr = NULL
     text.len = 0
     if info != NULL and duckdb_v2_error_info_get_text(info, &text) == DUCKDB_V2_ERROR_NONE:
-        _bd_copy_text(entry.err_text, text.ptr, text.len)
+        _bd_copy_text(local_buf, text.ptr, text.len)
     else:
-        _bd_copy_text(entry.err_text, fallback, <idx_t>strlen(fallback))
+        _bd_copy_text(local_buf, fallback, <idx_t>strlen(fallback))
     if info != NULL:
         duckdb_v2_error_info_destroy(&info)
-    bdv2_store_release(&entry.state, BD_ENTRY_FAILED)
+    while local_buf[n] != 0:
+        n += 1
+    _bd_fail_write(entry, local_buf, n)
 
 
 cdef void _bd_fail_from_stream(bd_reg_entry *entry, const char *fallback) noexcept nogil:
-    """Record the Arrow stream's own last error, falling back to a fixed message"""
+    """Record the Arrow stream's own last error, falling back to a fixed message; callers hold entry.lock."""
     cdef const char *text = NULL
     cdef idx_t n = 0
     if entry.stream.get_last_error != NULL:
@@ -279,27 +325,17 @@ cdef void _bd_fail_from_stream(bd_reg_entry *entry, const char *fallback) noexce
         return
     while text[n] != 0:
         n += 1
-    _bd_copy_text(entry.err_text, text, n)
-    bdv2_store_release(&entry.state, BD_ENTRY_FAILED)
-
-
-cdef void _bd_chunks_destroy(bd_reg_entry *entry) noexcept nogil:
-    """Destroy every imported chunk, which is what releases the Arrow buffers they alias"""
-    cdef idx_t i
-    for i in range(entry.chunk_count):
-        duckdb_v2_data_chunk_destroy(&entry.chunks[i])
-    entry.chunk_count = 0
-    if entry.chunks != NULL:
-        free(entry.chunks)
-        entry.chunks = NULL
-    entry.chunk_capacity = 0
+    _bd_fail_write(entry, text, n)
 
 
 cdef void _bd_entry_destroy(bd_reg_entry *entry) noexcept nogil:
     """Release everything one registry entry owns, then free the entry"""
     if entry == NULL:
         return
-    _bd_chunks_destroy(entry)
+    if entry.raw_schema.release != NULL:
+        entry.raw_schema.release(&entry.raw_schema)
+    if entry.importer != NULL:
+        duckdb_v2_arrow_importer_destroy(&entry.importer)
     if entry.ddb_schema != NULL:
         duckdb_v2_schema_destroy(&entry.ddb_schema)
     if entry.name != NULL:
@@ -324,6 +360,10 @@ cdef void _bd_registry_destroy(bd_registry *reg) noexcept nogil:
         free(reg.entries)
     if reg.retired != NULL:
         free(reg.retired)
+    if reg.index != NULL:
+        free(reg.index)
+    if reg.spent != NULL:
+        free(reg.spent)
     if reg.tf_name != NULL:
         duckdb_v2_qname_destroy(&reg.tf_name)
     free(reg)
@@ -420,6 +460,25 @@ cdef bint _bd_push(bd_reg_entry ***slots, idx_t *count, idx_t *capacity, bd_reg_
     return True
 
 
+cdef bint _bd_push_idx(idx_t **slots, idx_t *count, idx_t *capacity, idx_t value) noexcept nogil:
+    """Append one index value to a growable array of index values"""
+    cdef idx_t new_capacity
+    cdef idx_t *grown
+    if count[0] == capacity[0]:
+        new_capacity = 8 if capacity[0] == 0 else capacity[0] * 2
+        grown = <idx_t *>malloc(new_capacity * sizeof(idx_t))
+        if grown == NULL:
+            return False
+        if slots[0] != NULL:
+            memcpy(grown, slots[0], count[0] * sizeof(idx_t))
+            free(slots[0])
+        slots[0] = grown
+        capacity[0] = new_capacity
+    slots[0][count[0]] = value
+    count[0] += 1
+    return True
+
+
 cdef bint _bd_entry_matches(bd_reg_entry *entry, duckdb_v2_qname_handle qname) noexcept nogil:
     """Report whether either of the entry's names equals qname under DuckDB's identifier rules"""
     cdef duckdb_v2_bool_t hit = False
@@ -433,6 +492,143 @@ cdef bint _bd_entry_matches(bd_reg_entry *entry, duckdb_v2_qname_handle qname) n
     return False
 
 
+cdef inline bd_reg_entry *_bd_tombstone() noexcept nogil:
+    """The marker a removed index cell holds; probing passes over it rather than stopping"""
+    return <bd_reg_entry *>1
+
+
+cdef uint64_t _bd_qname_hash(duckdb_v2_qname_handle qname) noexcept nogil:
+    """Hash a qualified name the way duckdb_v2_qname_equals compares it; 0 stands in on failure"""
+    cdef uint64_t value = 0
+    if duckdb_v2_qname_hash(qname, &value, NULL) != DUCKDB_V2_ERROR_NONE:
+        return 0
+    return value
+
+
+cdef bint _bd_index_put(bd_index_slot *table, idx_t capacity, uint64_t hash_value, bd_reg_entry *entry) noexcept nogil:
+    """Place one (hash, entry) cell into an open-addressed table that has room to spare"""
+    cdef idx_t mask = capacity - 1
+    cdef idx_t i = (<idx_t>hash_value) & mask
+    cdef idx_t probed = 0
+    while probed < capacity:
+        if table[i].entry == NULL or table[i].entry == _bd_tombstone():
+            table[i].hash = hash_value
+            table[i].entry = entry
+            return True
+        i = (i + 1) & mask
+        probed += 1
+    return False
+
+
+cdef bint _bd_index_rebuild(bd_registry *reg, idx_t capacity) noexcept nogil:
+    """Rebuild the name index from reg.entries, which also clears every tombstone. Caller holds reg.lock"""
+    cdef bd_index_slot *table = <bd_index_slot *>malloc(capacity * sizeof(bd_index_slot))
+    cdef bd_reg_entry *entry
+    cdef idx_t i
+    if table == NULL:
+        return False
+    memset(table, 0, capacity * sizeof(bd_index_slot))
+    for i in range(reg.count):
+        entry = reg.entries[i]
+        _bd_index_put(table, capacity, entry.name_hash, entry)
+        if entry.alt_name != NULL:
+            _bd_index_put(table, capacity, entry.alt_hash, entry)
+    if reg.index != NULL:
+        free(reg.index)
+    reg.index = table
+    reg.index_capacity = capacity
+    # An entry without an alt name over-counts by one, which only rebuilds a little sooner.
+    reg.index_used = reg.count * 2
+    return True
+
+
+cdef bint _bd_index_reserve(bd_registry *reg, idx_t extra) noexcept nogil:
+    """Ensure the index stays under half full with `extra` more keys in it. Caller holds reg.lock"""
+    cdef idx_t needed = (reg.index_used + extra + 1) * 2
+    cdef idx_t capacity = 16
+    if reg.index != NULL and needed <= reg.index_capacity:
+        return True
+    while capacity < needed:
+        capacity *= 2
+    return _bd_index_rebuild(reg, capacity)
+
+
+cdef bd_reg_entry *_bd_index_find(bd_registry *reg, uint64_t hash_value, duckdb_v2_qname_handle qname) noexcept nogil:
+    """Return the live entry whose name equals qname, or NULL. Caller holds reg.lock"""
+    cdef idx_t mask
+    cdef idx_t i
+    cdef idx_t probed = 0
+    cdef bd_reg_entry *entry
+    if reg.index == NULL or reg.count == 0:
+        return NULL
+    mask = reg.index_capacity - 1
+    i = (<idx_t>hash_value) & mask
+    while probed < reg.index_capacity:
+        entry = reg.index[i].entry
+        if entry == NULL:
+            return NULL
+        # The hash only narrows the candidates; equality is still DuckDB's own identifier rule.
+        if entry != _bd_tombstone() and reg.index[i].hash == hash_value and _bd_entry_matches(entry, qname):
+            return entry
+        i = (i + 1) & mask
+        probed += 1
+    return NULL
+
+
+cdef void _bd_index_remove_key(bd_registry *reg, uint64_t hash_value, bd_reg_entry *entry) noexcept nogil:
+    """Tombstone the cells for this entry along one key's probe sequence. Caller holds reg.lock"""
+    cdef idx_t mask
+    cdef idx_t i
+    cdef idx_t probed = 0
+    if reg.index == NULL:
+        return
+    mask = reg.index_capacity - 1
+    i = (<idx_t>hash_value) & mask
+    while probed < reg.index_capacity:
+        if reg.index[i].entry == NULL:
+            return
+        if reg.index[i].entry == entry:
+            reg.index[i].entry = _bd_tombstone()
+        i = (i + 1) & mask
+        probed += 1
+
+
+cdef void _bd_index_remove(bd_registry *reg, bd_reg_entry *entry) noexcept nogil:
+    """Drop both of an entry's keys from the name index. Caller holds reg.lock"""
+    _bd_index_remove_key(reg, entry.name_hash, entry)
+    if entry.alt_name != NULL:
+        _bd_index_remove_key(reg, entry.alt_hash, entry)
+
+
+cdef void _bd_drop_spent(bd_registry *reg, idx_t slot) noexcept nogil:
+    """Forget a consumed slot, because its entry is gone. Caller holds reg.lock"""
+    cdef idx_t i = 0
+    while i < reg.spent_count:
+        if reg.spent[i] == slot:
+            reg.spent[i] = reg.spent[reg.spent_count - 1]
+            reg.spent_count -= 1
+            return
+        i += 1
+
+
+cdef void _bd_retire_entry(bd_registry *reg, bd_reg_entry *entry) noexcept nogil:
+    """Unlink one live entry, freeing it when provably unread. Caller holds reg.lock"""
+    cdef bd_reg_entry *moved
+    _bd_index_remove(reg, entry)
+    _bd_drop_spent(reg, entry.slot)
+    moved = reg.entries[reg.count - 1]
+    reg.entries[entry.pos] = moved
+    moved.pos = entry.pos
+    reg.count -= 1
+    if bdv2_load_acquire(&entry.state) == BD_ENTRY_EMPTY and bdv2_load_acquire(&entry.refs) == 0:
+        # Never claimed and unreferenced, so no borrow can be live.
+        _bd_entry_destroy(entry)
+    elif not _bd_push(&reg.retired, &reg.retired_count, &reg.retired_capacity, entry):
+        # The retired array could not grow; free only if provably unread, else leak.
+        if bdv2_load_acquire(&reg.borrows) == 1 and bdv2_load_acquire(&entry.refs) == 0:
+            _bd_entry_destroy(entry)
+
+
 cdef idx_t _bd_retire_matching(
     bd_registry *reg,
     duckdb_v2_qname_handle qname,
@@ -440,76 +636,44 @@ cdef idx_t _bd_retire_matching(
 ) noexcept nogil:
     """Move every live entry of an equal name out of entries, freeing the ones never claimed. Caller holds reg.lock"""
     cdef bd_reg_entry *entry
-    cdef idx_t i = 0
+    cdef uint64_t hash_value = _bd_qname_hash(qname)
     cdef idx_t removed = 0
-    while i < reg.count:
-        entry = reg.entries[i]
-        if _bd_entry_matches(entry, qname) or (alt != NULL and _bd_entry_matches(entry, alt)):
-            reg.entries[i] = reg.entries[reg.count - 1]
-            reg.count -= 1
+    while True:
+        entry = _bd_index_find(reg, hash_value, qname)
+        if entry == NULL:
+            break
+        _bd_retire_entry(reg, entry)
+        removed += 1
+    if alt != NULL:
+        hash_value = _bd_qname_hash(alt)
+        while True:
+            entry = _bd_index_find(reg, hash_value, alt)
+            if entry == NULL:
+                break
+            _bd_retire_entry(reg, entry)
             removed += 1
-            if bdv2_load_acquire(&entry.state) == BD_ENTRY_EMPTY and bdv2_load_acquire(&entry.refs) == 0:
-                # Never claimed and unreferenced, so no borrow can be live.
-                _bd_entry_destroy(entry)
-            elif not _bd_push(&reg.retired, &reg.retired_count, &reg.retired_capacity, entry):
-                # The retired array could not grow; free only if provably unread, else leak.
-                if bdv2_load_acquire(&reg.borrows) == 1 and bdv2_load_acquire(&entry.refs) == 0:
-                    _bd_entry_destroy(entry)
-            continue
-        i += 1
     return removed
 
 
-cdef bint _bd_chunk_push(bd_reg_entry *entry, duckdb_v2_data_chunk_handle chunk) noexcept nogil:
-    """Append one imported chunk to the entry's geometrically grown chunk array"""
-    cdef idx_t new_capacity
-    cdef duckdb_v2_data_chunk_handle *grown
-    if entry.chunk_count == entry.chunk_capacity:
-        new_capacity = 16 if entry.chunk_capacity == 0 else entry.chunk_capacity * 2
-        grown = <duckdb_v2_data_chunk_handle *>malloc(new_capacity * sizeof(duckdb_v2_data_chunk_handle))
-        if grown == NULL:
-            return False
-        if entry.chunks != NULL:
-            memcpy(grown, entry.chunks, entry.chunk_count * sizeof(duckdb_v2_data_chunk_handle))
-            free(entry.chunks)
-        entry.chunks = grown
-        entry.chunk_capacity = new_capacity
-    entry.chunks[entry.chunk_count] = chunk
-    entry.chunk_count += 1
-    return True
+cdef bint _bd_mark_spent(bd_registry *reg, bd_reg_entry *entry) noexcept nogil:
+    """Record that a scan has consumed this entry's stream, if the entry is still live"""
+    cdef bint ok = True
+    cdef bint listed = False
+    cdef idx_t i
+    bdv2_lock(&reg.lock)
+    if entry.pos < reg.count and reg.entries[entry.pos] == entry:
+        for i in range(reg.spent_count):
+            if reg.spent[i] == entry.slot:
+                listed = True
+                break
+        if not listed:
+            ok = _bd_push_idx(&reg.spent, &reg.spent_count, &reg.spent_capacity, entry.slot)
+    bdv2_unlock(&reg.lock)
+    return ok
 
 
-cdef bint _bd_drain(bd_reg_entry *entry, duckdb_v2_arrow_importer_handle importer) noexcept nogil:
-    """Move every chunk the importer is holding onto the entry, reporting failure on the entry"""
-    cdef duckdb_v2_data_chunk_handle chunk = NULL
-    cdef duckdb_v2_error_info_handle err = NULL
-    cdef idx_t size = 0
-    while True:
-        chunk = NULL
-        if duckdb_v2_arrow_importer_next_chunk(importer, &chunk, &err) != DUCKDB_V2_ERROR_NONE:
-            _bd_fail_from_info(entry, err)
-            return False
-        if chunk == NULL:
-            return True
-        if duckdb_v2_data_chunk_get_size(chunk, &size, NULL) != DUCKDB_V2_ERROR_NONE:
-            duckdb_v2_data_chunk_destroy(&chunk)
-            _bd_fail(entry, "an imported chunk would not report its size")
-            return False
-        if not _bd_chunk_push(entry, chunk):
-            duckdb_v2_data_chunk_destroy(&chunk)
-            _bd_fail(entry, "out of memory while holding the imported chunks")
-            return False
-        entry.row_count += size
-
-
-cdef void _bd_materialize(bd_reg_entry *entry, duckdb_v2_context_handle context) noexcept nogil:
-    """Import the entry's Arrow stream once into chunks the scan replays, all without the GIL.
-
-    Appending with consume set makes the chunks alias the Arrow buffers rather than copy them,
-    so destroying the last chunk holding a buffer is what releases it.
-    """
-    cdef ArrowSchema schema
-    cdef ArrowArray array
+cdef void _bd_resolve_schema(bd_reg_entry *entry, duckdb_v2_context_handle context) noexcept nogil:
+    """Resolve the entry's schema only, without the GIL, leaving every row for the scan to pull."""
     cdef duckdb_v2_arrow_importer_handle importer = NULL
     cdef duckdb_v2_schema_handle resolved = NULL
     cdef duckdb_v2_error_info_handle err = NULL
@@ -517,18 +681,16 @@ cdef void _bd_materialize(bd_reg_entry *entry, duckdb_v2_context_handle context)
     cdef bint ok = False
 
     bdv2_store_release(&entry.state, BD_ENTRY_IMPORTING)
-    memset(&schema, 0, sizeof(ArrowSchema))
-    memset(&array, 0, sizeof(ArrowArray))
+    memset(&entry.raw_schema, 0, sizeof(ArrowSchema))
 
     while True:
         if entry.stream.get_schema == NULL:
             _bd_fail(entry, "the registered object exported no Arrow stream")
             break
-        if entry.stream.get_schema(&entry.stream, &schema) != 0:
+        if entry.stream.get_schema(&entry.stream, &entry.raw_schema) != 0:
             _bd_fail_from_stream(entry, "the Arrow stream failed to report its schema")
             break
-
-        if duckdb_v2_arrow_importer_create(context, &schema, BD_IMPORT_BATCH_ROWS, &importer, &err) != DUCKDB_V2_ERROR_NONE:
+        if duckdb_v2_arrow_importer_create(context, &entry.raw_schema, BD_IMPORT_BATCH_ROWS, &importer, &err) != DUCKDB_V2_ERROR_NONE:
             _bd_fail_from_info(entry, err)
             break
         if duckdb_v2_arrow_importer_get_schema(importer, &resolved, &err) != DUCKDB_V2_ERROR_NONE:
@@ -540,57 +702,170 @@ cdef void _bd_materialize(bd_reg_entry *entry, duckdb_v2_context_handle context)
         if count == 0:
             _bd_fail(entry, "the registered object has no columns")
             break
-
-        while True:
-            memset(&array, 0, sizeof(ArrowArray))
-            if entry.stream.get_next == NULL:
-                _bd_fail(entry, "the registered Arrow stream has no get_next")
-                break
-            if entry.stream.get_next(&entry.stream, &array) != 0:
-                _bd_fail_from_stream(entry, "the registered Arrow stream failed mid-read")
-                break
-            if array.release == NULL:
-                if entry.stream.release != NULL:
-                    entry.stream.release(&entry.stream)
-                break
-            # Flushed per array: the header says a chunk spanning two arrays forces a copy.
-            if duckdb_v2_arrow_importer_append(importer, &array, True, True, &err) != DUCKDB_V2_ERROR_NONE:
-                if array.release != NULL:
-                    array.release(&array)
-                _bd_fail_from_info(entry, err)
-                break
-            if not _bd_drain(entry, importer):
-                break
-
-        if bdv2_load_acquire(&entry.state) == BD_ENTRY_FAILED:
-            break
-
         ok = True
         break
 
-    if importer != NULL:
-        duckdb_v2_arrow_importer_destroy(&importer)
-    if schema.release != NULL:
-        schema.release(&schema)
-    if entry.stream.release != NULL:
-        entry.stream.release(&entry.stream)
-
-    if ok:
-        # Kept for the entry's life: bind reads the column names and types off it.
-        entry.ddb_schema = resolved
-        entry.col_count = count
-        bdv2_store_release(&entry.state, BD_ENTRY_READY)
+    # The raw schema is retained on the entry for every later importer; _bd_entry_destroy frees it.
+    if not ok:
+        if importer != NULL:
+            duckdb_v2_arrow_importer_destroy(&importer)
+        if resolved != NULL:
+            duckdb_v2_schema_destroy(&resolved)
         return
 
-    if resolved != NULL:
-        duckdb_v2_schema_destroy(&resolved)
-    _bd_chunks_destroy(entry)
-    entry.row_count = 0
-    if bdv2_load_acquire(&entry.state) != BD_ENTRY_FAILED:
-        _bd_fail(entry, "the registered object could not be imported")
+    # Kept for the entry's life: bind reads ddb_schema, and exec pulls from stream/importer.
+    entry.ddb_schema = resolved
+    entry.col_count = count
+    entry.importer = importer
+    bdv2_store_release(&entry.state, BD_ENTRY_READY)
+
+
+cdef int _bd_claim_array(bd_reg_entry *entry, ArrowArray *out_array) noexcept nogil:
+    """Pull the next array from the stream and bump row_count, both under entry.lock."""
+    memset(out_array, 0, sizeof(ArrowArray))
+    bdv2_lock(&entry.lock)
+    if bdv2_load_acquire(&entry.state) == BD_ENTRY_FAILED:
+        bdv2_unlock(&entry.lock)
+        return BD_CLAIM_FAILED
+    if entry.stream_done:
+        bdv2_unlock(&entry.lock)
+        return BD_CLAIM_EOF
+    if entry.stream.get_next == NULL:
+        _bd_fail(entry, "the registered Arrow stream has no get_next")
+        bdv2_unlock(&entry.lock)
+        return BD_CLAIM_FAILED
+    if entry.stream.get_next(&entry.stream, out_array) != 0:
+        _bd_fail_from_stream(entry, "the registered Arrow stream failed mid-read")
+        bdv2_unlock(&entry.lock)
+        return BD_CLAIM_FAILED
+    if out_array.release == NULL:
+        entry.stream_done = True
+        if entry.stream.release != NULL:
+            entry.stream.release(&entry.stream)
+        bdv2_unlock(&entry.lock)
+        return BD_CLAIM_EOF
+    entry.row_count += <idx_t>out_array.length
+    bdv2_unlock(&entry.lock)
+    return BD_CLAIM_OK
+
+
+cdef void _bd_borrowed_schema_release(ArrowSchema *schema) noexcept nogil:
+    """Release a schema whose children are borrowed from the entry's retained one: nothing to free"""
+    if schema != NULL:
+        schema.release = NULL
+
+
+cdef void _bd_narrow_array_release(ArrowArray *array) noexcept nogil:
+    """Release a narrowed array and the full array it owns, reached only through private_data."""
+    cdef bd_narrow_array *owned
+    if array == NULL:
+        return
+    owned = <bd_narrow_array *>array.private_data
+    array.release = NULL
+    array.private_data = NULL
+    if owned == NULL:
+        return
+    if owned.original.release != NULL:
+        owned.original.release(&owned.original)
+    if owned.children != NULL:
+        free(owned.children)
+    free(owned)
+
+
+cdef bint _bd_narrow_array(
+    bd_reg_entry *entry,
+    bd_scan_state *state,
+    ArrowArray *array,
+    ArrowArray *out,
+) noexcept nogil:
+    """Build a shallow array over the projected children only, taking ownership of the full one."""
+    cdef bd_narrow_array *owned
+    cdef idx_t i
+    memset(out, 0, sizeof(ArrowArray))
+    for i in range(state.projection_count):
+        if <int64_t>state.projection[i] >= array.n_children:
+            if array.release != NULL:
+                array.release(array)
+            _bd_fail(entry, "the registered Arrow stream produced an array narrower than its schema")
+            return False
+    owned = <bd_narrow_array *>malloc(sizeof(bd_narrow_array))
+    if owned == NULL:
+        if array.release != NULL:
+            array.release(array)
+        _bd_fail(entry, "out of memory while narrowing an imported array")
+        return False
+    owned.children = <ArrowArray **>malloc(state.projection_count * sizeof(ArrowArray *))
+    if owned.children == NULL:
+        free(owned)
+        if array.release != NULL:
+            array.release(array)
+        _bd_fail(entry, "out of memory while narrowing an imported array")
+        return False
+    memcpy(&owned.original, array, sizeof(ArrowArray))
+    memset(array, 0, sizeof(ArrowArray))
+    for i in range(state.projection_count):
+        owned.children[i] = owned.original.children[state.projection[i]]
+    out.length = owned.original.length
+    out.null_count = owned.original.null_count
+    out.offset = owned.original.offset
+    out.n_buffers = owned.original.n_buffers
+    out.buffers = owned.original.buffers
+    out.n_children = <int64_t>state.projection_count
+    out.children = owned.children
+    out.dictionary = NULL
+    out.release = _bd_narrow_array_release
+    out.private_data = <void *>owned
+    return True
+
+
+cdef bint _bd_reference_chunk(
+    duckdb_v2_data_chunk_handle out,
+    duckdb_v2_data_chunk_handle src,
+    idx_t column_count,
+    bd_scan_state *state,
+    idx_t *out_size,
+    duckdb_v2_error_info_handle *err,
+) noexcept nogil:
+    """Reference every source vector into the output chunk; reads src but leaves destroying it to the caller."""
+    cdef duckdb_v2_vector_handle out_vector = NULL
+    cdef duckdb_v2_vector_handle src_vector = NULL
+    cdef idx_t i
+    if duckdb_v2_data_chunk_get_size(src, out_size, err) != DUCKDB_V2_ERROR_NONE:
+        return False
+    # state.chunks_narrow is the only fact the source index may be derived from; never both maps.
+    for i in range(column_count):
+        if duckdb_v2_data_chunk_get_vector(out, i, &out_vector, err) != DUCKDB_V2_ERROR_NONE:
+            return False
+        if duckdb_v2_data_chunk_get_vector(src, i if state.chunks_narrow else state.projection[i], &src_vector, err) != DUCKDB_V2_ERROR_NONE:
+            return False
+        if duckdb_v2_vector_reference(out_vector, src_vector, err) != DUCKDB_V2_ERROR_NONE:
+            return False
+    return True
 
 
 # The table function the dispatcher claims a name with.
+
+
+cdef void _bd_local_destroy(void *data) noexcept nogil:
+    """Destroy a worker's importer and local state. C memory only, never Python."""
+    cdef bd_local_state *local
+    if data == NULL:
+        return
+    local = <bd_local_state *>data
+    if local.importer != NULL:
+        duckdb_v2_arrow_importer_destroy(&local.importer)
+    free(local)
+
+
+cdef void _bd_scan_state_destroy(void *data) noexcept nogil:
+    """Free a scan's projection map and its state. C memory only, never Python."""
+    cdef bd_scan_state *state
+    if data == NULL:
+        return
+    state = <bd_scan_state *>data
+    if state.projection != NULL:
+        free(state.projection)
+    free(state)
 
 
 cdef void _bd_free_opaque(void *data) noexcept nogil:
@@ -640,7 +915,7 @@ cdef void _bd_tf_bind(
     cdef duckdb_v2_identifier_t field_name
     cdef duckdb_v2_logical_type_handle field_type = NULL
     cdef idx_t col_count = 0
-    cdef idx_t row_count = 0
+    cdef int64_t declared_cardinality = -1
     cdef idx_t i
 
     if duckdb_v2_table_function_bind_get_user_data(info, &user_data, NULL) != DUCKDB_V2_ERROR_NONE or user_data == NULL:
@@ -661,7 +936,7 @@ cdef void _bd_tf_bind(
     if entry != NULL:
         ddb_schema = entry.ddb_schema
         col_count = entry.col_count
-        row_count = entry.row_count
+        declared_cardinality = entry.declared_cardinality
     bdv2_unlock(&reg.lock)
 
     if entry == NULL or bdv2_load_acquire(&entry.state) != BD_ENTRY_READY:
@@ -673,7 +948,11 @@ cdef void _bd_tf_bind(
             return
         if duckdb_v2_table_function_bind_add_result_column(info, field_name, field_type, err) != DUCKDB_V2_ERROR_NONE:
             return
-    duckdb_v2_table_function_bind_set_cardinality(info, row_count, True, NULL)
+    # The caller's cheap len() at registration time; -1 means unknown, reported as inexact.
+    if declared_cardinality >= 0:
+        duckdb_v2_table_function_bind_set_cardinality(info, <idx_t>declared_cardinality, True, NULL)
+    else:
+        duckdb_v2_table_function_bind_set_cardinality(info, 0, False, NULL)
 
     # The slot id, never the entry pointer: a cached plan must not outlive what unregister unlinks.
     bind_data = <bd_bind_data *>malloc(sizeof(bd_bind_data))
@@ -700,6 +979,8 @@ cdef void _bd_tf_init_global(
     cdef bd_reg_entry *entry = NULL
     cdef bd_scan_state *state
     cdef duckdb_v2_opaque data
+    cdef idx_t count = 0
+    cdef idx_t i
 
     if duckdb_v2_table_function_init_global_get_bind_data(info, &data_ptr, NULL) != DUCKDB_V2_ERROR_NONE or data_ptr == NULL:
         _bd_report(err, "the arrow scan was initialized without its bind data")
@@ -713,20 +994,123 @@ cdef void _bd_tf_init_global(
         _bd_report(err, "the registered source this scan reads is no longer available")
         return
 
+    # bdv2_add returns the value AFTER the add, so the first scan sees 1, not 0.
+    if bdv2_add(&entry.scans_started, 1) != 1:
+        # A second scan would silently see an empty source, since the first destroyed each chunk.
+        _bd_report(
+            err,
+            "a registered source's rows are discarded as they are read, so it can be scanned only "
+            "once per registration. Something scanned it a second time: a query that reads the "
+            "name more than once (a self-join, or two subqueries over it), or a concurrent query "
+            "on another cursor. Re-register the name, or query it once per registration",
+        )
+        return
+
+    # The Python layer re-arms exactly the entries listed here, so failing to list one is fatal.
+    if not _bd_mark_spent(bind_data.reg, entry):
+        _bd_report(err, "out of memory while recording a consumed registration")
+        return
+
     state = <bd_scan_state *>malloc(sizeof(bd_scan_state))
     if state == NULL:
         _bd_report(err, "out of memory while starting the arrow scan")
         return
     state.entry = entry
-    state.cursor = 0
-    data.ptr = <void *>state
-    data.destroy = _bd_free_opaque
-    data.equals = NULL
-    if duckdb_v2_table_function_init_global_set_global_state(info, &data, err) != DUCKDB_V2_ERROR_NONE:
+    state.projection = NULL
+    state.projection_count = 0
+    state.chunks_narrow = 0
+
+    # The engine reports columns in query reference order, not declaration order.
+    if duckdb_v2_table_function_init_global_get_column_count(info, &count, err) != DUCKDB_V2_ERROR_NONE:
         free(state)
         return
-    # parallel scan is safe: chunk list is immutable and _bd_tf_exec claims each index with an atomic fetch-add
+    if count > 0:
+        state.projection = <idx_t *>malloc(count * sizeof(idx_t))
+        if state.projection == NULL:
+            free(state)
+            _bd_report(err, "out of memory while starting the arrow scan")
+            return
+        for i in range(count):
+            if duckdb_v2_table_function_init_global_get_column_index(info, i, &state.projection[i], err) != DUCKDB_V2_ERROR_NONE:
+                free(state.projection)
+                free(state)
+                return
+        state.projection_count = count
+        # Narrow the import itself, not just the emit; a single-pass entry is re-registered per query.
+        state.chunks_narrow = 1
+
+    data.ptr = <void *>state
+    data.destroy = _bd_scan_state_destroy
+    data.equals = NULL
+    if duckdb_v2_table_function_init_global_set_global_state(info, &data, err) != DUCKDB_V2_ERROR_NONE:
+        _bd_scan_state_destroy(<void *>state)
+        return
+    # Parallel scan is safe: each worker claims a whole array for itself under entry.lock.
     duckdb_v2_table_function_init_global_set_max_threads(info, BD_SCAN_MAX_THREADS, NULL)
+
+
+cdef void _bd_tf_init_local(
+    duckdb_v2_table_function_init_local_info_handle info,
+    duckdb_v2_context_handle context,
+    duckdb_v2_error_info_handle *err,
+) noexcept nogil:
+    """Give this worker its own importer; the entry's retained raw schema is read, not consumed."""
+    cdef void *data_ptr = NULL
+    cdef bd_scan_state *state
+    cdef bd_local_state *local
+    cdef duckdb_v2_opaque data
+    cdef ArrowSchema narrowed
+    cdef ArrowSchema **children
+    cdef duckdb_v2_error_t rc
+    cdef idx_t i
+
+    if duckdb_v2_table_function_init_local_get_global_state(info, &data_ptr, NULL) != DUCKDB_V2_ERROR_NONE or data_ptr == NULL:
+        _bd_report(err, "the arrow scan was initialized without its global state")
+        return
+    state = <bd_scan_state *>data_ptr
+
+    local = <bd_local_state *>malloc(sizeof(bd_local_state))
+    if local == NULL:
+        _bd_report(err, "out of memory while starting an arrow scan worker")
+        return
+    local.importer = NULL
+
+    if state.chunks_narrow:
+        # The schema is read, not consumed, so a stack struct borrowing the entry's children suffices.
+        if state.entry.raw_schema.n_children < <int64_t>state.projection_count:
+            _bd_report(err, "the registered source's schema is narrower than the columns the query asked for")
+            free(local)
+            return
+        children = <ArrowSchema **>malloc(state.projection_count * sizeof(ArrowSchema *))
+        if children == NULL:
+            _bd_report(err, "out of memory while starting an arrow scan worker")
+            free(local)
+            return
+        for i in range(state.projection_count):
+            children[i] = state.entry.raw_schema.children[state.projection[i]]
+        memset(&narrowed, 0, sizeof(ArrowSchema))
+        narrowed.format = BD_STRUCT_FORMAT
+        narrowed.flags = state.entry.raw_schema.flags
+        narrowed.n_children = <int64_t>state.projection_count
+        narrowed.children = children
+        narrowed.release = _bd_borrowed_schema_release
+        rc = duckdb_v2_arrow_importer_create(context, &narrowed, BD_IMPORT_BATCH_ROWS, &local.importer, err)
+        free(children)
+        if rc != DUCKDB_V2_ERROR_NONE:
+            free(local)
+            return
+    elif duckdb_v2_arrow_importer_create(
+        context, &state.entry.raw_schema, BD_IMPORT_BATCH_ROWS, &local.importer, err
+    ) != DUCKDB_V2_ERROR_NONE:
+        free(local)
+        return
+    data.ptr = <void *>local
+    data.destroy = _bd_local_destroy
+    data.equals = NULL
+    if duckdb_v2_table_function_init_local_set_local_state(info, &data, err) != DUCKDB_V2_ERROR_NONE:
+        duckdb_v2_arrow_importer_destroy(&local.importer)
+        free(local)
+        return
 
 
 cdef void _bd_tf_exec(
@@ -734,18 +1118,25 @@ cdef void _bd_tf_exec(
     duckdb_v2_context_handle context,
     duckdb_v2_error_info_handle *err,
 ) noexcept nogil:
-    """Point the output chunk's vectors at one imported chunk's, moving no data at all"""
+    """Emit one chunk, converting it on the spot in this worker's own importer and destroying it."""
     cdef void *data_ptr = NULL
     cdef bd_scan_state *state
+    cdef bd_local_state *local
     cdef bd_reg_entry *entry
     cdef duckdb_v2_data_chunk_handle out = NULL
-    cdef duckdb_v2_data_chunk_handle src
+    cdef duckdb_v2_data_chunk_handle src = NULL
     cdef duckdb_v2_vector_handle out_vector = NULL
-    cdef duckdb_v2_vector_handle src_vector = NULL
+    cdef ArrowArray array
+    cdef ArrowArray narrowed
+    cdef ArrowArray *fed
+    cdef duckdb_v2_error_info_handle append_err = NULL
     cdef idx_t column_count = 0
     cdef idx_t size = 0
-    cdef idx_t i
-    cdef long index
+    cdef int claimed
+    cdef bint ok
+    cdef long new_inflight
+    cdef long peak
+    cdef long fed_children
 
     if duckdb_v2_table_function_exec_get_global_state(info, &data_ptr, NULL) != DUCKDB_V2_ERROR_NONE or data_ptr == NULL:
         _bd_report(err, "the arrow scan lost its scan state")
@@ -753,33 +1144,74 @@ cdef void _bd_tf_exec(
     state = <bd_scan_state *>data_ptr
     entry = state.entry
 
+    data_ptr = NULL
+    if duckdb_v2_table_function_exec_get_local_state(info, &data_ptr, NULL) != DUCKDB_V2_ERROR_NONE or data_ptr == NULL:
+        _bd_report(err, "the arrow scan lost its worker state")
+        return
+    local = <bd_local_state *>data_ptr
+
     if duckdb_v2_table_function_exec_get_output_chunk(info, &out, err) != DUCKDB_V2_ERROR_NONE:
         return
     if duckdb_v2_table_function_exec_get_column_count(info, &column_count, err) != DUCKDB_V2_ERROR_NONE:
         return
     if column_count == 0:
-        # No vector to size, so the chunk stays empty and the scan ends here.
+        return
+    if column_count != state.projection_count:
+        # Indexing the projection map past its end would read the wrong column, so refuse instead.
+        _bd_report(err, "the arrow scan's projection does not match its output chunk")
         return
     if duckdb_v2_data_chunk_get_vector(out, 0, &out_vector, err) != DUCKDB_V2_ERROR_NONE:
         return
 
-    index = bdv2_add(&state.cursor, 1) - 1
-    if index < 0 or <idx_t>index >= entry.chunk_count:
-        # An empty batch is what ends the scan.
-        duckdb_v2_vector_set_size(out_vector, 0, NULL)
-        return
+    # An importer with nothing queued returns NULL, so loop: claim another array and try again.
+    while True:
+        src = NULL
+        if duckdb_v2_arrow_importer_next_chunk(local.importer, &src, err) != DUCKDB_V2_ERROR_NONE:
+            return
+        if src != NULL:
+            break
+        claimed = _bd_claim_array(entry, &array)
+        if claimed == BD_CLAIM_FAILED:
+            _bd_report(err, entry.err_text)
+            return
+        if claimed == BD_CLAIM_EOF:
+            # Every array went to exactly one worker, and this one holds none, so the scan ends.
+            duckdb_v2_vector_set_size(out_vector, 0, NULL)
+            return
+        fed = &array
+        if state.chunks_narrow:
+            # A narrowed importer rejects a full-width array, so both sides must be narrowed together.
+            if not _bd_narrow_array(entry, state, &array, &narrowed):
+                _bd_report(err, entry.err_text)
+                return
+            fed = &narrowed
+        # Diagnostic only: the child arrays this append actually converts, narrowed or full width.
+        fed_children = <long>fed.n_children
+        if duckdb_v2_arrow_importer_append(local.importer, fed, True, True, &append_err) != DUCKDB_V2_ERROR_NONE:
+            # consume=true NULLs release only when it took the array, so this runs only on rejection.
+            if fed.release != NULL:
+                fed.release(fed)
+            _bd_fail_from_info(entry, append_err)
+            _bd_report(err, entry.err_text)
+            return
+        bdv2_add(&entry.converted_columns, fed_children)
+        # Appended; the next lap's next_chunk drains it.
 
-    src = entry.chunks[index]
-    if duckdb_v2_data_chunk_get_size(src, &size, err) != DUCKDB_V2_ERROR_NONE:
+    # Diagnostic only: converted but not yet emitted, from here until destroyed below.
+    new_inflight = bdv2_add(&entry.inflight, 1)
+    while True:
+        peak = bdv2_load_acquire(&entry.inflight_peak)
+        if new_inflight <= peak:
+            break
+        if bdv2_cas(&entry.inflight_peak, peak, new_inflight):
+            break
+
+    ok = _bd_reference_chunk(out, src, column_count, state, &size, err)
+    # Every path out destroys src first; it is reachable from nowhere else.
+    duckdb_v2_data_chunk_destroy(&src)
+    bdv2_add(&entry.inflight, -1)
+    if not ok:
         return
-    for i in range(column_count):
-        if duckdb_v2_data_chunk_get_vector(out, i, &out_vector, err) != DUCKDB_V2_ERROR_NONE:
-            return
-        if duckdb_v2_data_chunk_get_vector(src, i, &src_vector, err) != DUCKDB_V2_ERROR_NONE:
-            return
-        if duckdb_v2_vector_reference(out_vector, src_vector, err) != DUCKDB_V2_ERROR_NONE:
-            return
-    # Sized only once every column referenced, so a half-referenced chunk is never emitted.
     if duckdb_v2_data_chunk_get_vector(out, 0, &out_vector, err) != DUCKDB_V2_ERROR_NONE:
         return
     duckdb_v2_vector_set_size(out_vector, size, err)
@@ -790,13 +1222,13 @@ cdef void _bd_dispatch(
     duckdb_v2_context_handle context,
     duckdb_v2_error_info_handle *err,
 ) noexcept nogil:
-    """Claim a registered name with the scan function and its slot id, importing on the first claim"""
+    """Claim a registered name with the scan function and its slot id, resolving its schema on the first claim"""
     cdef void *user_data = NULL
     cdef bd_registry *reg
     cdef duckdb_v2_qname_handle qname = NULL
     cdef bd_reg_entry *entry = NULL
     cdef duckdb_v2_value_handle value = NULL
-    cdef idx_t i
+    cdef uint64_t name_hash
 
     if duckdb_v2_replacement_scan_get_user_data(info, &user_data, NULL) != DUCKDB_V2_ERROR_NONE:
         return
@@ -810,13 +1242,12 @@ cdef void _bd_dispatch(
     if qname == NULL:
         return
 
+    name_hash = _bd_qname_hash(qname)
     bdv2_lock(&reg.lock)
-    for i in range(reg.count):
-        if _bd_entry_matches(reg.entries[i], qname):
-            entry = reg.entries[i]
-            # Raised under the registry lock and dropped outside it, so both sides are atomic.
-            bdv2_add(&entry.refs, 1)
-            break
+    entry = _bd_index_find(reg, name_hash, qname)
+    if entry != NULL:
+        # Raised under the registry lock and dropped outside it, so both sides are atomic.
+        bdv2_add(&entry.refs, 1)
     bdv2_unlock(&reg.lock)
 
     duckdb_v2_qname_destroy(&qname)
@@ -824,11 +1255,11 @@ cdef void _bd_dispatch(
         return
 
     if bdv2_load_acquire(&entry.state) != BD_ENTRY_READY:
-        # Held across the whole import, so a second binder blocks rather than importing twice.
+        # Held across the whole schema resolution, so a second binder blocks rather than redoing it.
         bdv2_lock(&entry.lock)
         if bdv2_load_acquire(&entry.state) == BD_ENTRY_EMPTY:
             bdv2_add(&reg.import_count, 1)
-            _bd_materialize(entry, context)
+            _bd_resolve_schema(entry, context)
         bdv2_unlock(&entry.lock)
 
     if bdv2_load_acquire(&entry.state) == BD_ENTRY_READY:
@@ -838,6 +1269,8 @@ cdef void _bd_dispatch(
             duckdb_v2_value_destroy(&value)
     else:
         # A failed import is an error, not a decline: declining would hide it behind "table does not exist".
+        # Listed as consumed too, so the next query re-arms it and retries the import.
+        _bd_mark_spent(reg, entry)
         _bd_report(err, entry.err_text)
 
     bdv2_add(&entry.refs, -1)
@@ -987,9 +1420,16 @@ cdef void _install_table_function(duckdb_v2_connection_handle conn, bd_registry 
         with nogil:
             rc = duckdb_v2_table_function_set_bind_callback(func, _bd_tf_bind, &err)
         check_v2(rc, err, "duckdb_v2_table_function_set_bind_callback")
+        # The engine then hands exec only the columns the query uses.
+        with nogil:
+            rc = duckdb_v2_table_function_set_projection_pushdown(func, 1, &err)
+        check_v2(rc, err, "duckdb_v2_table_function_set_projection_pushdown")
         with nogil:
             rc = duckdb_v2_table_function_set_init_global_callback(func, _bd_tf_init_global, &err)
         check_v2(rc, err, "duckdb_v2_table_function_set_init_global_callback")
+        with nogil:
+            rc = duckdb_v2_table_function_set_init_local_callback(func, _bd_tf_init_local, &err)
+        check_v2(rc, err, "duckdb_v2_table_function_set_init_local_callback")
         with nogil:
             rc = duckdb_v2_table_function_set_exec_callback(func, _bd_tf_exec, &err)
         check_v2(rc, err, "duckdb_v2_table_function_set_exec_callback")
@@ -1313,7 +1753,7 @@ cdef class CApiConnectionImpl:
         return self._db._registry
 
     def register_capsule(self, str name, object stream_capsule, int64_t cardinality=-1, bint replace=True):
-        """Register an Arrow C Stream capsule under name, imported on the first query that reads it"""
+        """Register an Arrow C Stream capsule under name and return its slot id, imported on the first query that reads it"""
         cdef bd_registry *reg = self._registry()
         cdef ArrowArrayStream *source
         cdef bd_reg_entry *entry
@@ -1321,7 +1761,7 @@ cdef class CApiConnectionImpl:
         cdef duckdb_v2_qname_handle alt = NULL
         cdef bint pushed = False
         cdef bint duplicate = False
-        cdef idx_t i
+        cdef idx_t slot = 0
 
         if not PyCapsule_IsValid(stream_capsule, b"arrow_array_stream"):
             raise TypeError(f"register({name!r}) needs an arrow_array_stream PyCapsule")
@@ -1329,7 +1769,7 @@ cdef class CApiConnectionImpl:
         if source == NULL or source.release == NULL:
             raise RuntimeError(f"the Arrow stream capsule for {name!r} has already been consumed")
 
-        # Parsed first, so a bad name never consumes the capsule. cardinality is ignored.
+        # Parsed first, so a bad name never consumes the capsule.
         _bd_parse_name(name, &qname, &alt)
 
         entry = <bd_reg_entry *>malloc(sizeof(bd_reg_entry))
@@ -1344,16 +1784,20 @@ cdef class CApiConnectionImpl:
         memset(entry, 0, sizeof(bd_reg_entry))
         entry.name = qname
         entry.alt_name = alt
+        # The caller's cheap len(), if any; -1 means unknown. Bind reports it as a cardinality hint.
+        entry.declared_cardinality = cardinality
 
-        # Duplicate check and insert in one critical section; the capsule moves in only once
-        # the insert is certain, so a refused registration leaves it consumable.
+        # Duplicate check and insert in one critical section; the capsule moves in only once the insert is certain.
         with nogil:
+            entry.name_hash = _bd_qname_hash(qname)
+            if alt != NULL:
+                entry.alt_hash = _bd_qname_hash(alt)
             bdv2_lock(&reg.lock)
             if not replace:
-                for i in range(reg.count):
-                    if _bd_entry_matches(reg.entries[i], qname):
-                        duplicate = True
-                        break
+                if _bd_index_find(reg, entry.name_hash, qname) != NULL:
+                    duplicate = True
+                elif alt != NULL and _bd_index_find(reg, entry.alt_hash, alt) != NULL:
+                    duplicate = True
             if not duplicate:
                 entry.stream = source[0]
                 memset(source, 0, sizeof(ArrowArrayStream))
@@ -1361,7 +1805,16 @@ cdef class CApiConnectionImpl:
                 entry.slot = reg.next_slot
                 reg.next_slot += 1
                 _bd_retire_matching(reg, qname, alt)
-                pushed = _bd_push(&reg.entries, &reg.count, &reg.capacity, entry)
+                if _bd_index_reserve(reg, 2):
+                    pushed = _bd_push(&reg.entries, &reg.count, &reg.capacity, entry)
+                if pushed:
+                    entry.pos = reg.count - 1
+                    _bd_index_put(reg.index, reg.index_capacity, entry.name_hash, entry)
+                    reg.index_used += 1
+                    if alt != NULL:
+                        _bd_index_put(reg.index, reg.index_capacity, entry.alt_hash, entry)
+                        reg.index_used += 1
+                    slot = entry.slot
                 _bd_sweep_retired(reg)
             bdv2_unlock(&reg.lock)
 
@@ -1374,6 +1827,35 @@ cdef class CApiConnectionImpl:
                 _bd_entry_destroy(entry)
             raise MemoryError("Failed to grow the replacement scan registry")
         _logger.debug("registered %r on database %r", name, self._database_path)
+        return slot
+
+    def spent_slots(self):
+        """Report the slot ids whose stream a scan has consumed, so the Python layer re-arms only those.
+
+        Non-destructive: a slot leaves the list when its entry is retired, which re-registering it does,
+        so one cursor draining the list cannot hide a consumed name from another.
+        """
+        cdef bd_registry *reg = self._registry()
+        cdef idx_t *copy = NULL
+        cdef idx_t count = 0
+        cdef idx_t i
+        # Copied out under the lock, so no Python object is built while a C spinlock is held.
+        with nogil:
+            bdv2_lock(&reg.lock)
+            count = reg.spent_count
+            if count > 0:
+                copy = <idx_t *>malloc(count * sizeof(idx_t))
+                if copy != NULL:
+                    memcpy(copy, reg.spent, count * sizeof(idx_t))
+            bdv2_unlock(&reg.lock)
+        if count == 0:
+            return []
+        if copy == NULL:
+            raise MemoryError("Failed to copy the consumed registration list")
+        try:
+            return [copy[i] for i in range(count)]
+        finally:
+            free(copy)
 
     def unregister(self, str name):
         """Make name unresolvable at once and report how many entries were retired.
@@ -1397,6 +1879,57 @@ cdef class CApiConnectionImpl:
                 duckdb_v2_qname_destroy(&alt)
         _logger.debug("unregistered %r, %d entries retired", name, removed)
         return removed
+
+    def _registered_inflight_peak(self, str name):
+        """Report the peak converted-but-unemitted chunk count for a name's entry, or None if never claimed."""
+        cdef bd_registry *reg = self._registry()
+        cdef duckdb_v2_qname_handle qname = NULL
+        cdef duckdb_v2_qname_handle alt = NULL
+        cdef bd_reg_entry *entry = NULL
+        cdef long peak = 0
+        cdef bint ready = False
+
+        _bd_parse_name(name, &qname, &alt)
+        with nogil:
+            bdv2_lock(&reg.lock)
+            entry = _bd_index_find(reg, _bd_qname_hash(qname), qname)
+            if entry != NULL and bdv2_load_acquire(&entry.state) == BD_ENTRY_READY:
+                bdv2_add(&entry.refs, 1)
+                ready = True
+            bdv2_unlock(&reg.lock)
+            if ready:
+                peak = bdv2_load_acquire(&entry.inflight_peak)
+                bdv2_add(&entry.refs, -1)
+            duckdb_v2_qname_destroy(&qname)
+            if alt != NULL:
+                duckdb_v2_qname_destroy(&alt)
+        return peak if ready else None
+
+    def _registered_converted_columns(self, str name):
+        """Report how many child arrays a name's entry has fed to importers, or None if never claimed."""
+        cdef bd_registry *reg = self._registry()
+        cdef duckdb_v2_qname_handle qname = NULL
+        cdef duckdb_v2_qname_handle alt = NULL
+        cdef bd_reg_entry *entry = NULL
+        cdef long converted = 0
+        cdef bint ready = False
+
+        _bd_parse_name(name, &qname, &alt)
+        with nogil:
+            bdv2_lock(&reg.lock)
+            entry = _bd_index_find(reg, _bd_qname_hash(qname), qname)
+            if entry != NULL and bdv2_load_acquire(&entry.state) == BD_ENTRY_READY:
+                # Raised under the registry lock so the entry cannot be swept before the read below.
+                bdv2_add(&entry.refs, 1)
+                ready = True
+            bdv2_unlock(&reg.lock)
+            if ready:
+                converted = bdv2_load_acquire(&entry.converted_columns)
+                bdv2_add(&entry.refs, -1)
+            duckdb_v2_qname_destroy(&qname)
+            if alt != NULL:
+                duckdb_v2_qname_destroy(&alt)
+        return converted if ready else None
 
     def _registry_stats(self):
         """Report registry counts for tests: live entries, retired entries and imports run"""
@@ -1425,19 +1958,23 @@ cdef class CApiConnectionImpl:
         _bd_parse_name(name, &qname, &alt)
         with nogil:
             bdv2_lock(&reg.lock)
-            for i in range(reg.count):
-                if _bd_entry_matches(reg.entries[i], qname):
-                    entry = reg.entries[i]
-                    break
+            entry = _bd_index_find(reg, _bd_qname_hash(qname), qname)
             if entry == NULL:
                 for i in range(reg.retired_count):
                     if _bd_entry_matches(reg.retired[i], qname):
                         entry = reg.retired[i]
                         break
             if entry != NULL and bdv2_load_acquire(&entry.state) == BD_ENTRY_READY:
-                rows = entry.row_count
+                # Raised under the registry lock so the entry cannot be swept before the read below.
+                bdv2_add(&entry.refs, 1)
                 ready = True
             bdv2_unlock(&reg.lock)
+            if ready:
+                # Read under entry.lock, which mutates it; reg.lock is never nested around entry.lock.
+                bdv2_lock(&entry.lock)
+                rows = entry.row_count
+                bdv2_unlock(&entry.lock)
+                bdv2_add(&entry.refs, -1)
             duckdb_v2_qname_destroy(&qname)
             if alt != NULL:
                 duckdb_v2_qname_destroy(&alt)

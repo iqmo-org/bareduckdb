@@ -15,7 +15,7 @@ _WARM_CHUNK_BYTES = 8 * 1024 * 1024
 # Mapping of SQL placeholder names to actual parquet files
 DATA_FILE_MAP = {
     "DATA_CATEGORY_DATE_PRICE": DATA_DIR / "category_date_price.parquet",
-    "DATA_STRINGS": DATA_DIR / "strings_1m.parquet",
+    "DATA_STRINGS": DATA_DIR / "strings_7m.parquet",
     "DATA_RANGE": DATA_DIR / "range_100m.parquet",
 }
 
@@ -35,6 +35,7 @@ def load_data_by_mode(filepath: Path, mode: str):
         arrow: PyArrow Table - full filter/projection pushdown
         polars: Polars DataFrame - Polars expression pushdown
         polars_lazy: Polars LazyFrame - lazy evaluation with pushdown
+        dataset: PyArrow Dataset - lazy, never fully materialized by the source itself
     """
     if mode == "parquet":
         return None
@@ -47,6 +48,9 @@ def load_data_by_mode(filepath: Path, mode: str):
     elif mode == "polars_lazy":
         import polars as pl
         return pl.scan_parquet(filepath)
+    elif mode == "dataset":
+        import pyarrow.dataset as ds
+        return ds.dataset(filepath)
     else:
         raise ValueError(f"Unknown registration mode: {mode}")
 
@@ -119,7 +123,8 @@ PARQUET_DEFINITIONS = {
              range(10) t(category),
              range(10000) t(price)
     """,
-    "strings_1m.parquet": """
+    # 7M rows is ~1GB as an in-memory frame: big enough that a materializing registration is visible in peak RSS.
+    "strings_7m.parquet": """
         SELECT
             i as id,
             'user_' || (i % 1000)::VARCHAR as username,
@@ -137,7 +142,7 @@ PARQUET_DEFINITIONS = {
                 WHEN 3 THEN 'France'
                 ELSE 'Japan'
             END as country
-        FROM generate_series(1, 1000000) t(i)
+        FROM generate_series(1, 7000000) t(i)
     """,
 }
 

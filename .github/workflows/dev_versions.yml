@@ -124,7 +124,35 @@ jobs:
           THREADS=$((THREADS > 4 ? 4 : THREADS))
           echo "NPROC: $NPROC"
           echo "THREADS: $THREADS"
+          # NOTE: -m "not asyncio and not parallel_threads" deselects two whole categories of
+          # the registry code that changed this week:
+          #  - all of tests/aio (pytest-asyncio's auto mode marks every async test "asyncio")
+          #  - every registration test file (test_register.py, test_uncached_direct_emit.py,
+          #    test_incremental_scan.py, test_registration_contract.py, test_register_memory.py),
+          #    because each carries a file-level @pytest.mark.parallel_threads(1)
+          # So this pass currently exercises essentially none of register()/unregister(). See
+          # plans/capi_v2/filter_backends/GAP_HUNTING/CI_COVERAGE_FIXES.md for the full
+          # analysis. The workflow-side mitigation is the dedicated tests/aio stage below;
+          # the registration-file half needs a tests/ change this workflow cannot make (see
+          # that doc for the exact recommendation: narrow the blanket file-level marker to
+          # only the specific tests that touch process-global state, once new concurrency
+          # tests land in those files without that marker).
           uv run --no-sync pytest tests/ -n 0 --parallel-threads=$THREADS --iterations=5 --tb=short -v -m "not asyncio and not parallel_threads" --ignore=tests/experimental --ignore=tests/comparison --ignore=tests/downstream --ignore=tests/benchmarks --cov=bareduckdb --cov-append
+
+      - name: Run tests/aio under repetition (asyncio pool concurrency)
+        shell: bash
+        run: |
+          # tests/aio is deselected from the OS-thread parallel pass above because asyncio
+          # concurrency is cooperative (one event loop, many tasks), not thread-based -
+          # pytest-run-parallel and pytest-asyncio have not been vetted together here, and
+          # forcing that combination in the same run this task must not modify is out of
+          # scope. Repetition via pytest-repeat (--count, already a dev dependency) is the
+          # concurrency lever that actually fits asyncio: each repetition re-runs the pool's
+          # own internal task/connection concurrency, which is exactly the shape that produced
+          # this week's "free(): chunks in smallbin corrupted" crash (a registered Arrow source
+          # scanned through the async pool). This is NOT a substitute for real multi-thread
+          # coverage of tests/aio - see CI_COVERAGE_FIXES.md for that recommendation.
+          uv run --no-sync pytest tests/aio -n 0 --count=20 --tb=short -v --cov=bareduckdb --cov-append
 
       - name: Test PyArrow is Optional
         # TODO: 3.15: pola-rs/polars#28347

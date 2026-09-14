@@ -3,14 +3,16 @@
 
 from bareduckdb.capi.impl.duckdb_v2 cimport (
     ArrowArrayStream,
+    ArrowSchema,
+    duckdb_v2_arrow_importer_handle,
     duckdb_v2_connection_handle,
-    duckdb_v2_data_chunk_handle,
     duckdb_v2_database_handle,
     duckdb_v2_environment_handle,
     duckdb_v2_qname_handle,
     duckdb_v2_schema_handle,
     idx_t,
 )
+from libc.stdint cimport int64_t, uint64_t
 
 # Entry states, release-stored so a lock-free reader sees the payload that precedes them.
 cdef enum:
@@ -30,19 +32,42 @@ cdef struct bd_reg_entry:
     long refs
     # Stable identity for the table function, unaffected by the entry array's swap-removes.
     idx_t slot
+    # This entry's index in reg.entries, so retiring it needs no scan; maintained under reg.lock.
+    idx_t pos
     duckdb_v2_qname_handle name
     # Single-part fallback, so register("data.csv") matches a quoted file reference too.
     duckdb_v2_qname_handle alt_name
+    # duckdb_v2_qname_hash of name and of alt_name, the keys this entry is indexed under.
+    uint64_t name_hash
+    uint64_t alt_hash
     ArrowArrayStream stream
-    # Imported once, replayed by every scan; the vectors alias the caller's Arrow buffers.
-    duckdb_v2_data_chunk_handle *chunks
-    idx_t chunk_count
-    idx_t chunk_capacity
+    # Kept alive after schema resolution so exec can pull on demand; NULL once done or failed.
+    duckdb_v2_arrow_importer_handle importer
+    # Owned, retained for every later importer create; never copied. Released by _bd_entry_destroy.
+    ArrowSchema raw_schema
+    # The stream reported end of input; read and written under entry.lock only, never atomic.
+    bint stream_done
     # The importer's resolved column names and logical types, read by every bind.
     duckdb_v2_schema_handle ddb_schema
     idx_t col_count
+    # Rows pulled off the source stream so far; bumped in _bd_claim_array under entry.lock.
     idx_t row_count
+    # The caller's cheaply-known length at registration, or -1; an exact optimizer hint when known.
+    int64_t declared_cardinality
+    # Scans started, fetch-added by _bd_tf_init_global; an uncached entry serves exactly one.
+    long scans_started
+    # Converted-but-not-yet-emitted chunks across a scan's workers, and its high-water mark.
+    long inflight
+    long inflight_peak
+    # Child arrays fed to importers so far
+    long converted_columns
     char err_text[BD_ERR_TEXT_CAP]
+
+
+# One open-addressed index cell: entry NULL is empty and entry == 1 is a tombstone.
+cdef struct bd_index_slot:
+    uint64_t hash
+    bd_reg_entry *entry
 
 
 cdef struct bd_registry:
@@ -55,6 +80,14 @@ cdef struct bd_registry:
     bd_reg_entry **retired
     idx_t retired_count
     idx_t retired_capacity
+    # Name index over entries, so lookup and retire are O(1) rather than a scan of every entry.
+    bd_index_slot *index
+    idx_t index_capacity
+    idx_t index_used
+    # Slots whose stream a scan has consumed; the Python layer re-arms exactly these.
+    idx_t *spent
+    idx_t spent_count
+    idx_t spent_capacity
     long import_count
     idx_t next_slot
     # Built once, so the dispatcher never parses a string.

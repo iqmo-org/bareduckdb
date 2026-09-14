@@ -157,3 +157,14 @@ def test_cursor_has_independent_transaction_state():
     # Now cursor can see the committed data
     result = cursor.execute("SELECT * FROM test").arrow_table()
     assert result['id'].to_pylist() == [1]
+
+
+@pytest.mark.usefixtures("extension_repository_available")
+def test_create_secret_keeps_its_row():
+    """CREATE SECRET applies at execute() time and still returns duckdb-python's [(True,)]"""
+    conn = bareduckdb.connect()
+    conn.install_extension("httpfs")
+    result = conn.execute('CREATE SECRET kept (TYPE S3, KEY_ID "key", SECRET "secret")')
+    assert [d[0] for d in result.description] == ["Success"]
+    assert result.fetchall() == [(True,)]
+    assert conn.execute("SELECT name FROM duckdb_secrets()").fetchall() == [("kept",)]

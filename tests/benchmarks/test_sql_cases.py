@@ -43,3 +43,22 @@ def test_sql_case(conn, data_files, registered_tables, test_id, sql_path, regist
 
     result = conn.execute(sql).fetch_arrow_table()
     _check_result(result, expected)
+
+
+@pytest.mark.benchmark
+def test_warm_repeat(conn, data_files, registration_mode):
+    """Repeat one query against a single registration, so the timing is the warm path."""
+    from data_setup import DATA_FILE_MAP, load_data_by_mode
+
+    sql = (
+        "SELECT category, count(*) AS cnt, avg(price) AS avg_price "
+        "FROM t GROUP BY category"
+    )
+    path = DATA_FILE_MAP["DATA_CATEGORY_DATE_PRICE"]
+    if registration_mode == "parquet":
+        pytest.skip("warm replay is about a registered source; parquet mode registers nothing")
+    conn.register("t", load_data_by_mode(path, registration_mode))
+
+    conn.execute(sql).fetch_arrow_table()  # cold, deliberately outside the timing
+    for _ in range(5):
+        conn.execute(sql).fetch_arrow_table()

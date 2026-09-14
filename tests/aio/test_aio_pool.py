@@ -50,12 +50,19 @@ async def test_pool_file_backed_persists_after_aclose(tmp_path):
         assert conn.sql("select v from t").fetchall() == [(5,)]
 
 
-async def test_pool_registered_source_visible_from_every_member():
+# A registration serves one scan, so "visible from every member" is no longer a pool property.
+
+
+async def test_pool_gather_over_one_registration_closes_cleanly():
+    """Losing the one-scan race must not close connections under still-running queries."""
     pa = pytest.importorskip("pyarrow")
-    async with AsyncConnectionPool(":memory:", pool_size=4) as pool:
-        pool._owner._register_arrow("reg", pa.table({"a": [1, 2, 3]}))
-        got = await asyncio.gather(*[pool.execute("select count(*) as n from reg") for _ in range(8)])
-        assert all(r.to_pylist() == [{"n": 3}] for r in got)
+    # 200k rows and 20 rounds, so the winning scan is still running when aclose() fires.
+    tbl = pa.table({"a": list(range(200_000))})
+    for _ in range(20):
+        async with AsyncConnectionPool(":memory:", pool_size=4) as pool:
+            pool._owner._register_arrow("reg", tbl)
+            with pytest.raises(Exception, match="scanned only once per registration"):
+                await asyncio.gather(*[pool.execute("select sum(a) as n from reg") for _ in range(8)])
 
 
 async def test_pool_concurrent_data_same_name_is_isolated():

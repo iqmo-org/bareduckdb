@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import wait as futures_wait
 from functools import partial
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 
@@ -57,6 +59,10 @@ class AsyncConnectionPool:
         self._available: Optional[asyncio.Queue[ConnectionBase]] = None
         self._data_lock: Optional[asyncio.Lock] = None
         self._executor: Optional[ThreadPoolExecutor] = None
+        # Work items still running on executor threads, after their asyncio task has returned.
+        self._inflight: set[Future[Any]] = set()
+        self._inflight_lock = threading.Lock()  # done callbacks discard from worker threads
+        self._closing = False
 
     async def connect(self) -> AsyncConnectionPool:
         """Open the database and its cursors. Idempotent"""
@@ -88,12 +94,15 @@ class AsyncConnectionPool:
         for conn in cursors:
             self._available.put_nowait(conn)
         self._executor = executor
+        self._closing = False
 
         logger.debug("Pool initialized with %d cursors", len(cursors))
         return self
 
     async def aclose(self) -> None:
         """Close every cursor, then the owning connection, then the executor"""
+        # Set first: _run checks it between taking a connection and submitting, with no await between.
+        self._closing = True
         executor, self._executor = self._executor, None
         conns, self._connections = self._connections, []
         owner, self._owner = self._owner, None
@@ -105,6 +114,21 @@ class AsyncConnectionPool:
 
         loop = asyncio.get_running_loop()
         try:
+            # Closing a connection mid-query corrupts the engine allocator, so drain every query first.
+            while True:
+                with self._inflight_lock:
+                    pending = [f for f in self._inflight if not f.done()]
+                if not pending:
+                    break
+                logger.debug("aclose: draining %d in-flight queries before closing", len(pending))
+                for conn in conns:
+                    try:
+                        conn.interrupt()
+                    except Exception:
+                        logger.warning("interrupt during aclose failed", exc_info=True)
+                await loop.run_in_executor(None, partial(futures_wait, pending))
+            with self._inflight_lock:
+                self._inflight = set()
             # Cursors first, then the owner: the database closes with its last reference.
             for conn in conns:
                 await loop.run_in_executor(executor, conn.close)
@@ -150,11 +174,17 @@ class AsyncConnectionPool:
     ) -> Any:
         loop = asyncio.get_running_loop()
         conn = await available.get()
+        if self._closing:
+            available.put_nowait(conn)
+            raise RuntimeError("Connection pool not initialized. Call 'await pool.connect()' or use 'async with AsyncConnectionPool()'.")
+        work = executor.submit(
+            partial(conn._call, query, parameters=parameters, data=data),  # type: ignore[reportPrivateUsage]
+        )
+        with self._inflight_lock:
+            self._inflight.add(work)
+        work.add_done_callback(self._forget_inflight)
         try:
-            return await loop.run_in_executor(
-                executor,
-                partial(conn._call, query, parameters=parameters, data=data),  # type: ignore[reportPrivateUsage]
-            )
+            return await asyncio.wrap_future(work, loop=loop)
         except asyncio.CancelledError:
             # Cancelling the future does not stop the worker thread; the interrupt does.
             try:
@@ -163,6 +193,28 @@ class AsyncConnectionPool:
                 logger.warning("interrupt after cancellation failed", exc_info=True)
             raise
         finally:
-            # put_nowait, not await put: the queue is unbounded, and this must not be a
-            # cancellation point or a cancelled task loses its pool slot.
-            available.put_nowait(conn)
+            # The connection stays busy until the worker thread leaves _call; handing it back early is a use-after-free.
+            if work.done():
+                # put_nowait, not await put: the queue is unbounded, and this must not be a cancellation point or a cancelled task loses its pool slot.
+                available.put_nowait(conn)
+            else:
+                work.add_done_callback(partial(self._release_later, loop, available, conn))
+
+    @staticmethod
+    def _release_later(
+        loop: asyncio.AbstractEventLoop,
+        available: "asyncio.Queue[ConnectionBase]",
+        conn: "ConnectionBase",
+        _work: Future[Any],
+    ) -> None:
+        """Returns a connection to the pool from the worker thread that freed it."""
+        try:
+            loop.call_soon_threadsafe(available.put_nowait, conn)
+        except RuntimeError:
+            # The loop is already closed; the pool is gone and nothing can take the connection.
+            logger.debug("event loop closed before the connection could be returned to the pool")
+
+    def _forget_inflight(self, work: Future[Any]) -> None:
+        """Drops a finished work item, on the worker thread that finished it."""
+        with self._inflight_lock:
+            self._inflight.discard(work)

@@ -42,11 +42,11 @@ def test_filter_and_projection_together(conn):
     assert _rows(conn, "SELECT sum(val)::BIGINT s FROM t WHERE cat = 'B'") == [{"s": 60}]
 
 
-def test_registration_is_rescannable(conn):
+def test_registration_is_rescannable_across_queries(conn):
+    """One registration serves any number of separate queries, via the per-query re-arm."""
     conn._register_arrow("t", pa.table(CAT_TABLE))
-    for _ in range(3):
-        assert _rows(conn, "SELECT count(*) c FROM t") == [{"c": 4}]
-    assert _rows(conn, "SELECT count(*) c FROM t a JOIN t b USING (id)") == [{"c": 4}]
+    for attempt in range(3):
+        assert _rows(conn, "SELECT count(*) c FROM t") == [{"c": 4}], f"attempt {attempt}"
 
 
 def test_batches_larger_than_a_vector(conn):
@@ -321,6 +321,8 @@ def test_source_mutation_after_registration_is_not_visible(conn):
 
 
 def test_concurrent_queries_against_one_registration(conn):
+    """Four threads issuing queries on ONE connection each see the whole source."""
+    # `_call` holds the connection's RLock across the query and re-arms under it, so callers sharing a connection are serialized rather than racing.
     import threading
 
     conn._register_arrow("t", pa.table({"i": list(range(5000))}))

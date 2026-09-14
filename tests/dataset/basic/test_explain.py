@@ -92,8 +92,8 @@ def test_explain_with_a_projection_succeeds():
     _assert_scan_operator(explain_text)
 
 
-def test_the_projection_stays_above_the_scan_rather_than_being_pushed_into_it():
-    """Projection pushdown is not implemented, so the scan still reads every column"""
+def test_the_projection_is_pushed_into_the_scan():
+    """The scan reads only the referenced columns, so no Projection operator sits above it"""
     table = pa.table({
         "col1": [1, 2, 3],
         "col2": ["a", "b", "c"],
@@ -107,9 +107,9 @@ def test_the_projection_stays_above_the_scan_rather_than_being_pushed_into_it():
 
     explain_text = _explain(conn, "SELECT col1, col3 FROM data")
 
-    assert "Projections: #0, #2" in explain_text
+    assert "Projections: col1, col3" in explain_text
     operators = _operator_order(explain_text)
-    assert operators == ["Projection", "Bareduckdb Arrow Scan"]
+    assert operators == ["Bareduckdb Arrow Scan"]
 
 
 def test_a_bare_select_star_plans_to_the_scan_alone():

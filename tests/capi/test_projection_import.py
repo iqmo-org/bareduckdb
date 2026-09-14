@@ -1,27 +1,15 @@
-"""A scan converts only the columns the query projects.
-
-Conversion work is measured as minor page faults, not RSS, and only as a ratio between two arms
-in one process, since RSS cannot fall when memory is freed and no absolute threshold is portable.
+"""A scan converts only the columns the query projects
 """
-
-import subprocess
-import sys
 
 import pyarrow as pa
 import pytest
 
 import bareduckdb
 
-resource = pytest.importorskip("resource", reason="minor fault counts are Unix only")
-
 pytestmark = pytest.mark.parallel_threads(1)
 
 ROWS = 4096
 COLUMNS = 20
-
-# The wide fixture is STRING, not int64: an int64 import is a reference and costs almost nothing, so an unused int64 column would make this assert on noise.
-WIDE_ROWS = 500_000
-WIDE_VALUE = "abcdefghijkl"
 
 
 @pytest.fixture
@@ -34,16 +22,6 @@ def conn():
 def constant_table(rows=ROWS, columns=COLUMNS):
     """A table whose column c_i holds the constant i, so a value names the column it came from."""
     return pa.table({f"c{i}": pa.array([i] * rows, type=pa.int64()) for i in range(columns)})
-
-
-def wide_string_table(rows=WIDE_ROWS, columns=COLUMNS):
-    """A table wide in the type that actually costs something to convert."""
-    column = pa.array([WIDE_VALUE] * rows, type=pa.string())
-    return pa.table({f"c{i}": column for i in range(columns)})
-
-
-def minor_faults():
-    return resource.getrusage(resource.RUSAGE_SELF).ru_minflt
 
 
 def test_uncached_projection_keeps_column_identity(conn):
@@ -71,51 +49,40 @@ def test_uncached_select_star_returns_every_column(conn):
     assert conn.execute("SELECT * FROM t LIMIT 1").fetchall() == [tuple(range(COLUMNS))]
 
 
-_MINFAULT_SCRIPT = """
-import resource
+def test_uncached_scan_converts_only_the_projected_columns(conn):
+    """A query naming 1 of 20 columns feeds one child array per source array; SELECT * feeds all 20."""
+    conn.register("t", constant_table())
 
-import pyarrow as pa
+    conn.execute("SELECT max(c0) FROM t").fetchall()
+    one_column = conn._impl._registered_converted_columns("t")
 
-import bareduckdb
+    # _rearm_uncached re-registers the source before each query, so each count covers one query.
+    conn.execute(f"SELECT {' || '.join(f'max(c{i})' for i in range(COLUMNS))} FROM t").fetchall()
+    full_width = conn._impl._registered_converted_columns("t")
 
-WIDE_VALUE = {wide_value!r}
-column = pa.array([WIDE_VALUE] * {rows}, type=pa.string())
-table = pa.table({{f"c{{i}}": column for i in range({columns})}})
-
-conn = bareduckdb.connect()
-conn.register("t", table)
-
-all_columns = " || ".join(f"max(c{{i}})" for i in range({columns}))
-before = resource.getrusage(resource.RUSAGE_SELF).ru_minflt
-conn.execute(f"SELECT {{all_columns}} FROM t").fetchall()
-full_width = resource.getrusage(resource.RUSAGE_SELF).ru_minflt - before
-
-before = resource.getrusage(resource.RUSAGE_SELF).ru_minflt
-conn.execute("SELECT max(c0) FROM t").fetchall()
-one_column = resource.getrusage(resource.RUSAGE_SELF).ru_minflt - before
-
-print(full_width, one_column)
-"""
-
-
-def _measure_projection_minor_faults_in_a_fresh_process():
-    """Run both arms in one freshly spawned process, since ru_minflt is process-wide and cumulative."""
-    script = _MINFAULT_SCRIPT.format(wide_value=WIDE_VALUE, rows=WIDE_ROWS, columns=COLUMNS)
-    proc = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
+    assert (one_column, full_width) == (1, COLUMNS), (
+        f"one_column={one_column} full_width={full_width}; the source is one Arrow array, so these "
+        f"are the child arrays fed to importers by each query"
     )
-    assert proc.returncode == 0, f"subprocess failed: {proc.stderr}"
-    full_width_s, one_column_s = proc.stdout.split()
-    return int(full_width_s), int(one_column_s)
 
 
-def test_uncached_scan_converts_only_the_projected_columns():
-    """Touching 1 of 20 columns costs a fraction of what touching all 20 costs."""
-    full_width, one_column = _measure_projection_minor_faults_in_a_fresh_process()
+def test_a_narrowed_scan_converts_less_on_every_array(conn):
+    """The saving is per array, not only on the first, so it scales with the stream's length."""
+    arrays = 5
+    batches = [
+        pa.record_batch({f"c{i}": pa.array([i] * 2048, type=pa.int64()) for i in range(COLUMNS)})
+        for _ in range(arrays)
+    ]
+    conn.register("t", pa.Table.from_batches(batches))
 
-    assert full_width > one_column * 5, (
-        f"full_width={full_width} one_column={one_column} (measured in a fresh subprocess, "
-        "isolated from the rest of the suite)"
+    conn.execute("SELECT max(c3) FROM t").fetchall()
+    one_column = conn._impl._registered_converted_columns("t")
+
+    conn.execute("SELECT * FROM t").fetchall()
+    full_width = conn._impl._registered_converted_columns("t")
+
+    assert (one_column, full_width) == (arrays, arrays * COLUMNS), (
+        f"one_column={one_column} full_width={full_width} over {arrays} arrays"
     )
 
 

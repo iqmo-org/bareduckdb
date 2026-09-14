@@ -19,9 +19,6 @@ SETUP_STATEMENTS = [
     create or replace table all_results as
     select * exclude (timestamp, nodeid, cache),
         coalesce(test_run, 1) as test_run,
-        -- 'n/a' for every row recorded before the cache dimension existed, same tag the
-        -- harness itself uses for the duckdb baseline arm and for parquet mode.
-        coalesce(cache, 'n/a') as cache,
         case when bench is not null then bench
             when library = 'duckdb' then library
             when library = 'bareduckdb' and 'dev' in lib_version then 'bareduckdb_dev'
@@ -40,7 +37,6 @@ SETUP_STATEMENTS = [
         lib,
         test_name,
         mode,
-        cache,
         avg(wall_time_s)*1000 as time_ms_avg,
         median(wall_time_s)*1000 as time_ms_median,
         -- try_cast: a metric that was unavailable for a whole run is all-null, which
@@ -50,20 +46,20 @@ SETUP_STATEMENTS = [
         avg(try_cast(rss_peak_delta_kb as double)) as memory_kb_query_delta,
         count(*) num_tests
      from latest_results
-     group by lib, test_name, mode, cache
+     group by lib, test_name, mode
     """,
-    # cache is always 'n/a' for lib='duckdb', so this is one baseline row per (test_name, mode).
+    # One baseline row per (test_name, mode).
     "create or replace table baseline as (select * from result_stats where lib='duckdb')",
-    # Baseline (test, mode) crossed with every (library, cache) present, so a gap stays explicit.
+    # Baseline (test, mode) crossed with every library present, so a gap stays explicit.
     """
     create or replace table expected_cells as
-    select b.test_name, b.mode, l.lib, l.cache
+    select b.test_name, b.mode, l.lib
     from baseline b
-    cross join (select distinct lib, cache from result_stats where lib != 'duckdb') l
+    cross join (select distinct lib from result_stats where lib != 'duckdb') l
     """,
     """
     create or replace table result_vs_baseline as
-    select e.test_name, e.mode, e.cache, e.lib,
+    select e.test_name, e.mode, e.lib,
         r.time_ms_avg,
         r.time_ms_median,
         b.time_ms_median as base_time_ms_median,
@@ -80,21 +76,19 @@ SETUP_STATEMENTS = [
         b.memory_kb_delta as base_mem_kb_delta,
         r.time_ms_avg is null as missing
     from expected_cells e
-    -- baseline has no cache dimension of its own, so it is joined on (test_name, mode) only;
-    -- every cache variant of a dev row compares against the same baseline row.
     join baseline b on b.test_name=e.test_name and b.mode=e.mode
     left join result_stats r
-        on r.test_name=e.test_name and r.mode=e.mode and r.lib=e.lib and r.cache=e.cache
-    order by e.test_name, e.mode, e.cache, e.lib
+        on r.test_name=e.test_name and r.mode=e.mode and r.lib=e.lib
+    order by e.test_name, e.mode, e.lib
     """,
     # Libraries that produced results for a case the duckdb baseline never measured.
     """
     create or replace table missing_baseline as
-    select r.lib, r.test_name, r.mode, r.cache, r.num_tests
+    select r.lib, r.test_name, r.mode, r.num_tests
     from result_stats r
     left join baseline b on b.test_name=r.test_name and b.mode=r.mode
     where r.lib != 'duckdb' and b.test_name is null
-    order by r.test_name, r.mode, r.cache, r.lib
+    order by r.test_name, r.mode, r.lib
     """,
 ]
 
@@ -116,26 +110,25 @@ def build_report_query(libs):
     column_sql = ",\n        ".join(columns)
     return f"""
     with pivoted as (
-        select test_name, mode, cache,
+        select test_name, mode,
         {column_sql}
         from result_vs_baseline
-        group by test_name, mode, cache
+        group by test_name, mode
     ),
     gaps as (
-        select test_name, mode, cache, string_agg(lib, ',' order by lib) as no_data
-        from result_vs_baseline where missing group by test_name, mode, cache
+        select test_name, mode, string_agg(lib, ',' order by lib) as no_data
+        from result_vs_baseline where missing group by test_name, mode
     )
     select b.test_name as test,
         b.mode,
-        p.cache,
         round(b.time_ms_avg,1) base_ms,
         round(b.time_ms_median,1) base_ms_med,
-        p.* exclude (test_name, mode, cache),
+        p.* exclude (test_name, mode),
         coalesce(g.no_data, '') as no_data
     from baseline b
     join pivoted p on p.test_name=b.test_name and p.mode=b.mode
-    left join gaps g on g.test_name=b.test_name and g.mode=b.mode and g.cache=p.cache
-    order by b.test_name, b.mode, p.cache
+    left join gaps g on g.test_name=b.test_name and g.mode=b.mode
+    order by b.test_name, b.mode
     """
 
 

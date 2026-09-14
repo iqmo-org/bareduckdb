@@ -59,6 +59,8 @@ cdef struct bd_reg_entry:
     # Converted-but-not-yet-emitted chunks across a scan's workers, and its high-water mark.
     long inflight
     long inflight_peak
+    # Child arrays fed to importers so far
+    long converted_columns
     char err_text[BD_ERR_TEXT_CAP]
 
 

@@ -1136,6 +1136,7 @@ cdef void _bd_tf_exec(
     cdef bint ok
     cdef long new_inflight
     cdef long peak
+    cdef long fed_children
 
     if duckdb_v2_table_function_exec_get_global_state(info, &data_ptr, NULL) != DUCKDB_V2_ERROR_NONE or data_ptr == NULL:
         _bd_report(err, "the arrow scan lost its scan state")
@@ -1184,6 +1185,8 @@ cdef void _bd_tf_exec(
                 _bd_report(err, entry.err_text)
                 return
             fed = &narrowed
+        # Diagnostic only: the child arrays this append actually converts, narrowed or full width.
+        fed_children = <long>fed.n_children
         if duckdb_v2_arrow_importer_append(local.importer, fed, True, True, &append_err) != DUCKDB_V2_ERROR_NONE:
             # consume=true NULLs release only when it took the array, so this runs only on rejection.
             if fed.release != NULL:
@@ -1191,6 +1194,7 @@ cdef void _bd_tf_exec(
             _bd_fail_from_info(entry, append_err)
             _bd_report(err, entry.err_text)
             return
+        bdv2_add(&entry.converted_columns, fed_children)
         # Appended; the next lap's next_chunk drains it.
 
     # Diagnostic only: converted but not yet emitted, from here until destroyed below.
@@ -1900,6 +1904,32 @@ cdef class CApiConnectionImpl:
             if alt != NULL:
                 duckdb_v2_qname_destroy(&alt)
         return peak if ready else None
+
+    def _registered_converted_columns(self, str name):
+        """Report how many child arrays a name's entry has fed to importers, or None if never claimed."""
+        cdef bd_registry *reg = self._registry()
+        cdef duckdb_v2_qname_handle qname = NULL
+        cdef duckdb_v2_qname_handle alt = NULL
+        cdef bd_reg_entry *entry = NULL
+        cdef long converted = 0
+        cdef bint ready = False
+
+        _bd_parse_name(name, &qname, &alt)
+        with nogil:
+            bdv2_lock(&reg.lock)
+            entry = _bd_index_find(reg, _bd_qname_hash(qname), qname)
+            if entry != NULL and bdv2_load_acquire(&entry.state) == BD_ENTRY_READY:
+                # Raised under the registry lock so the entry cannot be swept before the read below.
+                bdv2_add(&entry.refs, 1)
+                ready = True
+            bdv2_unlock(&reg.lock)
+            if ready:
+                converted = bdv2_load_acquire(&entry.converted_columns)
+                bdv2_add(&entry.refs, -1)
+            duckdb_v2_qname_destroy(&qname)
+            if alt != NULL:
+                duckdb_v2_qname_destroy(&alt)
+        return converted if ready else None
 
     def _registry_stats(self):
         """Report registry counts for tests: live entries, retired entries and imports run"""

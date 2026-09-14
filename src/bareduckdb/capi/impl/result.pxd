@@ -43,7 +43,8 @@ cdef class CApiResult:
     cdef void _bind_owned(self, CApiConnectionImpl conn_obj, duckdb_v2_result_handle result) except *
     cdef duckdb_v2_schema_handle _ensure_schema(self) except NULL
     cdef void _resolve_schema(self) except *
-    cdef int _step_once_for_schema(self) except -1
+    cdef int _step_once_for_schema(self, bint counted=*) except -1
+    cdef void _run_to_first_chunk(self) except *
     cdef void _build_column_metadata(self) except *
     cdef duckdb_v2_data_chunk_handle _take_pending_chunk(self) noexcept
     cdef duckdb_v2_data_chunk_handle _next_chunk(self) except? NULL

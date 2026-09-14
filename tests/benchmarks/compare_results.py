@@ -62,6 +62,7 @@ SETUP_STATEMENTS = [
     select e.test_name, e.mode, e.lib,
         r.time_ms_avg,
         r.time_ms_median,
+        b.time_ms_avg as base_time_ms_avg,
         b.time_ms_median as base_time_ms_median,
         r.num_tests,
         r.time_ms_avg/b.time_ms_avg as ms_ratio,
@@ -74,6 +75,8 @@ SETUP_STATEMENTS = [
     -- mem_query_ratio: per-query RSS delta
         r.memory_kb_query_delta/b.memory_kb_query_delta as mem_query_ratio,
         b.memory_kb_delta as base_mem_kb_delta,
+        b.memory_kb_peak as base_mem_kb_peak,
+        r.memory_kb_peak as mem_kb_peak,
         r.time_ms_avg is null as missing
     from expected_cells e
     join baseline b on b.test_name=e.test_name and b.mode=e.mode
@@ -92,26 +95,40 @@ SETUP_STATEMENTS = [
     """,
 ]
 
+def _ratio_cell(lib, ratio_col, ours_col, theirs_col, unit_divisor=1, places=0):
+    """One cell reading `ratio (ours / theirs)`, so the ratio is never read without its magnitudes."""
+    safe = lib.replace("'", "''")
+    pick = f"max(case when lib = '{safe}' then {{}} end)"
+    ratio = f"round({pick.format(ratio_col)}, 2)"
+    cast = "::bigint" if places == 0 else ""
+    ours = f"round({pick.format(ours_col)}/{unit_divisor}, {places}){cast}"
+    theirs = f"round(max({theirs_col})/{unit_divisor}, {places}){cast}"
+    return f"{ratio}::varchar || ' (' || {ours}::varchar || ' / ' || {theirs}::varchar || ')'"
+
+
 def build_report_query(libs):
     """Build the per-library report columns explicitly, since PIVOT expands into multiple engine statements"""
     columns = []
     for lib in libs:
-        safe = lib.replace("'", "''")
-        columns.append(f"round(max(case when lib = '{safe}' then time_ms_avg end), 1) as \"{lib}_time_ms_avg\"")
-        columns.append(f"round(max(case when lib = '{safe}' then ms_ratio end), 2) as \"{lib}_time\"")
-        columns.append(f"round(max(case when lib = '{safe}' then ms_median_ratio end), 2) as \"{lib}_time_med\"")
+        time_cell = _ratio_cell(lib, "ms_ratio", "time_ms_avg", "base_time_ms_avg", 1, 1)
+        mem_cell = _ratio_cell(lib, "mem_peak_ratio", "mem_kb_peak", "base_mem_kb_peak", 1024, 0)
+        columns.append(f'{time_cell} as "{lib} time (ms)"')
+        columns.append(f'{mem_cell} as "{lib} mem (MB)"')
+
+    diags = []
     for lib in libs:
         safe = lib.replace("'", "''")
-        # mem is result, others are diags
-        columns.append(f"round(max(case when lib = '{safe}' then mem_delta_ratio end), 2) as \"{lib}_mem\"")
-        columns.append(f"round(max(case when lib = '{safe}' then mem_peak_ratio end), 1) as \"{lib}_mem_peak\"")
-        columns.append(f"round(max(case when lib = '{safe}' then mem_query_ratio end), 1) as \"{lib}_mem_query\"")
+        diags.append(f"round(max(case when lib = '{safe}' then ms_median_ratio end), 2) as \"{lib}_time_med\"")
+        diags.append(f"round(max(case when lib = '{safe}' then mem_delta_ratio end), 1) as \"{lib}_mem_delta\"")
+        diags.append(f"round(max(case when lib = '{safe}' then mem_query_ratio end), 1) as \"{lib}_mem_query\"")
 
     column_sql = ",\n        ".join(columns)
+    diag_sql = ",\n        ".join(diags)
     return f"""
     with pivoted as (
         select test_name, mode,
-        {column_sql}
+        {column_sql},
+        {diag_sql}
         from result_vs_baseline
         group by test_name, mode
     ),
@@ -121,8 +138,6 @@ def build_report_query(libs):
     )
     select b.test_name as test,
         b.mode,
-        round(b.time_ms_avg,1) base_ms,
-        round(b.time_ms_median,1) base_ms_med,
         p.* exclude (test_name, mode),
         coalesce(g.no_data, '') as no_data
     from baseline b
@@ -193,12 +208,24 @@ def main(argv=None):
             """
         ).df()
 
+    # Split the wide diagnostic columns out so the headline table stays readable.
+    diag_cols = [c for c in df.columns if c.endswith(("_time_med", "_mem_delta", "_mem_query"))]
+    key_cols = ["test", "mode"]
+    main = df[[c for c in df.columns if c not in diag_cols]]
+
     print("## Benchmark Results\n")
-    print(df.to_markdown(index=False))
-    print("\n_time_ratio < 1 means bareduckdb is faster_")
-    print("_`time` is the mean-of-N ratio, `time_med` the median-of-N ratio; a regression in one but not the other is run-to-run noise_")
-    print("_`mem` is the result: the rusage high-water rise during the query alone. `mem_peak` and `mem_query` are diags")
+    print(main.to_markdown(index=False))
+    print("\n_each cell is `ratio (ours / theirs)`; ratio < 1 means bareduckdb is better_")
+    print("_time is the mean of N reps in ms; mem is ABSOLUTE peak RSS in MB, which is what shows whether a source is materialized_")
+    print("_each test is forked, so a peak includes the parent RSS it inherited: compare across rows and sizes, not against zero_")
     print("_`no_data` names any library with no results for that case, so gaps are visible rather than dropped_")
+
+    if diag_cols:
+        print("\n<details><summary>Diagnostics (median time ratio, rusage delta, sampled per-query RSS)</summary>\n")
+        print(df[key_cols + diag_cols].to_markdown(index=False))
+        print("\n_`time_med` disagreeing with the mean ratio above is run-to-run noise, not a regression_")
+        print("_`mem_delta` is the rusage high-water RISE across the timed call; it hides work done outside that call, which is why it is not the headline_")
+        print("\n</details>")
 
     if len(df_gaps) > 0:
         print("\n**Cases with no data** (still listed above, with blank ratio columns):\n")

@@ -23,8 +23,6 @@ DEV_VENV=${DEV_VENV:-.venv314}
 PYTHON_SPEC=${BENCHMARK_PYTHON:-3.14}
 REPS=${BENCHMARK_REPS:-3}
 MODES=${BENCHMARK_MODES:-polars_lazy,arrow,parquet}
-# register()'s cache= setting to sweep; when unset the default is resolved from DEV_VENV below.
-CACHE=${BENCHMARK_CACHE:-}
 RESULTS_DIR=${BENCHMARK_RESULTS_DIR:-benchmark-results}
 # BENCHMARK_CASES is a pytest -k expression scoping the run to a subset of cases.
 CASES=${BENCHMARK_CASES:-}
@@ -139,21 +137,6 @@ fi
 check_dev_build_freshness
 verify_engine_versions
 
-# Default BENCHMARK_CACHE to register()'s own cache= default in DEV_VENV.
-if [ -z "$CACHE" ]; then
-    CACHE=$("$DEV_PY" -c "
-import inspect
-import bareduckdb
-default = inspect.signature(bareduckdb.Connection.register).parameters['cache'].default
-print('true' if default else 'false')
-" 2>&1) || {
-        echo "ERROR: could not resolve register()'s cache= default from DEV_VENV ($DEV_VENV):"
-        echo "$CACHE"
-        exit 1
-    }
-    echo "BENCHMARK_CACHE not set; using register()'s own default: cache=$CACHE"
-fi
-
 # Generated before either arm, so neither one warms the page cache for the other.
 "$BASELINE_PY" tests/benchmarks/data_setup.py
 BENCHMARK_REQUIRE_PREGENERATED_DATA=1
@@ -185,8 +168,7 @@ run_baseline() {
         --use-duckdb --benchmark-suffix=duckdb \
         --benchmark-output="$BASELINE_OUT" \
         --connection-settings="$BASELINE_SETTINGS" \
-        --registration-modes="$MODES" \
-        --registration-cache="$CACHE"
+        --registration-modes="$MODES"
     status=$?
     set -e
     if [ $status -ne 0 ]; then
@@ -204,8 +186,7 @@ run_dev() {
         --benchmark-suffix=dev314 \
         --benchmark-output="$DEV_OUT" \
         --connection-settings="$DEV_SETTINGS" \
-        --registration-modes="$MODES" \
-        --registration-cache="$CACHE"
+        --registration-modes="$MODES"
     status=$?
     set -e
     if [ $status -ne 0 ]; then

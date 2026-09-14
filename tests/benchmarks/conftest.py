@@ -126,18 +126,6 @@ def pytest_addoption(parser):
         help="Comma-separated list of data registration modes: parquet,arrow,polars,polars_lazy,dataset",
     )
     parser.addoption(
-        "--registration-cache",
-        default="true",
-        help=(
-            "Comma-separated list of register() cache settings to sweep: true,false. Only "
-            "bareduckdb's register() has this setting; the duckdb baseline arm has none, so its "
-            "rows are always recorded with cache='n/a' regardless of this option, and it is run "
-            "once per case rather than once per requested value. Default 'true' matches "
-            "register()'s own default, so a run that never sets this stays comparable to every "
-            "result recorded before this option existed."
-        ),
-    )
-    parser.addoption(
         "--allow-missing-metrics",
         action="store_true",
         default=False,
@@ -146,36 +134,11 @@ def pytest_addoption(parser):
 
 
 def pytest_generate_tests(metafunc):
-    """Generate test variants for each registration mode, and for the register() cache setting"""
+    """Generate test variants for each registration mode."""
     if "registration_mode" in metafunc.fixturenames:
         modes_str = metafunc.config.getoption("--registration-modes")
         modes = [m.strip() for m in modes_str.split(",")]
         metafunc.parametrize("registration_mode", modes)
-
-    if "register_cache" in metafunc.fixturenames:
-        # The duckdb baseline arm has no cache= setting, so it gets a single None-valued run.
-        if metafunc.config.getoption("--use-duckdb"):
-            metafunc.parametrize("register_cache", [None], indirect=True, ids=["cache_na"])
-        else:
-            raw = metafunc.config.getoption("--registration-cache")
-            values = [v.strip().lower() for v in raw.split(",") if v.strip()]
-            for v in values:
-                if v not in ("true", "false"):
-                    raise pytest.UsageError(
-                        f"--registration-cache values must be 'true' or 'false', got {v!r}"
-                    )
-            metafunc.parametrize(
-                "register_cache",
-                [v == "true" for v in values],
-                indirect=True,
-                ids=[f"cache_{v}" for v in values],
-            )
-
-
-@pytest.fixture
-def register_cache(request):
-    """The cache= value to pass to register(); None on the duckdb baseline arm."""
-    return getattr(request, "param", True)
 
 
 def _check_metric_availability(config):
@@ -323,7 +286,7 @@ def pytest_runtest_call(item):
     connection_settings = item.config.getoption("--connection-settings") or ""
     sql_path = None
     mode = ""
-    # 'n/a': the duckdb baseline arm, or a bareduckdb run where no source was registered.
+    # Always 'n/a': register() no longer has a cache= setting, kept so old rows stay comparable.
     cache = "n/a"
 
     if hasattr(item, "callspec") and item.callspec:
@@ -333,11 +296,6 @@ def pytest_runtest_call(item):
         elif params.get("sql_path"):
             mode = "parquet"
         sql_path = params.get("sql_path")
-
-        if _lib_info.get("library") == "bareduckdb" and mode != "parquet" and "register_cache" in params:
-            register_cache = params["register_cache"]
-            if register_cache is not None:
-                cache = "true" if register_cache else "false"
 
         if sql_path:
             # e.g., "tests/benchmarks/cases/filters/string_comparison.sql" -> "filters_string_comparison"
@@ -397,7 +355,7 @@ def ensure_parquet_files():
 
 
 @pytest.fixture
-def registered_tables(conn, request, register_cache):
+def registered_tables(conn, request):
     if not hasattr(request.node, "callspec"):
         return {}
 
@@ -421,9 +379,9 @@ def registered_tables(conn, request, register_cache):
     for table_name, filepath in tables_to_register.items():
         data = load_data_by_mode(filepath, mode)
         try:
-            # Only bareduckdb supports statistics/cache; register_cache is None on the duckdb arm.
+            # Only bareduckdb's register() takes statistics.
             if hasattr(conn, '__class__') and 'bareduckdb' in conn.__class__.__module__:
-                conn.register(table_name, data, statistics=statistics_param, cache=register_cache)
+                conn.register(table_name, data, statistics=statistics_param)
             else:
                 conn.register(table_name, data)
         except NotImplementedError as e:

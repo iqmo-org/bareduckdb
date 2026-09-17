@@ -62,15 +62,15 @@ source = { editable = "." }
 [package.optional-dependencies]
 arrow = [
     { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pyarrow", version = "26.0.0.dev209", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pyarrow", version = "26.0.0.dev267", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
 ]
 test = [
     { name = "filelock" },
     { name = "pandas", version = "3.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pandas", version = "3.1.0.dev0+1803.gc26625d6e7", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pandas", version = "3.1.0.dev0+1936.g89a35d00dd", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
     { name = "psutil" },
     { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pyarrow", version = "26.0.0.dev209", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pyarrow", version = "26.0.0.dev267", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -87,12 +87,12 @@ dev = [
     { name = "coverage" },
     { name = "ipykernel", marker = "python_full_version < '3.14'" },
     { name = "pandas", version = "3.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pandas", version = "3.1.0.dev0+1803.gc26625d6e7", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pandas", version = "3.1.0.dev0+1936.g89a35d00dd", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
     { name = "pandas-stubs" },
     { name = "pre-commit-uv" },
     { name = "psutil" },
     { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pyarrow", version = "26.0.0.dev209", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pyarrow", version = "26.0.0.dev267", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
     { name = "pyarrow-stubs" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -298,35 +298,35 @@ wheels = [
 
 [[package]]
 name = "coverage"
-version = "7.16.0"
+version = "7.16.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d1/f5/deb1a27aa20746c0278ac998c4179e272004699b2d33959ce020c5ac1615/coverage-7.16.0.tar.gz", hash = "sha256:077f0964087883176ff6ab9b074694cae29f8c708273b13ca62c183c6ed716cd", size = 945620, upload-time = "2026-08-28T21:54:37.74Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/65/2d/c738872f477f5687152acae68635790387425d407ae37dd3d3a8a6692307/coverage-7.16.1.tar.gz", hash = "sha256:f83981779bcf9dfa06fa0a8d4cb43e0faec1706328ce07aa3e7b665b4ac0f210", size = 969651, upload-time = "2026-09-13T19:12:21.422Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ca/11/f002163dd688aa3fa49ac6a424b7c2705c7fcf80fba18ec9f586d77827ca/coverage-7.16.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:1f81cb1554c3712e41649ed5dc98656b50b958e4da12f0f5adb681ce3db92831", size = 223553, upload-time = "2026-08-28T21:51:29.46Z" },
-    { url = "https://files.pythonhosted.org/packages/95/29/dd89fd39af1a3b6e9a9c3eddeaf03f6376ba517d43d6cbf8b519177e2a10/coverage-7.16.0-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:719a3feb6220dd32ed932d4c3676d17fb8739e2643b29c0e7c3af400ff80ac44", size = 257790, upload-time = "2026-08-28T21:51:33.374Z" },
-    { url = "https://files.pythonhosted.org/packages/dc/54/5542190ceb97e0d1333a4ce0c8f95b2ef2efe790f1ad018a4b61766f849e/coverage-7.16.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:06f20145a9eb5bf1fd1dde3c0bc2af2e7c22135ab07ca6284d6ada7cc3904c4e", size = 256410, upload-time = "2026-08-28T21:51:48.363Z" },
-    { url = "https://files.pythonhosted.org/packages/67/61/8e76b36c36b1a033dc933dd2480db96b04ce3be975793ce3fad122e7174d/coverage-7.16.0-cp312-cp312-win_amd64.whl", hash = "sha256:78f8b56261d608be102c62edd3a60b66bcd0b581f3f86fdcabaf8b8d95adc950", size = 225775, upload-time = "2026-08-28T21:51:51.912Z" },
-    { url = "https://files.pythonhosted.org/packages/89/e9/5e62fda9397175fb206f75368b6e85da06d831c181b6d0f67ca073cd2f89/coverage-7.16.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:0598aadae641f30a0796b75b45c0b9c5de8619bd5cfb251bb0cc254e86e6dd13", size = 223585, upload-time = "2026-08-28T21:51:57.355Z" },
-    { url = "https://files.pythonhosted.org/packages/12/d8/ab0bdaa45dfd6b8cbf1a3ec548fdf827684b1997f9724375c5b3e89144fb/coverage-7.16.0-cp313-cp313-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:e9883a2f8206ce3af59117dc278e5d043fea06912bca3f199816129e5e2de354", size = 257172, upload-time = "2026-08-28T21:52:01.015Z" },
-    { url = "https://files.pythonhosted.org/packages/e7/78/093e12072e01034c65ff380f76c74b79dd83e44fa92b689a2154389be734/coverage-7.16.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:c1bcfe470a796fbea6234accd81d258a31574dc0b7bf569e16be757572c4de17", size = 256102, upload-time = "2026-08-28T21:52:16.003Z" },
-    { url = "https://files.pythonhosted.org/packages/1f/01/8a87f2c04fde322430b45d16d8f543693e9894c5b2d2ca238a287c00beca/coverage-7.16.0-cp313-cp313-win_amd64.whl", hash = "sha256:496277c8d7beed695e02c7be53516a0152e4caef8738a0feab6a638546cce449", size = 225790, upload-time = "2026-08-28T21:52:19.641Z" },
-    { url = "https://files.pythonhosted.org/packages/61/c1/4f54c6d47c80d1cc58ef8fe6b74e6eb50f9e2c0f6e2de6cf38dbca2937b8/coverage-7.16.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:fa4ff0b3dd52208d2b30903022d5087f82000507b504753dfeee83e4f32d6883", size = 223587, upload-time = "2026-08-28T21:52:25.627Z" },
-    { url = "https://files.pythonhosted.org/packages/a3/9c/a1bda6439c19c4783d50df896142b67b9e7d432db36675d339a32778669d/coverage-7.16.0-cp314-cp314-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:f98d438add63546745e5e847192e3e9ab897ed6f2ca96f8281e2f5a15958ae62", size = 257139, upload-time = "2026-08-28T21:52:29.741Z" },
-    { url = "https://files.pythonhosted.org/packages/a8/49/fe16c811ea9314a84b48f34e4bf5a3d9013091093b285a74b2272fc863d7/coverage-7.16.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:c5297028c8df849a61b29129cadfe682f90b5b396f528eb319a57d7678eefdad", size = 255927, upload-time = "2026-08-28T21:52:45.461Z" },
-    { url = "https://files.pythonhosted.org/packages/17/78/1ce6ce4646822e9308dcdb1942eaf31bfd7da43247b8886338b0d6fe3767/coverage-7.16.0-cp314-cp314-win_amd64.whl", hash = "sha256:ce2ba5e9f1842fe09165825abfb3bc6b527c71a27bc2eb3a10f2284ced64506d", size = 225918, upload-time = "2026-08-28T21:52:49.692Z" },
-    { url = "https://files.pythonhosted.org/packages/9f/73/347d2d0009ac211f79ee2a2364fd2aa19d6b9628dc22ed13a9b9386097ab/coverage-7.16.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:f093faf23df888518d273be6da65f0ec5a25b5d8b670231e4d87de07361042e7", size = 224254, upload-time = "2026-08-28T21:52:55.59Z" },
-    { url = "https://files.pythonhosted.org/packages/ea/8e/0f752276f6d13efbd019ab6d90792e20d6272c44cda039dc5c6d27b91e7f/coverage-7.16.0-cp314-cp314t-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:51e7d0e311d2fba3915f971236cbdd4ad821fc7a23988221c0b33c964b0eba22", size = 267734, upload-time = "2026-08-28T21:52:59.611Z" },
-    { url = "https://files.pythonhosted.org/packages/b3/f7/bb78cc4b97085ebbd77fa18cbc25abfab462814efa3e2363b4e50885c775/coverage-7.16.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:a336b1e2990a64f5c356a9b8380fb9c029d56c832b801255250c44d603271bfd", size = 266371, upload-time = "2026-08-28T21:53:16.233Z" },
-    { url = "https://files.pythonhosted.org/packages/7e/43/50fc0e6c675c3ef14895a74bab2d6120cb5d6f4b562a3d3f5046797758dc/coverage-7.16.0-cp314-cp314t-win_amd64.whl", hash = "sha256:ed35097438dfa980c1ec75bc83edf8acbe7a374d7007e571957a257fbd0e2fb3", size = 226570, upload-time = "2026-08-28T21:53:20.754Z" },
-    { url = "https://files.pythonhosted.org/packages/81/4d/a5c54d9144e9db6505749758ba50a28be624148873751728a59cbb72d27a/coverage-7.16.0-cp315-cp315-macosx_11_0_arm64.whl", hash = "sha256:c5feffce90c3d602e149de1c477578efc34dee5f069f9764cc15808ce01ee15c", size = 223596, upload-time = "2026-08-28T21:53:27.461Z" },
-    { url = "https://files.pythonhosted.org/packages/fa/7a/acddda030b4630f68167f3daa94b41d22071847822a70d8178d43dcf678e/coverage-7.16.0-cp315-cp315-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:4212cec9b42fd9929e70b462732fefd8b13406371871c82f3c14397499d6550b", size = 257614, upload-time = "2026-08-28T21:53:31.948Z" },
-    { url = "https://files.pythonhosted.org/packages/73/fd/787842cdf6ce16ac5c1bd8a26549bab3b3f27b02500075bc540dc7853bca/coverage-7.16.0-cp315-cp315-musllinux_1_2_x86_64.whl", hash = "sha256:cce4dc8528453128c6fae523b15f3887fbea1d4d7c9eb9639d3d4fdcbe570c73", size = 256541, upload-time = "2026-08-28T21:53:50.805Z" },
-    { url = "https://files.pythonhosted.org/packages/85/87/5bad7ac45f76b3728ca211028ee561c2ede3ba44da401129e28bb8737291/coverage-7.16.0-cp315-cp315-win_amd64.whl", hash = "sha256:4fcb5f07a9b7083bfb715115d27ce263ba2b5b89dddeee536b295ba0e3c2c627", size = 225903, upload-time = "2026-08-28T21:53:55.535Z" },
-    { url = "https://files.pythonhosted.org/packages/fd/02/4d54abf3e6a4d8b7675921b20e91163b1064a5a9dbefebb71c05065dd136/coverage-7.16.0-cp315-cp315t-macosx_11_0_arm64.whl", hash = "sha256:289f2ed4d56eebf029b649e7dfc3c1153b111962a75e294cdd8e4a1598a04cc3", size = 224276, upload-time = "2026-08-28T21:54:02.381Z" },
-    { url = "https://files.pythonhosted.org/packages/e7/3b/6b326544afd1a8aef3a495bbae109a7ab5baf23e04a2741d8d64e2df2ba2/coverage-7.16.0-cp315-cp315t-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:2c3ff6580f2dfc5bec34717b85b2e6cf5ec993b721e7bb58a794babd525a8178", size = 268216, upload-time = "2026-08-28T21:54:06.97Z" },
-    { url = "https://files.pythonhosted.org/packages/81/67/5b8f827cfa6616e6bd7ba9397acfe7e3c4fd5b9fca4125511d5089f55d5a/coverage-7.16.0-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:49fa72ead28c8216f8916398a4f3c4669acb30a061822810ee20a727a1be2897", size = 267170, upload-time = "2026-08-28T21:54:25.85Z" },
-    { url = "https://files.pythonhosted.org/packages/8a/4d/dc3d53eadf155916e183bf5dfacbfc4aa5bfb7f13b7da11c01caa7a05cbc/coverage-7.16.0-cp315-cp315t-win_amd64.whl", hash = "sha256:c5612cc20ca76abc883e50269af47c1494b42958bb63dbb9aa79729a1ab5f7d3", size = 226562, upload-time = "2026-08-28T21:54:30.42Z" },
-    { url = "https://files.pythonhosted.org/packages/b1/5a/234e8fadf85c3cc48cb31c247b9e8e0c7f06ece80f5b29f9b8c241f9da4c/coverage-7.16.0-py3-none-any.whl", hash = "sha256:245f7de6d023a5bba375dbec9f2e0869bfa26ac0cc639bbb7b4c814884000b73", size = 214977, upload-time = "2026-08-28T21:54:35.189Z" },
+    { url = "https://files.pythonhosted.org/packages/3e/f2/9ac65f9cedd43f91e2d3657c11f13aef82aebae89b2243dc9e44fe58a740/coverage-7.16.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:070acb9da788dff743a4d36fc015feee12d68f0349959017542017c79f59c21c", size = 223845, upload-time = "2026-09-13T19:09:11.988Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/6b/85ed86e82835a96ddfbe7705c387c28ce1cbbecd1b6d606f5ddfeeb712df/coverage-7.16.1-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:e82e10b9d290f60b63459cfb245a841aec347603997206296b93881463a93dcf", size = 258078, upload-time = "2026-09-13T19:09:15.368Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/e1/0a04eedaaf19196b51f0180968134228c7646e469ed29914e48690a7cf3e/coverage-7.16.1-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:65a8fc80898c9ce59f04349fe8b4849b1f9787f14e52ead990e5f849ff4727a0", size = 256698, upload-time = "2026-09-13T19:09:29.922Z" },
+    { url = "https://files.pythonhosted.org/packages/73/27/ec3d032375735dd331477caa051419678079ff90fcb53d0284a6c2bfb757/coverage-7.16.1-cp312-cp312-win_amd64.whl", hash = "sha256:d0f02c633630e2b74522108ee95a84ad6e1204a8016a6cca5297f335ea27147e", size = 226075, upload-time = "2026-09-13T19:09:33.556Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/c8/784986d326663285258a8e39835c46fb730cc85284f0dbcd82078586dd22/coverage-7.16.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:2b8256f8b525ba233d2e4cdcdce0d6673c66fc9bf70df1fd5e67c54a74e2d245", size = 223876, upload-time = "2026-09-13T19:09:39.385Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/8d/1fd78899513244b065ccecdd1cfc6aa8b8f1bdee796d8c4f2aa8e8e5397d/coverage-7.16.1-cp313-cp313-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:6b3fd0f3435ebb7a7183b32a6062a8b755f08242ced1f3f22761d30b56b3c2a5", size = 257460, upload-time = "2026-09-13T19:09:43.086Z" },
+    { url = "https://files.pythonhosted.org/packages/25/20/d278115f2ba522b3e3128c6852be265f4e0df7202b2effca4db96cf0217d/coverage-7.16.1-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:e306e98186b9cd109121f3583aeb7978797ad21d948f22944c5c08845cd554d0", size = 256388, upload-time = "2026-09-13T19:09:58.095Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/30/df2f6114f6a17cffe94721bd1d298f77f86aad493717fa5bc03cb291a1a6/coverage-7.16.1-cp313-cp313-win_amd64.whl", hash = "sha256:7af03247d598a353bbbbe1b925deb735276e4d845e7197c4073dc89352b236fa", size = 226091, upload-time = "2026-09-13T19:10:02.331Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/e2/633469076a2dbbea036cc15a268a3a5d6b2c7dd5d9a9567b2553dfc5ad61/coverage-7.16.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:6618f481053b63fc6121faf8fc676bd9b7163c2a19d9e984a2e850002c28ab57", size = 223881, upload-time = "2026-09-13T19:10:08.246Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/40/47e25b215ae18a29010c8e29be8782a6e04d18ba6224be2bf6cebfce6427/coverage-7.16.1-cp314-cp314-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:bc5354a124799f1f87b7637bbe6f18cd4bc66a1f37f6aa2b5db40f9adad531dc", size = 257428, upload-time = "2026-09-13T19:10:12.124Z" },
+    { url = "https://files.pythonhosted.org/packages/d8/fa/e7aa5af279aafda633a1ede8bfd7d6916b0c8b2082be86759e0b52e73a61/coverage-7.16.1-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:3db3978211c3cead5437a80136ca0556bab8bc7828de15a762884b0598c41361", size = 256215, upload-time = "2026-09-13T19:10:28.714Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/01/fa7193c8005fb85488f02b0e1cc3c05a233cf2640206dd978af447aeecbf/coverage-7.16.1-cp314-cp314-win_amd64.whl", hash = "sha256:c510dad19552d912058e4c3e3cbec3fb155dbe8d0ce0ceb7e7dbf5c5822bae0b", size = 226208, upload-time = "2026-09-13T19:10:32.698Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/d0/9076e0c762d8afd91182e60a520fa5c92c4a334785eeb9fd6b8ef8fe7e3c/coverage-7.16.1-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:3f3b4469d3da3ecced775d1a8c9c5d9fc80f259e30b7b89f9fed0700d6035ecb", size = 224547, upload-time = "2026-09-13T19:10:39.359Z" },
+    { url = "https://files.pythonhosted.org/packages/57/5a/13ccaffb77f766101bf6f38be9dba9e468b02cc92da4552a57877dbf1c1f/coverage-7.16.1-cp314-cp314t-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:8ee71a38c54bb2676bbe762b8b0943a79ccb1c2fd6a52054f66e63eda392f8c1", size = 268023, upload-time = "2026-09-13T19:10:43.533Z" },
+    { url = "https://files.pythonhosted.org/packages/54/f3/88b5c0e4ca3994c6d5feb7b1bf4c9a62cee205553159184968426930a7b1/coverage-7.16.1-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:33300f2e140ccf26af3d8152e62bff71993f9310cfc63ba7a20940b0d246a0ae", size = 266660, upload-time = "2026-09-13T19:11:00.746Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/c8/6e5ae3d8d4d0f2c0078985bf4db55fafd90e8107b1bf91ee3547a13f5694/coverage-7.16.1-cp314-cp314t-win_amd64.whl", hash = "sha256:715dcb72c3280c428c3a20134b87e42c29acec9669136e899ab2de69ca86218d", size = 226862, upload-time = "2026-09-13T19:11:04.921Z" },
+    { url = "https://files.pythonhosted.org/packages/92/d9/7ccd6484f615961d94b09c75904f87d86375109596069ae3a495a205dbbe/coverage-7.16.1-cp315-cp315-macosx_11_0_arm64.whl", hash = "sha256:3acd1d78397dead78dd1b011b5fc19cc823c190349acd549e63856dff649c80e", size = 223882, upload-time = "2026-09-13T19:11:11.132Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/4a/58e2f9b8b13cc422aa7f474a498945ec7f446ef473b5b6bae18d2981f2a9/coverage-7.16.1-cp315-cp315-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:fbbe8265736659a6be2e6042b6a35be13545d14b243cc1d7ecf65f90d788a370", size = 257902, upload-time = "2026-09-13T19:11:16.025Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/21/2ff8867d4560f4f639a82d8fcf13c27eea88a96193daba096027c48bb929/coverage-7.16.1-cp315-cp315-musllinux_1_2_x86_64.whl", hash = "sha256:b44308854ef210b9b78df9cdfd4e159513382a859f5ef8464306d14a54c2a040", size = 256828, upload-time = "2026-09-13T19:11:34.078Z" },
+    { url = "https://files.pythonhosted.org/packages/39/34/66bbc6ffd3c51fa67604c566920e772c5e3baa57f88dcf7b109c7f18b2cb/coverage-7.16.1-cp315-cp315-win_amd64.whl", hash = "sha256:961fc424e9d5229a99f8f1189942d8e7f4e1519147c3af64842f944aca03914d", size = 226195, upload-time = "2026-09-13T19:11:38.493Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/1f/98db59c595680d16f553890deac6d72610e04f192c1964ec9b69cbe790ab/coverage-7.16.1-cp315-cp315t-macosx_11_0_arm64.whl", hash = "sha256:2270a794600b635ca9452ce4c32e2fe81a35f9caa17ffac0eba99f14f275bd4d", size = 224564, upload-time = "2026-09-13T19:11:45.071Z" },
+    { url = "https://files.pythonhosted.org/packages/96/1b/6eaa21912863b3e3bf23cfe605fb62929bb1a41dc33d2bfa8e92000232bd/coverage-7.16.1-cp315-cp315t-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:ee1d5fc9e3bd6a217906929cc97880239a91d20dae7746f538eb0eefee705ab1", size = 268503, upload-time = "2026-09-13T19:11:50.12Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/ff/254b26f3300f87c7c53ac97da41ae75f0e2ac066aa964bc073c0f3750b38/coverage-7.16.1-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:b10095528b866d322d33d6bf1709b7f8cbf959f12e8cb2ba22fc59c8717866b0", size = 267459, upload-time = "2026-09-13T19:12:09.479Z" },
+    { url = "https://files.pythonhosted.org/packages/35/8f/12d46948704d9e437c8dca2718e5d54ecc2f85396b64b500c29d8dbe10db/coverage-7.16.1-cp315-cp315t-win_amd64.whl", hash = "sha256:46a88f51770df7c9bc376bd57d3f86cdc7624b8e16ac4b585a655c22b7a1b4db", size = 226853, upload-time = "2026-09-13T19:12:14.254Z" },
+    { url = "https://files.pythonhosted.org/packages/96/1a/d6d16babd0a5fe4c3fae40702158c570351694e74516d8d81b86c5637448/coverage-7.16.1-py3-none-any.whl", hash = "sha256:3d8bd4e58b6a5c2018d808f297905393c6c61da466a48c3f0596a76a4900ebe4", size = 215264, upload-time = "2026-09-13T19:12:18.895Z" },
 ]
 
 [[package]]
@@ -638,7 +638,7 @@ dependencies = [
     { name = "ipython" },
     { name = "jinja2" },
     { name = "pandas", version = "3.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pandas", version = "3.1.0.dev0+1803.gc26625d6e7", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pandas", version = "3.1.0.dev0+1936.g89a35d00dd", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/eb/58/00ef73bbdb6042e17270cf61afdcfcb27581fe1f5ae58d0f101cfc473f0e/magic_duckdb-0.2.4.tar.gz", hash = "sha256:09f92ef13de4f6cb3a18d0d320f34ab86ecd6dc29e19f97538fccd4d862d9136", size = 19898, upload-time = "2026-01-11T16:17:03.315Z" }
 wheels = [
@@ -790,7 +790,7 @@ wheels = [
 
 [[package]]
 name = "pandas"
-version = "3.1.0.dev0+1803.gc26625d6e7"
+version = "3.1.0.dev0+1936.g89a35d00dd"
 source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }
 resolution-markers = [
     "python_full_version >= '3.15' and platform_machine == 'arm64' and sys_platform == 'darwin'",
@@ -803,31 +803,31 @@ dependencies = [
     { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
 wheels = [
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp312-cp312-macosx_11_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp312-cp312-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp312-cp312-pyemscripten_2024_0_wasm32.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp312-cp312-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp313-cp313-macosx_11_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp313-cp313-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp313-cp313-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314-macosx_11_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314t-macosx_11_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314t-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp314-cp314t-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315-macosx_11_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315t-macosx_11_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315t-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1803.gc26625d6e7/pandas-3.1.0.dev0+1803.gc26625d6e7-cp315-cp315t-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp312-cp312-macosx_11_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp312-cp312-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp312-cp312-pyemscripten_2024_0_wasm32.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp312-cp312-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp313-cp313-macosx_11_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp313-cp313-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp313-cp313-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp314-cp314-macosx_11_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp314-cp314-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp314-cp314-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp314-cp314t-macosx_11_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp314-cp314t-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp314-cp314t-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp315-cp315-macosx_11_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp315-cp315-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp315-cp315-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp315-cp315-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp315-cp315t-macosx_11_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp315-cp315t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp315-cp315t-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pandas/3.1.0.dev0+1936.g89a35d00dd/pandas-3.1.0.dev0+1936.g89a35d00dd-cp315-cp315t-win_amd64.whl" },
 ]
 
 [[package]]
@@ -1067,7 +1067,7 @@ wheels = [
 
 [[package]]
 name = "pyarrow"
-version = "26.0.0.dev209"
+version = "26.0.0.dev267"
 source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }
 resolution-markers = [
     "python_full_version >= '3.15' and platform_machine == 'arm64' and sys_platform == 'darwin'",
@@ -1075,30 +1075,30 @@ resolution-markers = [
     "python_full_version >= '3.15' and platform_machine == 'AMD64' and sys_platform == 'win32'",
 ]
 wheels = [
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp312-cp312-macosx_12_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp312-cp312-manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp312-cp312-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp312-cp312-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp313-cp313-macosx_12_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp313-cp313-manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp313-cp313-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp313-cp313-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314-macosx_12_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314-manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314t-macosx_12_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314t-manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314t-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp314-cp314t-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315-macosx_12_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315-manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315-win_amd64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315t-macosx_12_0_arm64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315t-manylinux_2_28_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315t-musllinux_1_2_x86_64.whl" },
-    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev209/pyarrow-26.0.0.dev209-cp315-cp315t-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp312-cp312-macosx_12_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp312-cp312-manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp312-cp312-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp312-cp312-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp313-cp313-macosx_12_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp313-cp313-manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp313-cp313-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp313-cp313-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp314-cp314-macosx_12_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp314-cp314-manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp314-cp314-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp314-cp314-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp314-cp314t-macosx_12_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp314-cp314t-manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp314-cp314t-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp314-cp314t-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp315-cp315-macosx_12_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp315-cp315-manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp315-cp315-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp315-cp315-win_amd64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp315-cp315t-macosx_12_0_arm64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp315-cp315t-manylinux_2_28_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp315-cp315t-musllinux_1_2_x86_64.whl" },
+    { url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple/pyarrow/26.0.0.dev267/pyarrow-26.0.0.dev267-cp315-cp315t-win_amd64.whl" },
 ]
 
 [[package]]
@@ -1107,7 +1107,7 @@ version = "20.0.0.20260819"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pyarrow", version = "26.0.0.dev209", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pyarrow", version = "26.0.0.dev267", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/12/a7/8a2ca91ffe4c6576207f932de655d7d8a36485c520dccce70ce7d492b256/pyarrow_stubs-20.0.0.20260819.tar.gz", hash = "sha256:150710a72248bc834bf048d3092713f070904a4af76d40289c43afb3ee189823", size = 238222, upload-time = "2026-08-19T05:52:53.618Z" }
 wheels = [
@@ -1538,7 +1538,7 @@ version = "0.85.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
-    { name = "pyarrow", version = "26.0.0.dev209", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
+    { name = "pyarrow", version = "26.0.0.dev267", source = { registry = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }, marker = "python_full_version >= '3.15'" },
     { name = "substrait" },
     { name = "typing-extensions" },
 ]

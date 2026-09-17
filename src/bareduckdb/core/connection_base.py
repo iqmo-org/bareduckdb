@@ -39,16 +39,6 @@ def _is_arrow_stream_capsule(obj: object) -> bool:
 _LAZY_PULL_ROWS = 131_072
 
 
-class _LazyCollectSource:
-    """Collects a lazy source (e.g. Polars LazyFrame) each time a stream is produced"""
-
-    def __init__(self, lazy: object) -> None:
-        self._lazy = lazy
-
-    def __arrow_c_stream__(self, requested_schema: object = None) -> object:
-        return self._lazy.collect().__arrow_c_stream__(requested_schema)  # type: ignore[attr-defined]
-
-
 class _StreamingLazyFrameSource:
     """Streams a polars LazyFrame batch by batch, so registering one never collects it"""
 
@@ -63,12 +53,7 @@ class _StreamingLazyFrameSource:
 
 
 class ConnectionBase:
-    """
-    Core DuckDB functions, implemented in Cython
-    - Connection management via ConnectionImpl, wrapped in a _lock for thread safety
-    - Query via _call()
-    - Arrow registration
-    """
+    """Core DuckDB functions implemented in Cython: connection management, query via _call(), Arrow registration."""
 
     # Class variables
     _DUCKDB_INIT_LOCK: threading.Lock = threading.Lock()  # Global lock to serialize unsafe operations
@@ -96,8 +81,7 @@ class ConnectionBase:
         init_sql: str | None = None,
         _from_impl: Any = None,
     ) -> None:
-        """
-        Create a minimal DuckDB connection.
+        """Create a minimal DuckDB connection.
 
         Args:
             database: Path to database file, or None for in-memory
@@ -188,10 +172,7 @@ class ConnectionBase:
         self._register_capsule(name, collected, replace=replace)
 
     def _register_capsule(self, name: str, capsule: object, replace: bool = True) -> None:
-        """
-        Register Arrow C Stream Interface capsule directly.
-
-        The stream is moved into the registry and imported on the first query that reads the name.
+        """Register an Arrow C stream capsule under name; the stream is imported on the first query that reads it.
 
         Args:
             name: Table name to register
@@ -209,8 +190,11 @@ class ConnectionBase:
             cardinality,
         )
 
-        if not hasattr(capsule, "__arrow_c_stream__") and hasattr(capsule, "collect"):
-            capsule = _LazyCollectSource(capsule)
+        # The unconverted source, which the pushdown callback re-filters on the source's own
+        # engine; a RecordBatchReader has no streaming re-filter route. The streaming wrapper is
+        # ours, so the callback would dispatch on "bareduckdb" and refuse; hand it the
+        # LazyFrame, which the polars backend filters without collecting.
+        original = capsule._lazy if isinstance(capsule, _StreamingLazyFrameSource) else capsule
 
         if hasattr(capsule, "scanner"):
             capsule = capsule.scanner().to_reader()  # type: ignore
@@ -228,7 +212,17 @@ class ConnectionBase:
                 f"pyarrow Table, Dataset, RecordBatchReader, Scanner, or any object implementing __arrow_c_stream__"
             )
 
-        self._impl.register_capsule(name, data, cardinality, replace=replace)
+        # Read late, so the toggle can be flipped between connections.
+        from .. import filter_pushdown_enabled
+
+        self._impl.register_capsule(
+            name,
+            data,
+            cardinality,
+            replace=replace,
+            pushdown=filter_pushdown_enabled,
+            source=original,
+        )
         # Kept so the source outlives the registration; the C side never reads it.
         self._registered_objects[name] = capsule
 
@@ -241,8 +235,7 @@ class ConnectionBase:
         data: Mapping[str, Any] | None = None,
         batch_size: int = 0,
     ) -> pa.Table | pa.RecordBatchReader | PyArrowCapsule:
-        """
-        Core execution method - executes query and returns result in requested format.
+        """Execute query and return the result in the requested format.
 
         Args:
             query: SQL query string
@@ -315,12 +308,10 @@ class ConnectionBase:
                     self.unregister(name)
 
     def unregister(self, name: str) -> ConnectionBase:
-        """
-        Unregister a previously registered table.
+        """Unregister name, returning this connection; an unknown name is a no-op.
 
-        An unknown name is a no-op, matching duckdb-python. The name becomes unresolvable
-        immediately; its memory is released once no result or exported Arrow stream can still
-        read it, which for a fully consumed query is this call itself.
+        The memory is released once no result or exported Arrow stream can still read it,
+        which for a fully consumed query is this call itself.
 
         Args:
             name: Table name to unregister
@@ -377,7 +368,8 @@ class ConnectionBase:
         schema: Optional[str] = None,
         catalog: Optional[str] = None,
     ) -> "Appender":
-        """
+        """Open an Appender on table.
+
         Args:
             table: Target table name
             schema: Schema name (optional, defaults to current schema)

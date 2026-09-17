@@ -18,6 +18,9 @@ cdef enum:
     BD_ENTRY_IMPORTING = 1
     BD_ENTRY_READY = 2
     BD_ENTRY_FAILED = 3
+    # Pushdown only: the schema is resolved but nothing is imported yet, so the stream is
+    # intact for either the callback's produce or init's flat import.
+    BD_ENTRY_SCHEMA = 4
 
 cdef enum:
     BD_ERR_TEXT_CAP = 512
@@ -26,22 +29,33 @@ cdef enum:
 cdef struct bd_reg_entry:
     long lock
     long state
+    # Set once at register and immutable after: a plain acquire read is safe in dispatch.
+    bint pushdown
     # Raised under the registry lock by any callback holding this pointer.
     long refs
     # Stable identity for the table function, unaffected by the entry array's swap-removes.
     idx_t slot
+    # Key into the binding-level source table for a pushdown registration; -1 when none.
+    # Dropped by unregister and by the owning handle's release, both of which hold the GIL.
+    long source_key
     duckdb_v2_qname_handle name
     # Single-part fallback, so register("data.csv") matches a quoted file reference too.
     duckdb_v2_qname_handle alt_name
     ArrowArrayStream stream
     # Imported once, replayed by every scan; the vectors alias the caller's Arrow buffers.
     duckdb_v2_data_chunk_handle *chunks
+    # Set once the entry's stream has had its first read (schema or data), so the registry's
+    # import_count counts one read per registration however many phases read it.
+    bint counted
     idx_t chunk_count
     idx_t chunk_capacity
     # The importer's resolved column names and logical types, read by every bind.
     duckdb_v2_schema_handle ddb_schema
     idx_t col_count
     idx_t row_count
+    # The source's own row count, known at register time without importing; 0 when the source
+    # could not report one. Bind's only estimate for an entry that has imported nothing.
+    idx_t declared_rows
     char err_text[BD_ERR_TEXT_CAP]
 
 
@@ -71,9 +85,12 @@ cdef class _DatabaseHandle:
     cdef duckdb_v2_database_handle _db
     cdef bd_registry *_registry
     cdef long _holders
+    # Keys this registry handed out into the binding-level source table, for cleanup.
+    cdef dict _source_keys
     cdef void _adopt(self, duckdb_v2_database_handle db) noexcept
     cdef void _acquire(self) noexcept
     cdef void _release(self) noexcept
+    cdef void _drop_sources(self) noexcept
 
 
 cdef class CApiEnvironment:

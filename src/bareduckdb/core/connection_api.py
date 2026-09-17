@@ -79,15 +79,11 @@ class ConnectionAPI(ConnectionBase):
             return value_str
 
     def _generate_table_name(self, func_name: str, kwargs: dict[str, Any]) -> str:
-        """
-        Generate unique table name for UDTF call.
+        """Return a unique table name like "_udtf_faker_abc12345" for a UDTF call.
 
         Args:
             func_name: UDTF function name
             kwargs: Function arguments (for logging only)
-
-        Returns:
-            Table name like "_udtf_faker_abc12345"
         """
         unique_id = uuid.uuid4().hex[:8]
 
@@ -118,8 +114,7 @@ class ConnectionAPI(ConnectionBase):
         return result
 
     def register_udtf(self, name: str, func: Callable) -> None:
-        """
-        Register a UDTF by name.
+        """Register a UDTF callable under the name SQL will use.
 
         Args:
             name: UDTF name to use in SQL
@@ -180,13 +175,7 @@ class ConnectionAPI(ConnectionBase):
         return None
 
     def _preprocess(self, query, data):
-        """Handle UDTFs and Replacement Scans
-
-        The goals here are:
-        - Bindings don't need to call back into Python, allowing threading
-        - Easier extension/customization of inspection & UDTF logic - all in Python
-        - Faster execution - no Python callbacks (which has threading implications), and arrow statistics
-        """
+        """Rewrite UDTF calls and scope-discovered replacement scans into registrations, all in Python so the binding never calls back mid-query."""
         if not self.enable_replacement_scan and len(self._udtf_registry) == 0:
             return query, data
 

@@ -201,6 +201,39 @@ cdef extern from "duckdb_v2.h" nogil:
         DUCKDB_V2_RESULT_STEP_STATUS_FINISHED "DUCKDB_V2_RESULT_STEP_STATUS_FINISHED"
         DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED "DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED"
 
+    # The node types a filter predicate can contain; every other node type is
+    # reported as INVALID. Comparisons, BETWEEN and casts are function calls
+    # once bound, so only the type tells them apart from BOUND_FUNCTION.
+    ctypedef enum duckdb_v2_expression_type_t "DUCKDB_V2_EXPRESSION_TYPE":
+        DUCKDB_V2_EXPRESSION_TYPE_INVALID "DUCKDB_V2_EXPRESSION_TYPE_INVALID"
+        DUCKDB_V2_EXPRESSION_TYPE_OPERATOR_CAST "DUCKDB_V2_EXPRESSION_TYPE_OPERATOR_CAST"
+        DUCKDB_V2_EXPRESSION_TYPE_OPERATOR_NOT "DUCKDB_V2_EXPRESSION_TYPE_OPERATOR_NOT"
+        DUCKDB_V2_EXPRESSION_TYPE_OPERATOR_IS_NULL "DUCKDB_V2_EXPRESSION_TYPE_OPERATOR_IS_NULL"
+        DUCKDB_V2_EXPRESSION_TYPE_OPERATOR_IS_NOT_NULL "DUCKDB_V2_EXPRESSION_TYPE_OPERATOR_IS_NOT_NULL"
+        DUCKDB_V2_EXPRESSION_TYPE_COMPARE_EQUAL "DUCKDB_V2_EXPRESSION_TYPE_COMPARE_EQUAL"
+        DUCKDB_V2_EXPRESSION_TYPE_COMPARE_NOTEQUAL "DUCKDB_V2_EXPRESSION_TYPE_COMPARE_NOTEQUAL"
+        DUCKDB_V2_EXPRESSION_TYPE_COMPARE_LESSTHAN "DUCKDB_V2_EXPRESSION_TYPE_COMPARE_LESSTHAN"
+        DUCKDB_V2_EXPRESSION_TYPE_COMPARE_GREATERTHAN "DUCKDB_V2_EXPRESSION_TYPE_COMPARE_GREATERTHAN"
+        DUCKDB_V2_EXPRESSION_TYPE_COMPARE_LESSTHANOREQUALTO "DUCKDB_V2_EXPRESSION_TYPE_COMPARE_LESSTHANOREQUALTO"
+        DUCKDB_V2_EXPRESSION_TYPE_COMPARE_GREATERTHANOREQUALTO "DUCKDB_V2_EXPRESSION_TYPE_COMPARE_GREATERTHANOREQUALTO"
+        DUCKDB_V2_EXPRESSION_TYPE_COMPARE_IN "DUCKDB_V2_EXPRESSION_TYPE_COMPARE_IN"
+        DUCKDB_V2_EXPRESSION_TYPE_COMPARE_NOT_IN "DUCKDB_V2_EXPRESSION_TYPE_COMPARE_NOT_IN"
+        DUCKDB_V2_EXPRESSION_TYPE_COMPARE_DISTINCT_FROM "DUCKDB_V2_EXPRESSION_TYPE_COMPARE_DISTINCT_FROM"
+        DUCKDB_V2_EXPRESSION_TYPE_COMPARE_BETWEEN "DUCKDB_V2_EXPRESSION_TYPE_COMPARE_BETWEEN"
+        DUCKDB_V2_EXPRESSION_TYPE_COMPARE_NOT_DISTINCT_FROM "DUCKDB_V2_EXPRESSION_TYPE_COMPARE_NOT_DISTINCT_FROM"
+        DUCKDB_V2_EXPRESSION_TYPE_CONJUNCTION_AND "DUCKDB_V2_EXPRESSION_TYPE_CONJUNCTION_AND"
+        DUCKDB_V2_EXPRESSION_TYPE_CONJUNCTION_OR "DUCKDB_V2_EXPRESSION_TYPE_CONJUNCTION_OR"
+        DUCKDB_V2_EXPRESSION_TYPE_VALUE_CONSTANT "DUCKDB_V2_EXPRESSION_TYPE_VALUE_CONSTANT"
+        DUCKDB_V2_EXPRESSION_TYPE_VALUE_PARAMETER "DUCKDB_V2_EXPRESSION_TYPE_VALUE_PARAMETER"
+        DUCKDB_V2_EXPRESSION_TYPE_BOUND_FUNCTION "DUCKDB_V2_EXPRESSION_TYPE_BOUND_FUNCTION"
+        DUCKDB_V2_EXPRESSION_TYPE_CASE_EXPR "DUCKDB_V2_EXPRESSION_TYPE_CASE_EXPR"
+        DUCKDB_V2_EXPRESSION_TYPE_BOUND_COLUMN_REF "DUCKDB_V2_EXPRESSION_TYPE_BOUND_COLUMN_REF"
+
+    # Whether a cast node is a regular CAST or a TRY_CAST.
+    ctypedef enum duckdb_v2_cast_mode_t "DUCKDB_V2_CAST_MODE":
+        DUCKDB_V2_CAST_MODE_NORMAL "DUCKDB_V2_CAST_MODE_NORMAL"
+        DUCKDB_V2_CAST_MODE_TRY "DUCKDB_V2_CAST_MODE_TRY"
+
     # transparent structs
 
     # Borrowed, length-delimited view. Never null-terminated; always honor len.
@@ -372,6 +405,18 @@ cdef extern from "duckdb_v2.h" nogil:
     ctypedef struct _duckdb_v2_table_function_exec_info "_duckdb_v2_table_function_exec_info":
         void *internal_ptr
     ctypedef _duckdb_v2_table_function_exec_info *duckdb_v2_table_function_exec_info_handle "duckdb_v2_table_function_exec_info_handle"
+
+    # Borrowed; handed to the filter pushdown callback only.
+    ctypedef struct _duckdb_v2_table_function_filter_pushdown_info "_duckdb_v2_table_function_filter_pushdown_info":
+        void *internal_ptr
+    ctypedef _duckdb_v2_table_function_filter_pushdown_info *duckdb_v2_table_function_filter_pushdown_info_handle "duckdb_v2_table_function_filter_pushdown_info_handle"
+
+    # Borrowed expression node; owned by the engine, valid only for the callback
+    # that handed it out, never destroyed by the caller. Children share the
+    # parent's lifetime.
+    ctypedef struct _duckdb_v2_expression "_duckdb_v2_expression":
+        void *internal_ptr
+    ctypedef _duckdb_v2_expression *duckdb_v2_expression_handle "duckdb_v2_expression_handle"
 
     ctypedef struct _duckdb_v2_sql_statement "_duckdb_v2_sql_statement":
         void *internal_ptr
@@ -891,6 +936,11 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_context_handle context,
         duckdb_v2_error_info_handle *err
     ) noexcept nogil
+    ctypedef void (*duckdb_v2_table_function_filter_pushdown_callback_fn)(
+        duckdb_v2_table_function_filter_pushdown_info_handle info,
+        duckdb_v2_context_handle context,
+        duckdb_v2_error_info_handle *err
+    ) noexcept nogil
 
     duckdb_v2_error_t duckdb_v2_table_function_create_with_connection(
         duckdb_v2_connection_handle connection,
@@ -988,5 +1038,83 @@ cdef extern from "duckdb_v2.h" nogil:
     duckdb_v2_error_t duckdb_v2_table_function_exec_get_column_count(
         duckdb_v2_table_function_exec_info_handle info,
         idx_t *count,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_set_filter_pushdown_callback(
+        duckdb_v2_table_function_handle function,
+        duckdb_v2_table_function_filter_pushdown_callback_fn callback,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_filter_pushdown_get_filter_count(
+        duckdb_v2_table_function_filter_pushdown_info_handle info,
+        idx_t *count,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_filter_pushdown_get_filter(
+        duckdb_v2_table_function_filter_pushdown_info_handle info,
+        idx_t index,
+        duckdb_v2_expression_handle *filter,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_filter_pushdown_get_bind_data(
+        duckdb_v2_table_function_filter_pushdown_info_handle info,
+        void **data,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_filter_pushdown_accept(
+        duckdb_v2_table_function_filter_pushdown_info_handle info,
+        idx_t index,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_filter_pushdown_get_column_index(
+        duckdb_v2_table_function_filter_pushdown_info_handle info,
+        idx_t index,
+        idx_t *column_index,
+        duckdb_v2_error_info_handle *err
+    )
+
+    # expressions (header MODULE: expression)
+    # Nodes are borrowed and die with the callback that handed them out; only
+    # get_return_type and constant_get_value hand back an owned handle.
+
+    duckdb_v2_error_t duckdb_v2_expression_get_type(
+        duckdb_v2_expression_handle expression,
+        duckdb_v2_expression_type_t *type,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_expression_get_return_type(
+        duckdb_v2_expression_handle expression,
+        duckdb_v2_logical_type_handle *type,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_expression_get_child_count(
+        duckdb_v2_expression_handle expression,
+        idx_t *count,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_expression_get_child(
+        duckdb_v2_expression_handle expression,
+        idx_t index,
+        duckdb_v2_expression_handle *child,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_expression_constant_get_value(
+        duckdb_v2_expression_handle expression,
+        duckdb_v2_value_handle *value,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_expression_column_ref_get_index(
+        duckdb_v2_expression_handle expression,
+        idx_t *index,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_expression_function_get_name(
+        duckdb_v2_expression_handle expression,
+        duckdb_v2_identifier_t *name,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_expression_cast_get_mode(
+        duckdb_v2_expression_handle expression,
+        duckdb_v2_cast_mode_t *mode,
         duckdb_v2_error_info_handle *err
     )

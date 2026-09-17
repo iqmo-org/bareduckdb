@@ -1,42 +1,53 @@
 #!/usr/bin/env python3
 
-import pytest
 import pyarrow as pa
+import pytest
+
 import bareduckdb
 
-class TestNaNFilterPushdown:
 
+class TestNaNFilterPushdown:
     @pytest.fixture
     def float_table_with_nan(self):
-        return pa.table({
-            'a': pa.array([
-                float('inf'),
-                float('nan'),
-                0.34234,
-                34234234.00005,
-                float('-inf'),
-                -float('nan'),
-                42.0,
-                -42.0,
-                0.0,
-            ], type=pa.float32())
-        })
+        return pa.table(
+            {
+                "a": pa.array(
+                    [
+                        float("inf"),
+                        float("nan"),
+                        0.34234,
+                        34234234.00005,
+                        float("-inf"),
+                        -float("nan"),
+                        42.0,
+                        -42.0,
+                        0.0,
+                    ],
+                    type=pa.float32(),
+                )
+            }
+        )
 
     @pytest.fixture
     def double_table_with_nan(self):
-        return pa.table({
-            'a': pa.array([
-                float('inf'),
-                float('nan'),
-                0.34234,
-                34234234.00005,
-                float('-inf'),
-                -float('nan'),
-                42.0,
-                -42.0,
-                0.0,
-            ], type=pa.float64())
-        })
+        return pa.table(
+            {
+                "a": pa.array(
+                    [
+                        float("inf"),
+                        float("nan"),
+                        0.34234,
+                        34234234.00005,
+                        float("-inf"),
+                        -float("nan"),
+                        42.0,
+                        -42.0,
+                        0.0,
+                    ],
+                    type=pa.float64(),
+                )
+            }
+        )
 
     def test_nan_equal_float32(self, float_table_with_nan, unique_table_name, make_connection, connect_config, thread_index, iteration_index):
 
@@ -48,6 +59,7 @@ class TestNaNFilterPushdown:
         assert len(result) == 2, f"Expected 2 rows (both NaNs), got {len(result)}"
 
         import math
+
         assert all(math.isnan(row[0]) for row in result), "All results should be NaN"
 
     def test_nan_equal_float64(self, double_table_with_nan, unique_table_name, make_connection, connect_config, thread_index, iteration_index):
@@ -60,6 +72,7 @@ class TestNaNFilterPushdown:
         assert len(result) == 2, f"Expected 2 rows (both NaNs), got {len(result)}"
 
         import math
+
         assert all(math.isnan(row[0]) for row in result), "All results should be NaN"
 
     def test_nan_not_equal_float(self, float_table_with_nan, unique_table_name, make_connection, connect_config, thread_index, iteration_index):
@@ -72,6 +85,7 @@ class TestNaNFilterPushdown:
         assert len(result) == 7, f"Expected 7 rows (non-NaN values), got {len(result)}"
 
         import math
+
         assert all(not math.isnan(row[0]) for row in result), "No results should be NaN"
 
     def test_nan_greater_than_float(self, float_table_with_nan, unique_table_name, make_connection, connect_config, thread_index, iteration_index):
@@ -93,6 +107,7 @@ class TestNaNFilterPushdown:
         assert len(result) == 2, f"Expected 2 rows (NaN values), got {len(result)}"
 
         import math
+
         assert all(math.isnan(row[0]) for row in result), "All results should be NaN"
 
     def test_nan_less_than_float(self, float_table_with_nan, unique_table_name, make_connection, connect_config, thread_index, iteration_index):
@@ -105,6 +120,7 @@ class TestNaNFilterPushdown:
         assert len(result) == 7, f"Expected 7 rows (non-NaN values), got {len(result)}"
 
         import math
+
         assert all(not math.isnan(row[0]) for row in result), "No results should be NaN"
 
     def test_nan_less_equal_float(self, float_table_with_nan, unique_table_name, make_connection, connect_config, thread_index, iteration_index):
@@ -142,10 +158,11 @@ class TestNaNFilterPushdown:
         result = conn.sql(f"SELECT a FROM {unique_table_name} ORDER BY a ASC").fetchall()
 
         import math
+
         assert math.isnan(result[-1][0]), "Last value should be NaN"
         assert math.isnan(result[-2][0]), "Second-to-last value should be NaN"
 
-        assert result[0][0] == float('-inf'), "First value should be -inf"
+        assert result[0][0] == float("-inf"), "First value should be -inf"
 
     def test_nan_count_with_filter(self, float_table_with_nan, unique_table_name, make_connection, connect_config, thread_index, iteration_index):
 
@@ -170,7 +187,9 @@ class TestNaNFilterPushdown:
         "separate FILTER operator; this asserts the pushdown we want, not what we have",
         strict=True,
     )
-    def test_explain_shows_filter_pushdown(self, float_table_with_nan, unique_table_name, make_connection, connect_config, explain_text, scan_block, thread_index, iteration_index):
+    def test_explain_shows_filter_pushdown(
+        self, float_table_with_nan, unique_table_name, make_connection, connect_config, explain_text, scan_block, thread_index, iteration_index
+    ):
 
         conn = make_connection(thread_index, iteration_index)
         conn.register(unique_table_name, float_table_with_nan)
@@ -179,13 +198,21 @@ class TestNaNFilterPushdown:
 
         assert "Filters:" in scan_block(plan), "the scan should carry the pushed-down predicate"
 
-    def test_explain_without_pushdown_shows_a_separate_filter(self, float_table_with_nan, unique_table_name, make_connection, connect_config, explain_text, scan_block, thread_index, iteration_index):
-        """The predicate is evaluated in a FILTER operator above the scan, with no `Filters:` inside it"""
+    def test_explain_without_pushdown_shows_a_separate_filter(
+        self, float_table_with_nan, unique_table_name, make_connection, connect_config, explain_text, scan_block, thread_index, iteration_index
+    ):
+        """With pushdown off, the predicate is evaluated in a FILTER operator above the scan, with no `Filters:` inside it"""
+
         conn = make_connection(thread_index, iteration_index)
         conn.register(unique_table_name, float_table_with_nan)
 
         query = f"SELECT * FROM {unique_table_name} WHERE a = 'NaN'::FLOAT"
-        plan = explain_text(conn, query)
+        saved = bareduckdb.filter_pushdown_enabled
+        bareduckdb.filter_pushdown_enabled = False
+        try:
+            plan = explain_text(conn, query)
+        finally:
+            bareduckdb.filter_pushdown_enabled = saved
 
         assert "Filters:" not in scan_block(plan)
         assert "Filter" in plan, "the predicate has to be evaluated somewhere"

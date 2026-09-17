@@ -117,8 +117,7 @@ class Connection(ConnectionAPI):
         *,
         replace: bool = True,
     ) -> Connection:
-        """
-        Register data for querying.
+        """Register data for querying, returning this connection.
 
         Args:
             name: Table name to register
@@ -126,9 +125,6 @@ class Connection(ConnectionAPI):
             statistics: Statistics specification for query optimization. When None,
                 the connection's default_statistics is used.
             replace: If True (default), replace existing registration with same name
-
-        Returns:
-            This connection, so calls chain.
         """
         self._register_arrow(name, data, statistics=statistics, replace=replace)  # type: ignore
         return self
@@ -139,12 +135,7 @@ class Connection(ConnectionAPI):
         return self
 
     def cursor(self) -> Connection:
-        """
-        DB-API 2.0: Creates a cursor that shares the same database instance.
-
-        The cursor will see secrets, extensions, and configuration from the
-        parent connection, while maintaining independent query state.
-        """
+        """Create a DB-API cursor sharing this connection's database, extensions and configuration, with independent query state."""
         cursor_impl = self._impl.create_cursor()
 
         # Connection takes output_type, not arrow_table_collector
@@ -186,10 +177,7 @@ class Connection(ConnectionAPI):
         repository_url: Optional[str] = None,
         version: Optional[str] = None,
     ) -> None:
-        """
-        Install a DuckDB extension by name.
-
-        """
+        """Install a DuckDB extension by name."""
 
         logger.info("Loading extension %s", extension)
         # Validate inputs
@@ -228,8 +216,7 @@ class Connection(ConnectionAPI):
         self.execute(sql)
 
     def load_pypi_extension(self, name: str, force_install: bool = False) -> None:
-        """
-        Load a PyPI-distributed DuckDB extension.
+        """Load a PyPI-distributed DuckDB extension.
 
         Args:
             name: Extension name (e.g., "httpfs", "parquet")

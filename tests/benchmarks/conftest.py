@@ -113,7 +113,7 @@ def pytest_addoption(parser):
     parser.addoption(
         "--registration-modes",
         default="parquet",
-        help="Comma-separated list of data registration modes: parquet,arrow,polars,polars_lazy",
+        help="Comma-separated list of data registration modes: parquet,arrow,polars,polars_lazy,dataset",
     )
     parser.addoption(
         "--allow-missing-metrics",

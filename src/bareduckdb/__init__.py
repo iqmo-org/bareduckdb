@@ -94,11 +94,17 @@ def register_as_duckdb() -> None:
 
 connect = Connection
 
+# Filter pushdown: when True (default), registered sources accept recognized WHERE predicates
+# and the scan reads the filtered stream they produce; when False, every predicate stays above
+# the scan. Read at connect and register time.
+filter_pushdown_enabled: bool = True
+
 __implementation__: str = "cython"
 __all__ = [
     "ConnectionBase",
     "Connection",
     "InvalidInputException",
+    "filter_pushdown_enabled",
     "__version__",
     "__duckdb_version__",  # pyright: ignore[reportUnsupportedDunderAll]  # provided by __getattr__ (PEP 562)
     "pyarrow_available",

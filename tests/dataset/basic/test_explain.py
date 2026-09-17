@@ -4,6 +4,7 @@ import re
 
 import pyarrow as pa
 
+import bareduckdb
 from bareduckdb import Connection
 
 SUPERSEDED_OPERATORS = ("python_data_scan", "column data scan")
@@ -43,10 +44,12 @@ def test_explain_over_a_registered_source_succeeds():
 
 
 def test_explain_with_a_filter_succeeds():
-    table = pa.table({
-        "id": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-        "value": [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
-    })
+    table = pa.table(
+        {
+            "id": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            "value": [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        }
+    )
 
     conn = Connection()
     conn.register("data", table)
@@ -57,16 +60,23 @@ def test_explain_with_a_filter_succeeds():
 
 
 def test_the_filter_stays_above_the_scan_rather_than_being_pushed_into_it():
-    """Filter pushdown is not implemented, so the predicate must appear as its own operator"""
-    table = pa.table({
-        "id": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-        "value": [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
-    })
+    """With pushdown off, the predicate must appear as its own operator above the scan"""
+    table = pa.table(
+        {
+            "id": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            "value": [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        }
+    )
 
     conn = Connection()
     conn.register("data", table)
 
-    explain_text = _explain(conn, "SELECT * FROM data WHERE value > 50")
+    saved = bareduckdb.filter_pushdown_enabled
+    bareduckdb.filter_pushdown_enabled = False
+    try:
+        explain_text = _explain(conn, "SELECT * FROM data WHERE value > 50")
+    finally:
+        bareduckdb.filter_pushdown_enabled = saved
 
     assert "value > 50" in explain_text
     operators = _operator_order(explain_text)
@@ -76,13 +86,15 @@ def test_the_filter_stays_above_the_scan_rather_than_being_pushed_into_it():
 
 
 def test_explain_with_a_projection_succeeds():
-    table = pa.table({
-        "col1": [1, 2, 3],
-        "col2": ["a", "b", "c"],
-        "col3": [10.0, 20.0, 30.0],
-        "col4": [True, False, True],
-        "col5": [100, 200, 300],
-    })
+    table = pa.table(
+        {
+            "col1": [1, 2, 3],
+            "col2": ["a", "b", "c"],
+            "col3": [10.0, 20.0, 30.0],
+            "col4": [True, False, True],
+            "col5": [100, 200, 300],
+        }
+    )
 
     conn = Connection()
     conn.register("data", table)
@@ -94,13 +106,15 @@ def test_explain_with_a_projection_succeeds():
 
 def test_the_projection_stays_above_the_scan_rather_than_being_pushed_into_it():
     """Projection pushdown is not implemented, so the scan still reads every column"""
-    table = pa.table({
-        "col1": [1, 2, 3],
-        "col2": ["a", "b", "c"],
-        "col3": [10.0, 20.0, 30.0],
-        "col4": [True, False, True],
-        "col5": [100, 200, 300],
-    })
+    table = pa.table(
+        {
+            "col1": [1, 2, 3],
+            "col2": ["a", "b", "c"],
+            "col3": [10.0, 20.0, 30.0],
+            "col4": [True, False, True],
+            "col5": [100, 200, 300],
+        }
+    )
 
     conn = Connection()
     conn.register("data", table)

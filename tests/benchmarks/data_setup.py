@@ -35,6 +35,7 @@ def load_data_by_mode(filepath: Path, mode: str):
         arrow: PyArrow Table - full filter/projection pushdown
         polars: Polars DataFrame - Polars expression pushdown
         polars_lazy: Polars LazyFrame - lazy evaluation with pushdown
+        dataset: PyArrow Dataset - lazy, never fully materialized by the source itself
     """
     if mode == "parquet":
         return None
@@ -47,6 +48,9 @@ def load_data_by_mode(filepath: Path, mode: str):
     elif mode == "polars_lazy":
         import polars as pl
         return pl.scan_parquet(filepath)
+    elif mode == "dataset":
+        import pyarrow.dataset as ds
+        return ds.dataset(filepath)
     else:
         raise ValueError(f"Unknown registration mode: {mode}")
 

@@ -98,6 +98,7 @@ jobs:
           # Run the actual commands
           docker exec "$CONTAINER_ID" bash -c "
               set -e
+              set -o pipefail
 
               echo 'Environment Setup'
               echo 'Current directory:'
@@ -191,7 +192,8 @@ jobs:
 
               echo 'Installing test dependencies'
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages pytest pytest-asyncio pytest-cov pytest-forked \
-                pytest-randomly pytest-run-parallel pytest-timeout pytest-xdist
+                pytest-randomly pytest-run-parallel pytest-timeout pytest-xdist \
+                filelock psutil
 
               echo 'Installing nightly pandas and latest pyarrow'
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --pre --upgrade --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple --no-build pandas>=3.0 pyarrow
@@ -334,12 +336,19 @@ jobs:
                 fi
                 exit \$exit_code
               fi
-            "
+            " && exec_status=0 || exec_status=$?
+
+          # tee wrote the output inside the container; retrieve it before removal
+          docker cp "$CONTAINER_ID:/workspace/${{ matrix.sanitizer }}_output.txt" . \
+            || echo "No ${{ matrix.sanitizer }}_output.txt produced in container"
 
           # Cleanup: stop and remove container
           echo "Cleaning up container: $CONTAINER_ID"
           docker stop "$CONTAINER_ID"
           docker rm "$CONTAINER_ID"
+
+          echo "Test run exit status: $exec_status"
+          exit $exec_status
 
       - name: Upload ${{ matrix.sanitizer }} results
         if: always()

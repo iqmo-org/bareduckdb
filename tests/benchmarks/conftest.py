@@ -372,18 +372,10 @@ def registered_tables(conn, request):
     raw_sql, _ = parse_sql_case(sql_path, replace_placeholders=False)
     _, tables_to_register = rewrite_sql_for_registration(raw_sql, mode)
 
-    # Enable statistics for tests in cases/statistics/ directory
-    enable_statistics = "statistics/" in str(sql_path)
-    statistics_param = "numeric" if enable_statistics else None
-
     for table_name, filepath in tables_to_register.items():
         data = load_data_by_mode(filepath, mode)
         try:
-            # Only bareduckdb's register() takes statistics.
-            if hasattr(conn, '__class__') and 'bareduckdb' in conn.__class__.__module__:
-                conn.register(table_name, data, statistics=statistics_param)
-            else:
-                conn.register(table_name, data)
+            conn.register(table_name, data)
         except NotImplementedError as e:
             pytest.xfail(f"registration mode {mode!r} needs register(): {e}")
 

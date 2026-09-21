@@ -67,10 +67,6 @@ class _StreamingLazyFrameSource:
         return batches.__arrow_c_stream__(requested_schema)
 
 
-# The v2 C API cannot report a batch index, so insertion order forces a single-threaded scan.
-_PRESERVE_INSERTION_ORDER_OFF_SQL = "set preserve_insertion_order=false;"
-
-
 class ConnectionBase:
     """
     Core DuckDB functions, implemented in Cython
@@ -94,8 +90,6 @@ class ConnectionBase:
     _database_path: str | None
     _arrow_table_collector: Literal["arrow", "stream"]
     arrow_table_collector: Literal["arrow", "stream"]
-    _preserve_insertion_order: bool
-    _default_statistics: "Literal['numeric'] | bool | None"
     _uncached_sources: dict[str, Any]
     _uncached_slot_of: dict[str, int]
     _uncached_names_by_slot: dict[int, str]
@@ -107,8 +101,6 @@ class ConnectionBase:
         read_only: bool = False,
         *,
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
-        default_statistics: "Literal['numeric'] | bool | None" = "numeric",
-        preserve_insertion_order: bool = False,
         init_sql: str | None = None,
         _from_impl: Any = None,
     ) -> None:
@@ -120,15 +112,9 @@ class ConnectionBase:
             config: Dictionary of configuration options (e.g., {'threads': '4', 'memory_limit': '1GB'})
             read_only: Whether to open database in read-only mode
             arrow_table_collector: Arrow collection mode ("arrow" or "stream")
-            default_statistics: Default statistics mode for register() when statistics=None
-            preserve_insertion_order: Keep DuckDB's row ordering guarantee; False (default) diverges from DuckDB to allow a parallel scan
             init_sql: SQL to run when creating the connection
             _from_impl: Internal parameter for creating cursor with shared database
         """
-
-        self._preserve_insertion_order = preserve_insertion_order
-        if not preserve_insertion_order:
-            init_sql = _PRESERVE_INSERTION_ORDER_OFF_SQL + (init_sql or "")
 
         if _from_impl is not None:
             # Creating a cursor - use the provided ConnectionImpl directly
@@ -140,7 +126,6 @@ class ConnectionBase:
             self._uncached_names_by_slot: dict[int, str] = {}
             self._database_path: str | None = _from_impl.database_path
             self.arrow_table_collector = arrow_table_collector
-            self._default_statistics = default_statistics
 
             if init_sql:
                 self._call(init_sql, output_type="arrow_capsule")
@@ -161,7 +146,6 @@ class ConnectionBase:
             self._uncached_names_by_slot: dict[int, str] = {}
             self._database_path: str | None = database
             self.arrow_table_collector = arrow_table_collector
-            self._default_statistics = default_statistics
 
             if init_sql:
                 self._call(init_sql, output_type="arrow_capsule")
@@ -202,13 +186,9 @@ class ConnectionBase:
         self,
         name: str,
         data: PyArrowCapsule | pa.Table | ds.Dataset | ds.Scanner | pd.DataFrame | pl.DataFrame | pl.LazyFrame | pa.RecordBatchReader,
-        statistics: "list[str] | Literal['numeric'] | str | bool | None" = None,
         replace: bool = True,
     ) -> None:
         """Register any supported source under name, collecting it first if it is lazy"""
-        if statistics is not None:
-            logger.debug("Ignoring statistics=%r for '%s': the import counts the rows itself", statistics, name)
-
         collected = ConnectionBase._materialize(data)
         if collected is not data:
             logger.debug("Materialized %s into %s for '%s'", type(data).__name__, type(collected).__name__, name)
@@ -431,8 +411,6 @@ class ConnectionBase:
         return ConnectionBase(
             _from_impl=cursor_impl,
             arrow_table_collector=self.arrow_table_collector,
-            default_statistics=self._default_statistics,
-            preserve_insertion_order=self._preserve_insertion_order,
         )
 
     def appender(

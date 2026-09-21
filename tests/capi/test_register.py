@@ -44,9 +44,13 @@ def test_registered_name_matches_case_insensitively(conn):
     assert conn.execute('SELECT count(*) FROM "T"').fetchall() == [(3,)]
 
 
-def test_qualified_name_matches_only_when_qualified(conn):
+def test_a_dotted_name_is_one_identifier_not_a_qualified_reference(conn):
+    """register("s.t") names a table literally called 's.t', reachable only when quoted
+    """
     conn.register("s.t", table())
-    assert conn.execute("SELECT count(*) FROM s.t").fetchall() == [(3,)]
+    assert conn.execute('SELECT count(*) FROM "s.t"').fetchall() == [(3,)]
+    with pytest.raises(RuntimeError, match="does not exist"):
+        conn.execute("SELECT count(*) FROM s.t").fetchall()
     with pytest.raises(RuntimeError, match="does not exist"):
         conn.execute("SELECT count(*) FROM t").fetchall()
 

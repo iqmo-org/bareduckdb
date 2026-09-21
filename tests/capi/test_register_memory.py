@@ -1,4 +1,4 @@
-"""Registering a source does not make a second copy of it. CLAUDE.md's directive-2 oracle.
+"""Registering a source does not make a second copy of it
 
 Per-chunk reference-vs-copy is not observable from Python, since no converted chunk outlives one
 exec call; what is asserted instead is that the engine holds O(threads) chunks at once.

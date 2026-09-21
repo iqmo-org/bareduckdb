@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 from ..compat.result_compat import Result
 from .connection_base import ConnectionBase
+from .sql_statement import Statement, build_statement
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +30,6 @@ class ConnectionAPI(ConnectionBase):
         read_only: bool = False,
         *,
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
-        default_statistics: "Literal['numeric'] | bool | None" = "numeric",
-        preserve_insertion_order: bool = False,
         udtf_functions: Optional[dict[str, Callable]] = None,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_capsule",
         enable_replacement_scan: bool = False,
@@ -42,8 +41,6 @@ class ConnectionAPI(ConnectionBase):
             config: Configuration dict (e.g., {'threads': '4'})
             read_only: Whether to open in read-only mode
             arrow_table_collector: Arrow collection mode
-            default_statistics: Default statistics mode for register() ("numeric", True, or None)
-            preserve_insertion_order: Keep DuckDB's row ordering guarantee; defaults to False, see ConnectionBase
             udtf_functions: Dict of UDTF name -> function
             output_type: Default output format for queries
             _from_impl: Internal parameter for creating cursor with shared database
@@ -53,8 +50,6 @@ class ConnectionAPI(ConnectionBase):
             config=config,
             read_only=read_only,
             arrow_table_collector=arrow_table_collector,
-            default_statistics=default_statistics,
-            preserve_insertion_order=preserve_insertion_order,
             _from_impl=_from_impl,
         )
 
@@ -258,6 +253,27 @@ class ConnectionAPI(ConnectionBase):
                 query = query.replace(repl["original"], repl["replacement"])
 
         return query, data
+
+    def parse_sql(self, query: str) -> list[Statement]:
+        """Parse a SQL string into its statements
+
+        Statements carry the parser's type, the statement's own text slice (leading
+        whitespace and comments before the first token excluded, a trailing terminator
+        and what follows it included) and the parameter names in binding order.
+
+        Args:
+            query: SQL text, which may hold any number of statements
+
+        Returns:
+            One Statement per statement; empty for input with no statements
+
+        Raises:
+            RuntimeError: the query could not be parsed, naming the engine's position
+        """
+        result = self._impl.parse_sql(query)
+        if result["error"]:
+            raise RuntimeError(result["error_message"])
+        return [build_statement(raw) for raw in result["statements"]]
 
     def close(self) -> None:
         """Drop the last result before closing"""

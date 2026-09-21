@@ -633,7 +633,7 @@ def test_batch_rows_default_matches_duckdb(make_conn):
 
 
 def test_stream_default_matches_duckdbs(make_conn):
-    """__arrow_c_stream__ keeps DuckDB's own default; see BACKLOG.md item 4"""
+    """__arrow_c_stream__ keeps DuckDB's own default"""
     conn = make_conn()
     assert DEFAULT_STREAM_BATCH_ROWS == DEFAULT_BATCH_ROWS == 131_072
     rows = DEFAULT_STREAM_BATCH_ROWS + 1
@@ -674,10 +674,14 @@ def test_schema_is_stable_across_batches(make_conn):
 # Errors
 
 
-def test_unsupported_type_raises_rather_than_guessing(make_conn):
+def test_variant_exports_as_parquet_variant_extension(make_conn):
+    """Upstream #24157: VARIANT exports over Arrow as the arrow.parquet.variant extension type"""
     conn = make_conn()
-    with pytest.raises((NotImplementedError, RuntimeError), match="Unsupported Arrow type VARIANT"):
-        table(conn, "SELECT (123)::VARIANT AS c")
+    t = table(conn, "SELECT (123)::VARIANT AS c")
+    field = t.schema.field(0)
+    assert field.metadata[b"ARROW:extension:name"] == b"arrow.parquet.variant"
+    assert str(field.type) == "struct<metadata: binary not null, value: binary>"
+    assert t.num_rows == 1
 
 
 def test_stream_from_a_closed_result_raises(make_conn):

@@ -99,3 +99,20 @@ def test_union_dense_rejected():
     with pytest.raises(Exception, match="Union"):
         _roundtrip(conn, union, "union_dense_tab")
     conn.close()
+
+
+
+def test_dictionary_column_survives_more_than_one_import_chunk():
+    """A dictionary column wider than BD_IMPORT_BATCH_ROWS decodes correctly in every chunk."""
+    rows = 7000  # > 2048, so the scan spans several import chunks
+    labels = ["alpha", "beta", "gamma"]
+    arr = pa.DictionaryArray.from_arrays(
+        pa.array([i % len(labels) for i in range(rows)], type=pa.int32()),
+        pa.array(labels),
+    )
+    conn = bareduckdb.connect()
+    conn.register("dict_multi_chunk", pa.table({"k": arr}))
+    outside = conn.execute(
+        "SELECT count(*) FROM dict_multi_chunk WHERE k NOT IN ('alpha', 'beta', 'gamma')"
+    ).fetchall()[0][0]
+    assert outside == 0, f"{outside} of {rows} rows decoded to a value outside the dictionary"

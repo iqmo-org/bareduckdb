@@ -26,7 +26,8 @@ class Case:
 
 
 _XF_VARIANT = pytest.mark.xfail(
-    reason="DuckDB's exporter refuses a bare VARIANT column: 'Unsupported Arrow type VARIANT'",
+    reason="VARIANT has no v2 value-API decode route, so fetchall() raises; the Arrow export "
+    "succeeds since upstream added arrow.parquet.variant (#24157)",
     strict=True,
 )
 _XF_UNION_DENSE = pytest.mark.xfail(
@@ -618,7 +619,8 @@ _ROW_ORACLE_DIVERGENCES = {
     ),
     "variant": (
         "VARIANT has no v2 value-API decode route, so rows() raises NotImplementedError where "
-        "the official client decodes it. The Arrow export refuses VARIANT too, see _XF_VARIANT"
+        "the official client decodes it. The Arrow export succeeds as arrow.parquet.variant "
+        "since upstream #24157, see _XF_VARIANT"
     ),
     "geometry": (
         "GEOMETRY has no v2 value-API decode route, so rows() raises NotImplementedError where "

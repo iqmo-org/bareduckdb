@@ -84,12 +84,12 @@ def test_unregister_of_an_unknown_name_retires_nothing(env):
     conn.close()
 
 
-def test_parse_sql_reports_table_refs_unavailable(env):
+def test_parse_sql_reports_statement_metadata(env):
     conn = env.connect()
     result = conn.parse_sql("SELECT 1")
-    assert result["error"] is True
-    assert result["error_message"]
-    assert result["table_refs"] == []
+    assert result["error"] is False, f"unexpected parse error: {result['error_message']!r}"
+    assert result["error_message"] == ""
+    assert result["statements"] == [(1, "SELECT 1", ())]
     conn.close()
 
 
@@ -97,5 +97,37 @@ def test_parse_sql_reports_engine_parse_errors(env):
     conn = env.connect()
     result = conn.parse_sql("SELEC 1")
     assert result["error"] is True
+    assert result["error_message"], "a parse failure must carry the engine's message"
+    conn.close()
+
+
+def test_parse_sql_surfaces_a_deferred_error_after_the_statements_before_it(env):
+    conn = env.connect()
+    result = conn.parse_sql("SELECT 1; SELEKT 2")
+    assert result["error"] is True
     assert result["error_message"]
+    assert result["statements"] == [(1, "SELECT 1; ", ())], result["statements"]
+    conn.close()
+
+
+def test_parse_sql_text_is_the_statement_own_slice(env):
+    conn = env.connect()
+    result = conn.parse_sql("-- lead\n;select 21 ;;\t-- mid\nSELECT 3; -- tail")
+    assert [text for _, text, _ in result["statements"]] == ["select 21 ;;\t-- mid\n", "SELECT 3; -- tail"]
+    conn.close()
+
+
+def test_parse_sql_reports_parameter_names_in_binding_order(env):
+    conn = env.connect()
+    result = conn.parse_sql("SELECT $3 + $1 + $1")
+    assert result["statements"] == [(1, "SELECT $3 + $1 + $1", ("1", "3"))]
+    conn.close()
+
+
+def test_parse_sql_with_no_statements_is_an_empty_list(env):
+    conn = env.connect()
+    for sql in ("", "   ", ";", ";;;"):
+        result = conn.parse_sql(sql)
+        assert result["error"] is False, sql
+        assert result["statements"] == [], (sql, result["statements"])
     conn.close()

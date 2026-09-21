@@ -1,4 +1,4 @@
-"""Tests for join filter pushdown with precomputed statistics
+"""Tests for join filter pushdown
 """
 import pyarrow as pa
 import pytest
@@ -11,8 +11,8 @@ def test_join_with_stats_small_build_large_probe():
     t_small = pa.table({'id': [5, 10]})
 
     conn = Connection()
-    conn.register('big', t_big, statistics=True)
-    conn.register('small', t_small, statistics=True)
+    conn.register('big', t_big)
+    conn.register('small', t_small)
 
     result = conn.execute(
         'SELECT big.id FROM big JOIN small ON big.id = small.id ORDER BY big.id'
@@ -26,8 +26,8 @@ def test_join_with_stats_varied_probe_sizes(probe_n):
     t_small = pa.table({'id': [5, 10, probe_n - 1]})
 
     conn = Connection()
-    conn.register('big', t_big, statistics=True)
-    conn.register('small', t_small, statistics=True)
+    conn.register('big', t_big)
+    conn.register('small', t_small)
 
     result = conn.execute(
         'SELECT big.id FROM big JOIN small ON big.id = small.id ORDER BY big.id'
@@ -41,9 +41,9 @@ def test_three_way_join_with_stats():
     t_c = pa.table({'id': [10, 20, 30]})
 
     conn = Connection()
-    conn.register('a', t_a, statistics=True)
-    conn.register('b', t_b, statistics=True)
-    conn.register('c', t_c, statistics=True)
+    conn.register('a', t_a)
+    conn.register('b', t_b)
+    conn.register('c', t_c)
 
     result = conn.execute(
         'SELECT a.id FROM a JOIN b ON a.id = b.id JOIN c ON a.id = c.id ORDER BY a.id'
@@ -56,8 +56,8 @@ def test_string_join_with_stats():
     t_small = pa.table({'name': ['item_5', 'item_10', 'item_25']})
 
     conn = Connection()
-    conn.register('sbig', t_big, statistics=True)
-    conn.register('ssmall', t_small, statistics=True)
+    conn.register('sbig', t_big)
+    conn.register('ssmall', t_small)
 
     result = conn.execute(
         'SELECT sbig.name FROM sbig JOIN ssmall ON sbig.name = ssmall.name '
@@ -73,8 +73,8 @@ def test_join_with_many_build_values():
     t_small = pa.table({'id': build_vals})
 
     conn = Connection()
-    conn.register('big', t_big, statistics=True)
-    conn.register('small', t_small, statistics=True)
+    conn.register('big', t_big)
+    conn.register('small', t_small)
 
     result = conn.execute(
         'SELECT big.id FROM big JOIN small ON big.id = small.id ORDER BY big.id'

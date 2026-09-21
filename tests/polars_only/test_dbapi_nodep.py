@@ -42,7 +42,7 @@ def test_rowcount_is_unknown_without_draining(conn):
 
 
 def test_the_types_that_need_a_decoder(conn):
-    """The routes that used to depend on an Arrow tag, or on pyarrow's as_py"""
+    """The types whose row values need a real decoder, not an Arrow tag or pyarrow's as_py"""
     row = conn.execute(
         """
         select

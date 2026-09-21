@@ -1,12 +1,9 @@
 name: Sanitizer Testing (TSAN/ASAN/UBSAN)
 
-# Trigger history: this workflow shipped with `push:` commented out and only
-# `workflow_dispatch`, so it had never actually run (see
-# plans/capi_v2/filter_backends/GAP_HUNTING/RACE_AND_MEMORY_TEST_GAPS.md, G1). A full TSAN+ASAN
-# pass rebuilds a sanitizer-instrumented CPython image's extension and runs (close to) the
-# whole suite once sequentially (ASAN) and once under --parallel-threads (TSAN); that is
-# 30-60+ minutes per arm and not something to run on every push. Two real triggers instead of
-# one imaginary one:
+# A full TSAN+ASAN pass rebuilds a sanitizer-instrumented CPython image's extension and runs
+# (close to) the whole suite once sequentially (ASAN) and once under --parallel-threads (TSAN);
+# that is 30-60+ minutes per arm, so it must not run on every push. Hence two narrow triggers,
+# and no `workflow_dispatch`-only configuration, which would mean it never runs at all:
 #   - push to main, but only when the C boundary changed (capi/ Cython+C, or this workflow
 #     file itself) - this is where a signature drift against duckdb_v2.h or a lock-discipline
 #     regression actually lives, and it is also the lowest-frequency directory in the repo, so
@@ -279,18 +276,17 @@ jobs:
               # Rationale: 90s per test at -O0 under a sanitizer, against fixtures built for
               # a normal build (some >=100M rows), times out before a real defect surfaces;
               # 20 minutes is still bounded but gives a slow ASAN/TSAN run room to finish.
-              # Reducing the fixture sizes themselves is a tests/ change (out of scope here,
-              # see the follow-ups in CI_COVERAGE_FIXES.md) - this only fixes the CI-side half.
+              # This raises the timeout only. The other half of the fix is a tests/ change:
+              # shrink the oversized fixtures so they are tractable under a sanitizer at -O0.
               if [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
                 # TSAN: Run parallel tests to expose race conditions.
-                # NOTE: 'not asyncio' used to be here, which deselects all of tests/aio
-                # (pytest-asyncio's auto mode marks every async test 'asyncio'). That is the
-                # one place this repo's aio connection pool - the exact code that produced
-                # 'free(): chunks in smallbin corrupted' this week - would see any concurrent
-                # exercise at all, so the exclusion is dropped. This has NOT been run: if
-                # pytest-run-parallel and pytest-asyncio conflict (e.g. an event loop being
-                # driven from more than one of the --parallel-threads copies), the first real
-                # run of this workflow is where that surfaces, not a local test here.
+                # tests/aio is deliberately NOT deselected here. A 'not asyncio' filter would
+                # drop all of it (pytest-asyncio's auto mode marks every async test 'asyncio'),
+                # and that is the only place the aio connection pool sees concurrent exercise
+                # at all - the code that produced a 'free(): chunks in smallbin corrupted'
+                # crash. The risk of including it: if pytest-run-parallel and pytest-asyncio
+                # conflict, e.g. an event loop driven from more than one --parallel-threads
+                # copy, this workflow is where that surfaces.
                 set +e
                 THREADS=\$(($(nproc) < 4 ? $(nproc) : 4))
                 python -m pytest tests/ \
@@ -368,8 +364,8 @@ jobs:
       # setup-python interpreter instead of the nascheme docker images, with the flags applied
       # only to bareduckdb's own compiled Cython/C - the boundary duckdb_v2.pxd describes.
       #
-      # What this catches that ASAN/TSAN do not: CLAUDE.md's own warning about
-      # test_pxd_declarations_match_header - it compares only declared names and top-level
+      # What this catches that ASAN/TSAN do not: the gap left by
+      # test_pxd_declarations_match_header, which compares only declared names and top-level
       # parameter count, never argument types, pointer depth, const-ness, or return type. A
       # duckdb_v2_str_t swapped for a const char*, a dropped level of indirection, or an idx_t*
       # that became an idx_t all pass that gate. Some of those show up as misaligned loads,
@@ -380,8 +376,8 @@ jobs:
       # inside DuckDB.
       #
       # What it will NOT catch: anything requiring the allocator interception ASAN provides
-      # (use-after-free/double-free such as the smallbin corruption this week - see the ASAN
-      # job's own limits above) or anything requiring TSAN's happens-before tracking. UBSAN is
+      # (use-after-free/double-free such as the smallbin corruption - see the ASAN job's own
+      # limits above) or anything requiring TSAN's happens-before tracking. UBSAN is
       # a narrow, cheap, complementary arm, not a replacement for either.
       - name: Checkout code
         uses: actions/checkout@v7.0.1

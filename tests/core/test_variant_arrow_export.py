@@ -1,4 +1,5 @@
-"""VARIANT has no Arrow mapping, so every export surface must refuse it by name"""
+"""VARIANT's Arrow surface: the engine exports it as arrow.parquet.variant (upstream #24157);
+the v2 value API still has no route, so the row path refuses it"""
 
 import logging
 
@@ -18,14 +19,16 @@ def _variant_supported(conn):
         return False
 
 
-def test_variant_fetch_raises():
+def test_variant_arrow_export_and_fetch_raises():
     conn = bareduckdb.connect()
     try:
         if not _variant_supported(conn):
             pytest.skip("VARIANT type unavailable in this build")
 
-        with pytest.raises(RuntimeError, match="Unsupported Arrow type VARIANT"):
-            conn.execute("SELECT (123)::VARIANT AS v").arrow_table()
+        t = conn.execute("SELECT (123)::VARIANT AS v").arrow_table()
+        field = t.schema.field(0)
+        assert field.metadata[b"ARROW:extension:name"] == b"arrow.parquet.variant"
+        assert str(field.type) == "struct<metadata: binary not null, value: binary>"
 
         with pytest.raises(NotImplementedError, match="VARIANT"):
             conn.execute("SELECT (123)::VARIANT AS v").fetchall()

@@ -97,11 +97,6 @@ cdef extern from "duckdb_v2.h" nogil:
         DUCKDB_V2_ERROR_RUNTIME_INTERRUPT "DUCKDB_V2_ERROR_RUNTIME_INTERRUPT"
         DUCKDB_V2_ERROR_RUNTIME_NULL_POINTER "DUCKDB_V2_ERROR_RUNTIME_NULL_POINTER"
 
-    ctypedef enum duckdb_v2_setting_scope_t "DUCKDB_V2_SETTING_SCOPE":
-        DUCKDB_V2_SETTING_SCOPE_AUTOMATIC "DUCKDB_V2_SETTING_SCOPE_AUTOMATIC"
-        DUCKDB_V2_SETTING_SCOPE_GLOBAL "DUCKDB_V2_SETTING_SCOPE_GLOBAL"
-        DUCKDB_V2_SETTING_SCOPE_LOCAL "DUCKDB_V2_SETTING_SCOPE_LOCAL"
-
     ctypedef enum duckdb_v2_logical_type_id_t "DUCKDB_V2_LOGICAL_TYPE_ID":
         DUCKDB_V2_LOGICAL_TYPE_ID_INVALID "DUCKDB_V2_LOGICAL_TYPE_ID_INVALID"
         DUCKDB_V2_LOGICAL_TYPE_ID_SQLNULL "DUCKDB_V2_LOGICAL_TYPE_ID_SQLNULL"
@@ -287,17 +282,17 @@ cdef extern from "duckdb_v2.h" nogil:
         void *internal_ptr
     ctypedef _duckdb_v2_environment *duckdb_v2_environment_handle "duckdb_v2_environment_handle"
 
-    ctypedef struct _duckdb_v2_database "_duckdb_v2_database":
+    ctypedef struct _duckdb_v2_instance "_duckdb_v2_instance":
         void *internal_ptr
-    ctypedef _duckdb_v2_database *duckdb_v2_database_handle "duckdb_v2_database_handle"
+    ctypedef _duckdb_v2_instance *duckdb_v2_instance_handle "duckdb_v2_instance_handle"
 
     ctypedef struct _duckdb_v2_connection "_duckdb_v2_connection":
         void *internal_ptr
     ctypedef _duckdb_v2_connection *duckdb_v2_connection_handle "duckdb_v2_connection_handle"
 
-    ctypedef struct _duckdb_v2_option "_duckdb_v2_option":
+    ctypedef struct _duckdb_v2_attach_options "_duckdb_v2_attach_options":
         void *internal_ptr
-    ctypedef _duckdb_v2_option *duckdb_v2_option_handle "duckdb_v2_option_handle"
+    ctypedef _duckdb_v2_attach_options *duckdb_v2_attach_options_handle "duckdb_v2_attach_options_handle"
 
     ctypedef struct _duckdb_v2_query_progress "_duckdb_v2_query_progress":
         void *internal_ptr
@@ -376,6 +371,11 @@ cdef extern from "duckdb_v2.h" nogil:
         void *internal_ptr
     ctypedef _duckdb_v2_table_function_exec_info *duckdb_v2_table_function_exec_info_handle "duckdb_v2_table_function_exec_info_handle"
 
+    # Borrowed; handed to the partition-data callback only.
+    ctypedef struct _duckdb_v2_table_function_partition_data_info "_duckdb_v2_table_function_partition_data_info":
+        void *internal_ptr
+    ctypedef _duckdb_v2_table_function_partition_data_info *duckdb_v2_table_function_partition_data_info_handle "duckdb_v2_table_function_partition_data_info_handle"
+
     ctypedef struct _duckdb_v2_sql_statement "_duckdb_v2_sql_statement":
         void *internal_ptr
     ctypedef _duckdb_v2_sql_statement *duckdb_v2_sql_statement_handle "duckdb_v2_sql_statement_handle"
@@ -387,33 +387,37 @@ cdef extern from "duckdb_v2.h" nogil:
     # environment / library
 
     duckdb_v2_error_t duckdb_v2_library_version(duckdb_v2_str_t *out_version, duckdb_v2_error_info_handle *err)
-    duckdb_v2_error_t duckdb_v2_create_environment(duckdb_v2_environment_handle *out_env, duckdb_v2_error_info_handle *err)
-    duckdb_v2_error_t duckdb_v2_destroy_environment(duckdb_v2_environment_handle *env)
-    duckdb_v2_error_t duckdb_v2_environment_database_count(duckdb_v2_environment_handle env, idx_t *out_count, duckdb_v2_error_info_handle *err)
+    duckdb_v2_error_t duckdb_v2_environment_create(duckdb_v2_environment_handle *out_env, duckdb_v2_error_info_handle *err)
+    duckdb_v2_error_t duckdb_v2_environment_destroy(duckdb_v2_environment_handle *env)
+    duckdb_v2_error_t duckdb_v2_environment_get_instance_count(duckdb_v2_environment_handle env, idx_t *out_count, duckdb_v2_error_info_handle *err)
 
-    # database
+    # instance
 
-    duckdb_v2_error_t duckdb_v2_open(
+    duckdb_v2_error_t duckdb_v2_instance_create(
         duckdb_v2_environment_handle env,
-        duckdb_v2_str_t path,
-        duckdb_v2_option_handle *options,
-        idx_t option_count,
-        duckdb_v2_database_handle *out_db,
+        duckdb_v2_instance_handle *out_db,
         duckdb_v2_error_info_handle *err
     )
-    duckdb_v2_error_t duckdb_v2_close(duckdb_v2_database_handle *db)
-    duckdb_v2_error_t duckdb_v2_database_option_set(duckdb_v2_database_handle db, duckdb_v2_option_handle option, duckdb_v2_error_info_handle *err)
+    duckdb_v2_error_t duckdb_v2_instance_destroy(duckdb_v2_instance_handle *db)
+    duckdb_v2_error_t duckdb_v2_instance_set_option(
+        duckdb_v2_instance_handle db,
+        duckdb_v2_identifier_t name,
+        duckdb_v2_str_t setting,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_instance_attach(
+        duckdb_v2_instance_handle db,
+        duckdb_v2_str_t path,
+        duckdb_v2_identifier_t *name,
+        duckdb_v2_attach_options_handle options,
+        duckdb_v2_bool_t make_default,
+        duckdb_v2_error_info_handle *err
+    )
 
     # connection
 
-    duckdb_v2_error_t duckdb_v2_connect(duckdb_v2_database_handle db, duckdb_v2_connection_handle *out_conn, duckdb_v2_error_info_handle *err)
-    duckdb_v2_error_t duckdb_v2_disconnect(duckdb_v2_connection_handle *conn)
-    duckdb_v2_error_t duckdb_v2_connection_option_set(
-        duckdb_v2_connection_handle conn,
-        duckdb_v2_option_handle option,
-        duckdb_v2_setting_scope_t scope,
-        duckdb_v2_error_info_handle *err
-    )
+    duckdb_v2_error_t duckdb_v2_connection_create(duckdb_v2_instance_handle db, duckdb_v2_connection_handle *out_conn, duckdb_v2_error_info_handle *err)
+    duckdb_v2_error_t duckdb_v2_connection_destroy(duckdb_v2_connection_handle *conn)
     duckdb_v2_error_t duckdb_v2_connection_interrupt(duckdb_v2_connection_handle conn, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_connection_query_progress(
         duckdb_v2_connection_handle conn,
@@ -440,16 +444,6 @@ cdef extern from "duckdb_v2.h" nogil:
     )
     duckdb_v2_error_t duckdb_v2_query_progress_destroy(duckdb_v2_query_progress_handle *progress)
 
-    # options
-
-    duckdb_v2_error_t duckdb_v2_option_create(
-        duckdb_v2_identifier_t name,
-        duckdb_v2_str_t setting,
-        duckdb_v2_option_handle *out_option,
-        duckdb_v2_error_info_handle *err
-    )
-    duckdb_v2_error_t duckdb_v2_option_destroy(duckdb_v2_option_handle *option)
-
     # parsing and statements
 
     duckdb_v2_error_t duckdb_v2_parse_sql(
@@ -465,6 +459,27 @@ cdef extern from "duckdb_v2.h" nogil:
     )
     duckdb_v2_error_t duckdb_v2_statement_iterator_destroy(duckdb_v2_statement_iterator_handle *iterator)
     duckdb_v2_error_t duckdb_v2_sql_statement_destroy(duckdb_v2_sql_statement_handle *statement)
+    duckdb_v2_error_t duckdb_v2_sql_statement_get_type(
+        duckdb_v2_sql_statement_handle statement,
+        duckdb_v2_statement_type_t *out_type,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_sql_statement_get_text(
+        duckdb_v2_sql_statement_handle statement,
+        duckdb_v2_str_t *out_text,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_sql_statement_get_parameter_count(
+        duckdb_v2_sql_statement_handle statement,
+        idx_t *out_count,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_sql_statement_get_parameter_name(
+        duckdb_v2_sql_statement_handle statement,
+        idx_t index,
+        duckdb_v2_identifier_t *out_name,
+        duckdb_v2_error_info_handle *err
+    )
     duckdb_v2_error_t duckdb_v2_statement_bind(
         duckdb_v2_connection_handle conn,
         duckdb_v2_sql_statement_handle statement,
@@ -599,7 +614,6 @@ cdef extern from "duckdb_v2.h" nogil:
 
     duckdb_v2_error_t duckdb_v2_error_info_get_code(duckdb_v2_error_info_handle info, duckdb_v2_error_t *out_code)
     duckdb_v2_error_t duckdb_v2_error_info_get_text(duckdb_v2_error_info_handle info, duckdb_v2_str_t *out_text)
-    duckdb_v2_error_t duckdb_v2_error_info_get_raw_message(duckdb_v2_error_info_handle info, duckdb_v2_str_t *out_raw_message)
     # The two setters are how a callback reports failure into the `err` slot DuckDB hands it.
     duckdb_v2_error_t duckdb_v2_error_info_set_code(duckdb_v2_error_info_handle info, duckdb_v2_error_t code)
     duckdb_v2_error_t duckdb_v2_error_info_set_text(duckdb_v2_error_info_handle info, duckdb_v2_str_t text)
@@ -778,6 +792,12 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_error_info_handle *err
     )
     duckdb_v2_error_t duckdb_v2_qname_get_part_count(duckdb_v2_qname_handle name, idx_t *count, duckdb_v2_error_info_handle *err)
+    duckdb_v2_error_t duckdb_v2_qname_get_part(
+        duckdb_v2_qname_handle name,
+        idx_t index,
+        duckdb_v2_identifier_t *part,
+        duckdb_v2_error_info_handle *err
+    )
     duckdb_v2_error_t duckdb_v2_qname_equals(
         duckdb_v2_qname_handle left,
         duckdb_v2_qname_handle right,
@@ -836,8 +856,8 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_replacement_scan_handle *scan,
         duckdb_v2_error_info_handle *err
     )
-    duckdb_v2_error_t duckdb_v2_replacement_scan_create_with_database(
-        duckdb_v2_database_handle database,
+    duckdb_v2_error_t duckdb_v2_replacement_scan_create_with_instance(
+        duckdb_v2_instance_handle database,
         duckdb_v2_replacement_scan_handle *scan,
         duckdb_v2_error_info_handle *err
     )
@@ -900,6 +920,11 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_context_handle context,
         duckdb_v2_error_info_handle *err
     ) noexcept nogil
+    ctypedef void (*duckdb_v2_table_function_partition_data_callback_fn)(
+        duckdb_v2_table_function_partition_data_info_handle info,
+        duckdb_v2_context_handle context,
+        duckdb_v2_error_info_handle *err
+    ) noexcept nogil
 
     duckdb_v2_error_t duckdb_v2_table_function_create_with_connection(
         duckdb_v2_connection_handle connection,
@@ -934,6 +959,11 @@ cdef extern from "duckdb_v2.h" nogil:
     duckdb_v2_error_t duckdb_v2_table_function_set_exec_callback(
         duckdb_v2_table_function_handle function,
         duckdb_v2_table_function_exec_callback_fn callback,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_set_partition_data_callback(
+        duckdb_v2_table_function_handle function,
+        duckdb_v2_table_function_partition_data_callback_fn callback,
         duckdb_v2_error_info_handle *err
     )
     duckdb_v2_error_t duckdb_v2_table_function_register(duckdb_v2_table_function_handle function, duckdb_v2_error_info_handle *err)
@@ -1058,5 +1088,15 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_table_function_exec_info_handle info,
         idx_t index,
         idx_t *column_index,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_partition_data_get_local_state(
+        duckdb_v2_table_function_partition_data_info_handle info,
+        void **data,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_table_function_partition_data_set_batch_index(
+        duckdb_v2_table_function_partition_data_info_handle info,
+        idx_t batch_index,
         duckdb_v2_error_info_handle *err
     )

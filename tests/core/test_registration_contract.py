@@ -162,17 +162,8 @@ def test_registrations_are_isolated_per_connection():
         second.close()
 
 
-def test_statistics_are_accepted_where_supported():
-    conn = bareduckdb.connect()
-    try:
-        conn.register("t", pa.table(CAT_TABLE), statistics=True)
-        assert conn.execute("SELECT count(*) FROM t").fetchone() == (4,)
-    finally:
-        conn.close()
-
-
 def test_features_reports_what_this_build_supports():
-    assert set(bareduckdb.features) == {"backend", "holder_scan", "sql_parsing"}
+    assert set(bareduckdb.features) == {"backend", "sql_parsing"}
     assert bareduckdb.features["backend"] == "capi"
     assert all(isinstance(v, bool) for k, v in bareduckdb.features.items() if k != "backend")
 
@@ -341,3 +332,76 @@ def test_concurrent_queries_against_one_registration(conn):
     for t in threads:
         t.join()
     assert errors == []
+
+
+
+
+def test_a_dotted_registration_name_is_not_a_qualified_reference(conn):
+    """register("a.b") is a table literally named 'a.b', not table b in schema a."""
+    conn._register_arrow("a.b", pa.table(CAT_TABLE))
+    with pytest.raises(Exception, match="(?i)catalog|does not exist"):
+        _rows(conn, "SELECT count(*) FROM a.b")
+
+
+def test_a_dotted_registration_name_resolves_when_quoted(conn):
+    """The same name resolves when the query quotes it, which is what makes it one identifier."""
+    conn._register_arrow("a.b", pa.table(CAT_TABLE))
+    assert _rows(conn, 'SELECT count(*) AS c FROM "a.b"') == [{"c": 4}]
+
+
+def test_a_three_part_registration_name_is_not_a_qualified_reference(conn):
+    """The same rule at three parts, where the reference would be catalog.schema.table."""
+    conn._register_arrow("x.y.z", pa.table(CAT_TABLE))
+    with pytest.raises(Exception, match="(?i)catalog|does not exist"):
+        _rows(conn, "SELECT count(*) FROM x.y.z")
+
+
+def test_an_undotted_registration_is_unaffected(conn):
+    """The ordinary case keeps working, including a name needing quotes and case folding."""
+    conn._register_arrow("plain", pa.table(CAT_TABLE))
+    conn._register_arrow("my tbl", pa.table(CAT_TABLE))
+    conn._register_arrow("MixedCase", pa.table(CAT_TABLE))
+    assert _rows(conn, "SELECT count(*) AS c FROM plain") == [{"c": 4}]
+    assert _rows(conn, 'SELECT count(*) AS c FROM "my tbl"') == [{"c": 4}]
+    assert _rows(conn, "SELECT count(*) AS c FROM mixedcase") == [{"c": 4}]
+
+
+
+QUALIFIERS = [
+    "t",
+    "main.t",
+    "memory.main.t",
+    "temp.t",
+    "bogus.t",
+    "memory.bogus.t",
+    "bogus.main.t",
+    "information_schema.t",
+]
+
+
+@pytest.mark.parametrize("ref", QUALIFIERS)
+def test_a_registration_resolves_under_any_qualifier(conn, ref):
+    """duckdb-python's replacement scan fires for any unresolvable reference, matching the last part only."""
+    conn._register_arrow("t", pa.table(CAT_TABLE))
+    assert _rows(conn, f"SELECT count(*) AS c FROM {ref}") == [{"c": 4}], ref
+
+
+def test_qualifier_matching_does_not_revive_a_dotted_name(conn):
+    """register("a.b") stays one identifier: the two-part reference a.b has last part b, which is not registered."""
+    conn._register_arrow("a.b", pa.table(CAT_TABLE))
+    with pytest.raises(Exception, match="(?i)catalog|does not exist"):
+        _rows(conn, "SELECT count(*) FROM a.b")
+    assert _rows(conn, 'SELECT count(*) AS c FROM "a.b"') == [{"c": 4}]
+
+
+def test_qualifier_matching_does_not_match_a_non_final_part(conn):
+    """A qualifier part never matches: registering "a" does not make a.b resolve."""
+    conn._register_arrow("a", pa.table(CAT_TABLE))
+    with pytest.raises(Exception, match="(?i)catalog|does not exist"):
+        _rows(conn, "SELECT count(*) FROM a.b")
+
+
+def test_a_qualified_reference_still_folds_case(conn):
+    """Case folding is DuckDB's own on the last part too."""
+    conn._register_arrow("MixedCase", pa.table(CAT_TABLE))
+    assert _rows(conn, "SELECT count(*) AS c FROM bogus.mixedcase") == [{"c": 4}]

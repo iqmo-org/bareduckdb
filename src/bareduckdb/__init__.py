@@ -38,6 +38,7 @@ from .compat.module_api import (
     sql,
 )
 from .core.connection_base import ConnectionBase, InvalidInputException
+from .core.sql_statement import ExpectedResultType, Statement, StatementType
 from .progress import PROGRESS_SETTINGS, QueryProgress, enable_progress, poll_progress
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,6 @@ def __getattr__(name: str):
 def _detect_features() -> dict[str, bool | str]:
     return {
         "backend": "capi",
-        "holder_scan": False,
         "sql_parsing": False,
     }
 
@@ -98,7 +98,10 @@ __implementation__: str = "cython"
 __all__ = [
     "ConnectionBase",
     "Connection",
+    "ExpectedResultType",
     "InvalidInputException",
+    "Statement",
+    "StatementType",
     "__version__",
     "__duckdb_version__",  # pyright: ignore[reportUnsupportedDunderAll]  # provided by __getattr__ (PEP 562)
     "pyarrow_available",

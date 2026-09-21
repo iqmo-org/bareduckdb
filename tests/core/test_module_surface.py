@@ -34,7 +34,7 @@ def test_version_attributes_are_non_empty_strings():
 
 def test_features_reports_the_capi_backend():
     assert bareduckdb.features["backend"] == "capi"
-    assert set(bareduckdb.features) == {"backend", "holder_scan", "sql_parsing"}
+    assert set(bareduckdb.features) == {"backend", "sql_parsing"}
 
 
 # __duckdb_version__ is resolved lazily by PEP 562

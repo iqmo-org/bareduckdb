@@ -69,7 +69,7 @@ def test_uncached_inflight_peak_is_bounded_by_threads_not_by_the_leading_array(t
         bound = 2 * threads + 4
         assert peak <= bound, (
             f"threads={threads}: peak in-flight chunks={peak}, bound=2*threads+4={bound}. The "
-            "rewritten §5 criterion (UNCACHED_DIRECT_EMIT_PLAN.md) requires O(threads), not "
+            "requires O(threads), not "
             "O(source); a peak in the hundreds or approaching the leading array's own chunk "
             f"count ({LARGE_ARRAY_CHUNKS}) would mean whole-array conversion is still happening "
             "somewhere on this path."

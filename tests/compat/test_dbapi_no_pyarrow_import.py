@@ -27,7 +27,7 @@ assert [d[1] for d in conn.description] == ["BIGINT", "VARCHAR"]
 assert conn.rowcount == -1
 assert conn._last_result_get().columns == ["i", "s"]
 
-# The types whose row values used to come from an Arrow tag or from pyarrow's as_py.
+# The types whose row values need a real decoder rather than an Arrow tag or pyarrow's as_py.
 conn.execute(
     "select 170141183460469231731687303715884105727::HUGEINT as h, '10101'::BIT as b, "
     "'a'::ENUM('a','b') as e, MAP{1:'x'} as m, [1,2]::INT[2] as arr"

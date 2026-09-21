@@ -4,9 +4,8 @@
 from bareduckdb.capi.impl.duckdb_v2 cimport (
     ArrowArrayStream,
     ArrowSchema,
-    duckdb_v2_arrow_importer_handle,
     duckdb_v2_connection_handle,
-    duckdb_v2_database_handle,
+    duckdb_v2_instance_handle,
     duckdb_v2_environment_handle,
     duckdb_v2_qname_handle,
     duckdb_v2_schema_handle,
@@ -41,17 +40,18 @@ cdef struct bd_reg_entry:
     uint64_t name_hash
     uint64_t alt_hash
     ArrowArrayStream stream
-    # Kept alive after schema resolution so exec can pull on demand; NULL once done or failed.
-    duckdb_v2_arrow_importer_handle importer
     # Owned, retained for every later importer create; never copied. Released by _bd_entry_destroy.
     ArrowSchema raw_schema
     # The stream reported end of input; read and written under entry.lock only, never atomic.
     bint stream_done
-    # The importer's resolved column names and logical types, read by every bind.
+    # The resolved column names and logical types from schema resolution, read by every bind.
     duckdb_v2_schema_handle ddb_schema
     idx_t col_count
     # Rows pulled off the source stream so far; bumped in _bd_claim_array under entry.lock.
     idx_t row_count
+    # The next array's ordering position, bumped in _bd_claim_array under entry.lock; per entry,
+    # sound because a registration serves exactly one scan.
+    idx_t next_batch_index
     # The caller's cheaply-known length at registration, or -1; an exact optimizer hint when known.
     int64_t declared_cardinality
     # Scans started, fetch-added by _bd_tf_init_global; an uncached entry serves exactly one.
@@ -72,8 +72,8 @@ cdef struct bd_index_slot:
 
 cdef struct bd_registry:
     long lock
-    # Handed over by _DatabaseHandle; the registry closes it after the last borrow.
-    duckdb_v2_database_handle db
+    # Handed over by _InstanceHandle; the registry closes it after the last borrow.
+    duckdb_v2_instance_handle db
     bd_reg_entry **entries
     idx_t count
     idx_t capacity
@@ -92,7 +92,7 @@ cdef struct bd_registry:
     idx_t next_slot
     # Built once, so the dispatcher never parses a string.
     duckdb_v2_qname_handle tf_name
-    # 1 for the owning _DatabaseHandle, plus 1 per result or stream that may still be scanning.
+    # 1 for the owning _InstanceHandle, plus 1 per result or stream that may still be scanning.
     long borrows
 
 
@@ -100,11 +100,11 @@ cdef void bd_registry_acquire(bd_registry *reg) noexcept nogil
 cdef void bd_registry_release(bd_registry *reg) noexcept nogil
 
 
-cdef class _DatabaseHandle:
-    cdef duckdb_v2_database_handle _db
+cdef class _InstanceHandle:
+    cdef duckdb_v2_instance_handle _db
     cdef bd_registry *_registry
     cdef long _holders
-    cdef void _adopt(self, duckdb_v2_database_handle db) noexcept
+    cdef void _adopt(self, duckdb_v2_instance_handle db) noexcept
     cdef void _acquire(self) noexcept
     cdef void _release(self) noexcept
 
@@ -114,7 +114,7 @@ cdef class CApiEnvironment:
 
 
 cdef class CApiConnectionImpl:
-    cdef _DatabaseHandle _db
+    cdef _InstanceHandle _db
     cdef duckdb_v2_connection_handle _conn
     cdef str _database_path
     cdef bint _closed

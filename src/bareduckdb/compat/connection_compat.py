@@ -24,8 +24,6 @@ class Connection(ConnectionAPI):
         read_only: bool = False,
         *,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_capsule",
-        default_statistics: "Literal['numeric'] | bool | None" = "numeric",
-        preserve_insertion_order: bool = False,
         udtf_functions: Optional[dict] = None,
         enable_replacement_scan: bool = False,
         _from_impl: Any = None,
@@ -38,11 +36,6 @@ class Connection(ConnectionAPI):
             output_type: Default output format for queries
             config: {'threads': '4', 'memory_limit': '1GB'}
             read_only: default False
-            default_statistics: Default statistics mode applied when register() or
-                execute(data=...) is called without an explicit statistics argument:
-                - "numeric": Compute statistics for numeric columns only (fast, default)
-                - True: Compute statistics for all columns
-                - None: No statistics
             udtf_functions: Dict of UDTF name -> function for template expansion
             enable_replacement_scan: Enable automatic discovery from scope
             _from_impl: Internal parameter for creating cursor with shared database
@@ -51,11 +44,9 @@ class Connection(ConnectionAPI):
             database=database,
             config=config,
             read_only=read_only,
-            default_statistics=default_statistics,
             udtf_functions=udtf_functions,
             output_type=output_type,
             enable_replacement_scan=enable_replacement_scan,
-            preserve_insertion_order=preserve_insertion_order,
             _from_impl=_from_impl,
         )
 
@@ -115,7 +106,6 @@ class Connection(ConnectionAPI):
         self,
         name: str,
         data: object,
-        statistics: "list[str] | Literal['numeric'] | str | bool | None" = None,
         *,
         replace: bool = True,
     ) -> Connection:
@@ -125,8 +115,6 @@ class Connection(ConnectionAPI):
         Args:
             name: Table name to register
             data: Data source (PyArrow Table, Polars DataFrame, Pandas DataFrame)
-            statistics: Statistics specification for query optimization. When None,
-                the connection's default_statistics is used.
             replace: If True (default), replace existing registration with same name
 
         Note:
@@ -135,7 +123,7 @@ class Connection(ConnectionAPI):
         Returns:
             This connection, so calls chain.
         """
-        self._register_arrow(name, data, statistics=statistics, replace=replace)  # type: ignore
+        self._register_arrow(name, data, replace=replace)  # type: ignore
         return self
 
     def unregister(self, name: str) -> Connection:
@@ -156,8 +144,6 @@ class Connection(ConnectionAPI):
         cursor_conn = Connection(
             _from_impl=cursor_impl,
             output_type=self._default_output_type,
-            default_statistics=self._default_statistics,
-            preserve_insertion_order=self._preserve_insertion_order,
         )
         return cursor_conn
 

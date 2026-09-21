@@ -2,9 +2,14 @@
 # The 2.0 preview library does not ship this header; this vendored copy is the
 # build's source of truth and this SHA is the pin. Never edit duckdb_v2.h.
 #
-# This commit is the C API v2 Part 3 merge, duckdb/duckdb#25340, on the upstream
-# branch v2.0-cyanoptera. It added the replacement scan, qname, identifier,
-# arrow, table function, expression and prepared statement modules, among
-# others. duckdb_v2.h is byte-identical at the PR head (0b60914c44) and at this
-# merge commit.
-e10e48bf4c297af36a8c96206df5d5d0de052191
+# This commit is on the upstream branch v2.0-cyanoptera. Over the prior pin it
+# is a pure rename, duckdb/duckdb#25910: every database_* symbol becomes
+# instance_* (database_create / _destroy / _set_option / _attach / _detach /
+# _set_default / _get_option_* -> instance_*, environment_get_database_count ->
+# environment_get_instance_count, replacement_scan_create_with_database ->
+# replacement_scan_create_with_instance, and the _duckdb_v2_database typedef
+# becomes _duckdb_v2_instance). No signature changed. The legacy guard macro
+# DUCKDB_API_ALLOW_UNSTABLE became DUCKDB_EXTENSION_API_VERSION_UNSTABLE; the
+# DUCKDB_V2_API_ALLOW_* guards are unchanged. Also in the range, no surface
+# change: the non-unity build fix, duckdb/duckdb#25912.
+6622bc75c3808fee71bf4590f00e27ceb2964981

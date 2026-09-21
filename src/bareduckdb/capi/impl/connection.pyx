@@ -22,22 +22,25 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_arrow_importer_handle,
     duckdb_v2_arrow_importer_next_chunk,
     duckdb_v2_bool_t,
-    duckdb_v2_close,
-    duckdb_v2_connect,
+    duckdb_v2_connection_create,
     duckdb_v2_connection_create_type_from_id,
+    duckdb_v2_connection_destroy,
     duckdb_v2_connection_handle,
     duckdb_v2_connection_interrupt,
     duckdb_v2_connection_query_progress,
     duckdb_v2_context_handle,
-    duckdb_v2_create_environment,
     duckdb_v2_data_chunk_destroy,
     duckdb_v2_data_chunk_get_size,
     duckdb_v2_data_chunk_get_vector,
     duckdb_v2_data_chunk_handle,
-    duckdb_v2_database_handle,
-    duckdb_v2_destroy_environment,
-    duckdb_v2_disconnect,
-    duckdb_v2_environment_database_count,
+    duckdb_v2_instance_attach,
+    duckdb_v2_instance_create,
+    duckdb_v2_instance_destroy,
+    duckdb_v2_instance_handle,
+    duckdb_v2_instance_set_option,
+    duckdb_v2_environment_create,
+    duckdb_v2_environment_destroy,
+    duckdb_v2_environment_get_instance_count,
     duckdb_v2_environment_handle,
     duckdb_v2_error_info_destroy,
     duckdb_v2_error_info_get_text,
@@ -46,6 +49,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_error_info_set_text,
     DUCKDB_V2_ERROR_INPUT_INVALID,
     DUCKDB_V2_ERROR_NONE,
+    DUCKDB_V2_STATEMENT_TYPE_INVALID,
     duckdb_v2_error_t,
     duckdb_v2_function_signature_add_parameter,
     duckdb_v2_function_signature_handle,
@@ -54,18 +58,14 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_logical_type_handle,
     DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT,
     duckdb_v2_opaque,
-    duckdb_v2_open,
-    duckdb_v2_option_create,
-    duckdb_v2_option_destroy,
-    duckdb_v2_option_handle,
     duckdb_v2_parse_sql,
     duckdb_v2_qname_create,
     duckdb_v2_qname_destroy,
     duckdb_v2_qname_equals,
+    duckdb_v2_qname_get_part,
     duckdb_v2_qname_get_part_count,
     duckdb_v2_qname_handle,
     duckdb_v2_qname_hash,
-    duckdb_v2_qname_parse,
     duckdb_v2_query_progress_destroy,
     duckdb_v2_query_progress_get_percentage,
     duckdb_v2_query_progress_get_rows_processed,
@@ -73,7 +73,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_query_progress_handle,
     duckdb_v2_replacement_scan_add_argument,
     duckdb_v2_replacement_scan_create_with_connection,
-    duckdb_v2_replacement_scan_create_with_database,
+    duckdb_v2_replacement_scan_create_with_instance,
     duckdb_v2_replacement_scan_destroy,
     duckdb_v2_replacement_scan_get_name,
     duckdb_v2_replacement_scan_get_user_data,
@@ -88,10 +88,15 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_schema_get_field,
     duckdb_v2_schema_handle,
     duckdb_v2_sql_statement_destroy,
+    duckdb_v2_sql_statement_get_parameter_count,
+    duckdb_v2_sql_statement_get_parameter_name,
+    duckdb_v2_sql_statement_get_text,
+    duckdb_v2_sql_statement_get_type,
     duckdb_v2_sql_statement_handle,
     duckdb_v2_statement_iterator_destroy,
     duckdb_v2_statement_iterator_handle,
     duckdb_v2_statement_iterator_next,
+    duckdb_v2_statement_type_t,
     duckdb_v2_str_t,
     duckdb_v2_table_function_bind_add_result_column,
     duckdb_v2_table_function_bind_get_arg_value,
@@ -117,12 +122,16 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_table_function_init_local_get_global_state,
     duckdb_v2_table_function_init_local_info_handle,
     duckdb_v2_table_function_init_local_set_local_state,
+    duckdb_v2_table_function_partition_data_get_local_state,
+    duckdb_v2_table_function_partition_data_info_handle,
+    duckdb_v2_table_function_partition_data_set_batch_index,
     duckdb_v2_table_function_register,
     duckdb_v2_table_function_set_bind_callback,
     duckdb_v2_table_function_set_exec_callback,
     duckdb_v2_table_function_set_init_global_callback,
     duckdb_v2_table_function_set_init_local_callback,
     duckdb_v2_table_function_set_name,
+    duckdb_v2_table_function_set_partition_data_callback,
     duckdb_v2_table_function_set_projection_pushdown,
     duckdb_v2_table_function_set_user_data,
     duckdb_v2_value_create_bigint_with_context,
@@ -142,7 +151,7 @@ from bareduckdb.capi.impl.atomics cimport (
     bdv2_store_release,
     bdv2_unlock,
 )
-from bareduckdb.capi.impl.errors cimport check_v2, last_error_text
+from bareduckdb.capi.impl.errors cimport check_v2, last_error_text, str_view_to_str
 
 _logger = logging.getLogger("bareduckdb.capi")
 
@@ -174,8 +183,8 @@ cdef duckdb_v2_environment_handle _ensure_environment() except NULL:
     try:
         if _ENV == NULL:
             with nogil:
-                rc = duckdb_v2_create_environment(&env, &err)
-            check_v2(rc, err, "duckdb_v2_create_environment")
+                rc = duckdb_v2_environment_create(&env, &err)
+            check_v2(rc, err, "duckdb_v2_environment_create")
             _ENV = env
             bdv2_store_release(&_env_ready, 1)
         return _ENV
@@ -191,7 +200,7 @@ cdef void _destroy_environment_if_idle() noexcept nogil:
     if not bdv2_cas(&_env_lock, 0, 1):
         return
     if _ENV != NULL and _open_databases == 0:
-        duckdb_v2_destroy_environment(&_ENV)
+        duckdb_v2_environment_destroy(&_ENV)
         # Retire the flag so the fast path falls back to the lock, which re-checks _ENV.
         bdv2_store_release(&_env_ready, 0)
     bdv2_unlock(&_env_lock)
@@ -264,6 +273,8 @@ cdef struct bd_narrow_array:
 # Per worker thread, from init_local; an importer must not be used from two threads at once.
 cdef struct bd_local_state:
     duckdb_v2_arrow_importer_handle importer
+    # The batch index of the array this worker claimed last, read by the partition-data callback.
+    idx_t batch_index
 
 
 cdef void _bd_copy_text(char *dst, const char *src, idx_t length) noexcept nogil:
@@ -334,8 +345,6 @@ cdef void _bd_entry_destroy(bd_reg_entry *entry) noexcept nogil:
         return
     if entry.raw_schema.release != NULL:
         entry.raw_schema.release(&entry.raw_schema)
-    if entry.importer != NULL:
-        duckdb_v2_arrow_importer_destroy(&entry.importer)
     if entry.ddb_schema != NULL:
         duckdb_v2_schema_destroy(&entry.ddb_schema)
     if entry.name != NULL:
@@ -379,7 +388,7 @@ cdef bd_registry *_bd_registry_create() except NULL:
     if reg == NULL:
         raise MemoryError("Failed to allocate the replacement scan registry")
     memset(reg, 0, sizeof(bd_registry))
-    # The one borrow the owning _DatabaseHandle holds; every result adds and drops its own.
+    # The one borrow the owning _InstanceHandle holds; every result adds and drops its own.
     reg.borrows = 1
 
     # Built once, so the dispatcher never parses a string on the binder's thread.
@@ -397,7 +406,7 @@ cdef bd_registry *_bd_registry_create() except NULL:
 cdef void _bd_sweep_retired(bd_registry *reg) noexcept nogil:
     """Free every retired entry nothing can still be reading. Caller holds reg.lock.
 
-    borrows == 1 means the owning _DatabaseHandle is the only holder, so no scan is in flight.
+    borrows == 1 means the owning _InstanceHandle is the only holder, so no scan is in flight.
     """
     cdef bd_reg_entry *entry
     cdef idx_t i = 0
@@ -421,7 +430,7 @@ cdef void bd_registry_acquire(bd_registry *reg) noexcept nogil:
 
 cdef void bd_registry_release(bd_registry *reg) noexcept nogil:
     """Drop one reader, tearing the registry and its database down when the last one goes"""
-    cdef duckdb_v2_database_handle db
+    cdef duckdb_v2_instance_handle db
     if reg == NULL:
         return
     if bdv2_add(&reg.borrows, -1) != 0:
@@ -435,7 +444,7 @@ cdef void bd_registry_release(bd_registry *reg) noexcept nogil:
     db = reg.db
     _bd_registry_destroy(reg)
     if db != NULL:
-        duckdb_v2_close(&db)
+        duckdb_v2_instance_destroy(&db)
         if bdv2_add(&_open_databases, -1) == 0:
             # Here rather than at exit: the exit hook runs while the interpreter still holds every connection the caller left open.
             _destroy_environment_if_idle()
@@ -490,6 +499,26 @@ cdef bint _bd_entry_matches(bd_reg_entry *entry, duckdb_v2_qname_handle qname) n
     if duckdb_v2_qname_equals(entry.alt_name, qname, &hit, NULL) == DUCKDB_V2_ERROR_NONE and hit:
         return True
     return False
+
+
+cdef duckdb_v2_qname_handle _bd_qname_object_part(duckdb_v2_qname_handle qname) noexcept nogil:
+    """Build a one-part qname from a reference's object name, or NULL when it is already one part
+
+    duckdb-python's replacement scan fires for any reference the catalog cannot resolve and matches on
+    the object name alone, so `bogus.main.t` finds a registration named `t`. Registration names stay one
+    literal part, so probing must reduce the reference rather than expand the entry. Owned by the caller.
+    """
+    cdef idx_t count = 0
+    cdef duckdb_v2_identifier_t part
+    cdef duckdb_v2_qname_handle built = NULL
+    if duckdb_v2_qname_get_part_count(qname, &count, NULL) != DUCKDB_V2_ERROR_NONE or count < 2:
+        return NULL
+    # The part is borrowed from qname, which outlives the create below; create copies it.
+    if duckdb_v2_qname_get_part(qname, count - 1, &part, NULL) != DUCKDB_V2_ERROR_NONE:
+        return NULL
+    if duckdb_v2_qname_create(&part, 1, &built, NULL) != DUCKDB_V2_ERROR_NONE:
+        return NULL
+    return built
 
 
 cdef inline bd_reg_entry *_bd_tombstone() noexcept nogil:
@@ -705,22 +734,23 @@ cdef void _bd_resolve_schema(bd_reg_entry *entry, duckdb_v2_context_handle conte
         ok = True
         break
 
-    # The raw schema is retained on the entry for every later importer; _bd_entry_destroy frees it.
+    # The importer borrows this callback's context, which the database-wide entry outlives, so it
+    # must not be retained (duckdb_v2.h). The raw schema is read, not consumed, and is retained on
+    # the entry for every later per-worker importer; _bd_entry_destroy frees it.
+    if importer != NULL:
+        duckdb_v2_arrow_importer_destroy(&importer)
     if not ok:
-        if importer != NULL:
-            duckdb_v2_arrow_importer_destroy(&importer)
         if resolved != NULL:
             duckdb_v2_schema_destroy(&resolved)
         return
 
-    # Kept for the entry's life: bind reads ddb_schema, and exec pulls from stream/importer.
+    # Kept for the entry's life: bind reads ddb_schema, and exec pulls from the stream.
     entry.ddb_schema = resolved
     entry.col_count = count
-    entry.importer = importer
     bdv2_store_release(&entry.state, BD_ENTRY_READY)
 
 
-cdef int _bd_claim_array(bd_reg_entry *entry, ArrowArray *out_array) noexcept nogil:
+cdef int _bd_claim_array(bd_reg_entry *entry, ArrowArray *out_array, idx_t *out_batch_index) noexcept nogil:
     """Pull the next array from the stream and bump row_count, both under entry.lock."""
     memset(out_array, 0, sizeof(ArrowArray))
     bdv2_lock(&entry.lock)
@@ -745,6 +775,9 @@ cdef int _bd_claim_array(bd_reg_entry *entry, ArrowArray *out_array) noexcept no
         bdv2_unlock(&entry.lock)
         return BD_CLAIM_EOF
     entry.row_count += <idx_t>out_array.length
+    # Claim order is stream order, so this array's sequence number is its ordering batch index.
+    out_batch_index[0] = entry.next_batch_index
+    entry.next_batch_index += 1
     bdv2_unlock(&entry.lock)
     return BD_CLAIM_OK
 
@@ -1074,6 +1107,7 @@ cdef void _bd_tf_init_local(
         _bd_report(err, "out of memory while starting an arrow scan worker")
         return
     local.importer = NULL
+    local.batch_index = 0
 
     if state.chunks_narrow:
         # The schema is read, not consumed, so a stack struct borrowing the entry's children suffices.
@@ -1132,6 +1166,7 @@ cdef void _bd_tf_exec(
     cdef duckdb_v2_error_info_handle append_err = NULL
     cdef idx_t column_count = 0
     cdef idx_t size = 0
+    cdef idx_t batch_index = 0
     cdef int claimed
     cdef bint ok
     cdef long new_inflight
@@ -1170,7 +1205,7 @@ cdef void _bd_tf_exec(
             return
         if src != NULL:
             break
-        claimed = _bd_claim_array(entry, &array)
+        claimed = _bd_claim_array(entry, &array, &batch_index)
         if claimed == BD_CLAIM_FAILED:
             _bd_report(err, entry.err_text)
             return
@@ -1178,6 +1213,8 @@ cdef void _bd_tf_exec(
             # Every array went to exactly one worker, and this one holds none, so the scan ends.
             duckdb_v2_vector_set_size(out_vector, 0, NULL)
             return
+        # This array's ordering position, reported to the engine by the partition-data callback.
+        local.batch_index = batch_index
         fed = &array
         if state.chunks_narrow:
             # A narrowed importer rejects a full-width array, so both sides must be narrowed together.
@@ -1217,6 +1254,24 @@ cdef void _bd_tf_exec(
     duckdb_v2_vector_set_size(out_vector, size, err)
 
 
+cdef void _bd_tf_partition_data(
+    duckdb_v2_table_function_partition_data_info_handle info,
+    duckdb_v2_context_handle context,
+    duckdb_v2_error_info_handle *err,
+) noexcept nogil:
+    """Report the produced batch's ordering position: the claimed array's own sequence number"""
+    cdef void *data_ptr = NULL
+    cdef bd_local_state *local
+    if duckdb_v2_table_function_partition_data_get_local_state(info, &data_ptr, err) != DUCKDB_V2_ERROR_NONE:
+        return
+    # The engine validates the reported value on every call even when it is not required.
+    if data_ptr == NULL:
+        duckdb_v2_table_function_partition_data_set_batch_index(info, 0, err)
+        return
+    local = <bd_local_state *>data_ptr
+    duckdb_v2_table_function_partition_data_set_batch_index(info, local.batch_index, err)
+
+
 cdef void _bd_dispatch(
     duckdb_v2_replacement_scan_info_handle info,
     duckdb_v2_context_handle context,
@@ -1226,6 +1281,8 @@ cdef void _bd_dispatch(
     cdef void *user_data = NULL
     cdef bd_registry *reg
     cdef duckdb_v2_qname_handle qname = NULL
+    cdef duckdb_v2_qname_handle bare = NULL
+    cdef duckdb_v2_qname_handle probe = NULL
     cdef bd_reg_entry *entry = NULL
     cdef duckdb_v2_value_handle value = NULL
     cdef uint64_t name_hash
@@ -1242,14 +1299,19 @@ cdef void _bd_dispatch(
     if qname == NULL:
         return
 
-    name_hash = _bd_qname_hash(qname)
+    # A qualified reference is matched on its object name only; bare is NULL when there is nothing to strip.
+    bare = _bd_qname_object_part(qname)
+    probe = bare if bare != NULL else qname
+    name_hash = _bd_qname_hash(probe)
     bdv2_lock(&reg.lock)
-    entry = _bd_index_find(reg, name_hash, qname)
+    entry = _bd_index_find(reg, name_hash, probe)
     if entry != NULL:
         # Raised under the registry lock and dropped outside it, so both sides are atomic.
         bdv2_add(&entry.refs, 1)
     bdv2_unlock(&reg.lock)
 
+    if bare != NULL:
+        duckdb_v2_qname_destroy(&bare)
     duckdb_v2_qname_destroy(&qname)
     if entry == NULL:
         return
@@ -1277,49 +1339,23 @@ cdef void _bd_dispatch(
 
 
 cdef void _bd_parse_name(str name, duckdb_v2_qname_handle *out_name, duckdb_v2_qname_handle *out_alt) except *:
-    """Parse a registration name into a qname, plus a single-part fallback when it qualified"""
+    """Build the one-part qname for a registration name, which is an identifier and never SQL."""
     cdef bytes raw = name.encode("utf-8")
-    cdef duckdb_v2_str_t text
     cdef duckdb_v2_identifier_t part
-    cdef duckdb_v2_qname_handle parsed = NULL
-    cdef duckdb_v2_qname_handle alt = NULL
+    cdef duckdb_v2_qname_handle built = NULL
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
-    cdef idx_t part_count = 0
 
     out_name[0] = NULL
+    # Always NULL now; the field stays so callers and the index keep their shape.
     out_alt[0] = NULL
-    text.ptr = <const char *>raw
-    text.len = <idx_t>len(raw)
+    part.ptr = <const char *>raw
+    part.len = <idx_t>len(raw)
 
     with nogil:
-        rc = duckdb_v2_qname_parse(text, &parsed, &err)
-    if rc != DUCKDB_V2_ERROR_NONE:
-        _logger.debug("qname parse of %r failed, falling back to one literal part", name)
-        if err != NULL:
-            with nogil:
-                duckdb_v2_error_info_destroy(&err)
-        parsed = NULL
-    else:
-        with nogil:
-            duckdb_v2_qname_get_part_count(parsed, &part_count, NULL)
-
-    if parsed == NULL or part_count > 1:
-        part.ptr = text.ptr
-        part.len = text.len
-        with nogil:
-            rc = duckdb_v2_qname_create(&part, 1, &alt, &err)
-        if rc != DUCKDB_V2_ERROR_NONE:
-            if parsed != NULL:
-                with nogil:
-                    duckdb_v2_qname_destroy(&parsed)
-            check_v2(rc, err, f"duckdb_v2_qname_create({name!r})")
-
-    if parsed == NULL:
-        parsed = alt
-        alt = NULL
-    out_name[0] = parsed
-    out_alt[0] = alt
+        rc = duckdb_v2_qname_create(&part, 1, &built, &err)
+    check_v2(rc, err, f"duckdb_v2_qname_create({name!r})")
+    out_name[0] = built
 
 
 cdef void _configure_dispatcher(duckdb_v2_replacement_scan_handle scan, bd_registry *reg) except *:
@@ -1328,7 +1364,7 @@ cdef void _configure_dispatcher(duckdb_v2_replacement_scan_handle scan, bd_regis
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_opaque data
 
-    # No destructor: the registry is torn down by _DatabaseHandle.__dealloc__, after the close.
+    # No destructor: the registry is torn down by _InstanceHandle.__dealloc__, after the close.
     data.ptr = <void *>reg
     data.destroy = NULL
     data.equals = NULL
@@ -1349,14 +1385,14 @@ cdef void _configure_dispatcher(duckdb_v2_replacement_scan_handle scan, bd_regis
             duckdb_v2_replacement_scan_destroy(&scan)
 
 
-cdef void _install_database_dispatcher(duckdb_v2_database_handle db, bd_registry *reg) except *:
+cdef void _install_database_dispatcher(duckdb_v2_instance_handle db, bd_registry *reg) except *:
     """Register the dispatcher database-wide, so any connection to this database sees registrations"""
     cdef duckdb_v2_replacement_scan_handle scan = NULL
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     with nogil:
-        rc = duckdb_v2_replacement_scan_create_with_database(db, &scan, &err)
-    check_v2(rc, err, "duckdb_v2_replacement_scan_create_with_database")
+        rc = duckdb_v2_replacement_scan_create_with_instance(db, &scan, &err)
+    check_v2(rc, err, "duckdb_v2_replacement_scan_create_with_instance")
     _configure_dispatcher(scan, reg)
 
 
@@ -1386,7 +1422,7 @@ cdef void _install_table_function(duckdb_v2_connection_handle conn, bd_registry 
     name.len = <idx_t>strlen(BD_SCAN_FUNCTION)
     parameter.ptr = BD_SCAN_PARAMETER
     parameter.len = <idx_t>strlen(BD_SCAN_PARAMETER)
-    # No destructor: the registry outlives the database, and _DatabaseHandle owns its teardown.
+    # No destructor: the registry outlives the database, and _InstanceHandle owns its teardown.
     data.ptr = <void *>reg
     data.destroy = NULL
     data.equals = NULL
@@ -1433,6 +1469,11 @@ cdef void _install_table_function(duckdb_v2_connection_handle conn, bd_registry 
         with nogil:
             rc = duckdb_v2_table_function_set_exec_callback(func, _bd_tf_exec, &err)
         check_v2(rc, err, "duckdb_v2_table_function_set_exec_callback")
+        # Reporting a batch index makes a row-returning query pick the parallel batch-index-ordered
+        # sink, so a scan stays parallel while insertion order is preserved engine-side.
+        with nogil:
+            rc = duckdb_v2_table_function_set_partition_data_callback(func, _bd_tf_partition_data, &err)
+        check_v2(rc, err, "duckdb_v2_table_function_set_partition_data_callback")
         with nogil:
             rc = duckdb_v2_table_function_register(func, &err)
         check_v2(rc, err, "duckdb_v2_table_function_register")
@@ -1460,20 +1501,20 @@ cdef class CApiEnvironment:
         cdef duckdb_v2_error_info_handle err = NULL
         cdef duckdb_v2_error_t rc
         with nogil:
-            rc = duckdb_v2_environment_database_count(self._env, &count, &err)
-        check_v2(rc, err, "duckdb_v2_environment_database_count")
+            rc = duckdb_v2_environment_get_instance_count(self._env, &count, &err)
+        check_v2(rc, err, "duckdb_v2_environment_get_instance_count")
         return count
 
 
-cdef class _DatabaseHandle:
-    """Owns a duckdb_v2_database, closed when the last connection drops it"""
+cdef class _InstanceHandle:
+    """Owns a duckdb_v2_instance, closed when the last connection drops it"""
 
     def __cinit__(self):
         self._db = NULL
         self._registry = NULL
         self._holders = 0
 
-    cdef void _adopt(self, duckdb_v2_database_handle db) noexcept:
+    cdef void _adopt(self, duckdb_v2_instance_handle db) noexcept:
         """Take ownership of an open database and count it against the environment"""
         self._db = db
         bdv2_add(&_open_databases, 1)
@@ -1500,7 +1541,7 @@ cdef class _DatabaseHandle:
                 bd_registry_release(reg)
         elif self._db != NULL:
             with nogil:
-                duckdb_v2_close(&self._db)
+                duckdb_v2_instance_destroy(&self._db)
                 if bdv2_add(&_open_databases, -1) == 0:
                     # Here rather than at exit: the exit hook still sees open connections.
                     _destroy_environment_if_idle()
@@ -1510,20 +1551,50 @@ cdef class _DatabaseHandle:
             self._release()
 
 
-_UNAVAILABLE_MESSAGE = (
-    "table reference extraction is not available through C API v2: "
-    "the sql_statement module exposes no statement introspection"
-)
+cdef dict _parse_result_ok(list statements):
+    """Shape a successful parse: raw per-statement metadata, no error"""
+    return {"statements": statements, "error": False, "error_message": ""}
 
 
-cdef dict _parse_result_error(str message):
-    return {
-        "statement_type": "",
-        "table_refs": [],
-        "function_calls": [],
-        "error": True,
-        "error_message": message or "unknown parse error",
-    }
+cdef dict _parse_result_error(list statements, str message):
+    """Shape a parse failure; statements yielded ahead of the failure are kept"""
+    return {"statements": statements, "error": True, "error_message": message or "unknown parse error"}
+
+
+cdef object _statement_metadata(duckdb_v2_sql_statement_handle statement):
+    """Read one statement's parser type, own text and parameter names, in binding order"""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_statement_type_t stype = DUCKDB_V2_STATEMENT_TYPE_INVALID
+    cdef duckdb_v2_str_t text
+    cdef duckdb_v2_identifier_t name
+    cdef idx_t count = 0
+    cdef idx_t i
+    cdef list parameters = []
+
+    text.ptr = NULL
+    text.len = 0
+    with nogil:
+        rc = duckdb_v2_sql_statement_get_type(statement, &stype, &err)
+    check_v2(rc, err, "duckdb_v2_sql_statement_get_type")
+
+    with nogil:
+        rc = duckdb_v2_sql_statement_get_text(statement, &text, &err)
+    check_v2(rc, err, "duckdb_v2_sql_statement_get_text")
+
+    with nogil:
+        rc = duckdb_v2_sql_statement_get_parameter_count(statement, &count, &err)
+    check_v2(rc, err, "duckdb_v2_sql_statement_get_parameter_count")
+
+    for i in range(count):
+        name.ptr = NULL
+        name.len = 0
+        with nogil:
+            rc = duckdb_v2_sql_statement_get_parameter_name(statement, i, &name, &err)
+        check_v2(rc, err, "duckdb_v2_sql_statement_get_parameter_name")
+        parameters.append(str_view_to_str(<duckdb_v2_str_t>name))
+
+    return (<int>stype, str_view_to_str(text), tuple(parameters))
 
 
 cdef class CApiConnectionImpl:
@@ -1539,12 +1610,9 @@ cdef class CApiConnectionImpl:
     def __init__(self, database=None, config=None, read_only=False):
         """Open a database under the shared environment and connect to it"""
         cdef duckdb_v2_environment_handle env
-        cdef duckdb_v2_database_handle db = NULL
+        cdef duckdb_v2_instance_handle db = NULL
         cdef duckdb_v2_connection_handle conn = NULL
-        cdef duckdb_v2_option_handle *options = NULL
-        cdef idx_t option_count = 0
-        cdef idx_t expected_options
-        cdef _DatabaseHandle handle
+        cdef _InstanceHandle handle
         cdef duckdb_v2_error_info_handle err = NULL
         cdef duckdb_v2_error_t rc
         cdef duckdb_v2_str_t path
@@ -1554,14 +1622,20 @@ cdef class CApiConnectionImpl:
         cdef bytes name_bytes
         cdef bytes value_bytes
         cdef dict settings = {"autoinstall_known_extensions": "false"}
+        cdef str attach_path
         cdef str key
         cdef str value
 
         env = _ensure_environment()
 
-        # v2 treats an empty view and any ':memory:...' path as in-memory, so only None becomes empty.
-        if self._database_path:
-            path_bytes = self._database_path.encode("utf-8")
+        # The attach below treats only the bare ':memory:' literal (and an empty view) as in-memory;
+        # a ':memory:name' path is taken as a relative file and a file of that name is created. The
+        # name never deduplicated in-memory databases, so it is dropped rather than reproduced.
+        attach_path = self._database_path
+        if attach_path.startswith(":memory:"):
+            attach_path = ":memory:"
+        if attach_path:
+            path_bytes = attach_path.encode("utf-8")
             path.ptr = <const char *>path_bytes
             path.len = <idx_t>len(path_bytes)
         else:
@@ -1574,14 +1648,12 @@ cdef class CApiConnectionImpl:
             for key, value in config.items():
                 settings[str(key)] = str(value)
 
-        expected_options = <idx_t>len(settings)
-        options = <duckdb_v2_option_handle *>malloc(
-            expected_options * sizeof(duckdb_v2_option_handle)
-        )
-        if options == NULL and expected_options > 0:
-            raise MemoryError("Failed to allocate the v2 option array")
+        with nogil:
+            rc = duckdb_v2_instance_create(env, &db, &err)
+        check_v2(rc, err, "duckdb_v2_instance_create")
 
         try:
+            # Every setting is a startup setting: the instance has not started until the attach below.
             for key, value in settings.items():
                 name_bytes = key.encode("utf-8")
                 value_bytes = value.encode("utf-8")
@@ -1590,33 +1662,33 @@ cdef class CApiConnectionImpl:
                 setting.ptr = <const char *>value_bytes
                 setting.len = <idx_t>len(value_bytes)
                 with nogil:
-                    rc = duckdb_v2_option_create(name, setting, &options[option_count], &err)
-                check_v2(rc, err, f"duckdb_v2_option_create({key})")
-                option_count += 1
+                    rc = duckdb_v2_instance_set_option(db, name, setting, &err)
+                check_v2(rc, err, f"duckdb_v2_instance_set_option({key})")
 
+            # A NULL name derives the attach name from the path, and NULL options carry no
+            # ATTACH-scoped options; make_default matches the single-database open this replaces.
             with nogil:
-                rc = duckdb_v2_open(env, path, options, option_count, &db, &err)
-            check_v2(rc, err, "duckdb_v2_open")
-        finally:
-            while option_count > 0:
-                option_count -= 1
-                with nogil:
-                    duckdb_v2_option_destroy(&options[option_count])
-            free(options)
+                rc = duckdb_v2_instance_attach(db, path, NULL, NULL, True, &err)
+            check_v2(rc, err, "duckdb_v2_instance_attach")
+        except BaseException:
+            # The handle is not adopted yet, so nothing else would release the database.
+            with nogil:
+                duckdb_v2_instance_destroy(&db)
+            raise
 
-        handle = _DatabaseHandle()
+        handle = _InstanceHandle()
         handle._adopt(db)
         self._db = handle
 
-        # Before the first connect: a database-wide scan cannot be registered mid-bind.
+        # Before the first connection: a database-wide scan cannot be registered mid-bind.
         handle._registry = _bd_registry_create()
         _install_database_dispatcher(db, handle._registry)
 
         with nogil:
-            rc = duckdb_v2_connect(db, &conn, &err)
+            rc = duckdb_v2_connection_create(db, &conn, &err)
         if rc != DUCKDB_V2_ERROR_NONE:
             self._db = None
-            check_v2(rc, err, "duckdb_v2_connect")
+            check_v2(rc, err, "duckdb_v2_connection_create")
         self._conn = conn
         handle._acquire()
         # On the database, so every cursor and later connection can bind a dispatcher claim.
@@ -1695,7 +1767,7 @@ cdef class CApiConnectionImpl:
             return
         if self._conn != NULL:
             with nogil:
-                duckdb_v2_disconnect(&self._conn)
+                duckdb_v2_connection_destroy(&self._conn)
         self._conn = NULL
         if self._db is not None:
             self._db._release()
@@ -1728,10 +1800,10 @@ cdef class CApiConnectionImpl:
         cursor._close_claimed = 0
 
         with nogil:
-            rc = duckdb_v2_connect(self._db._db, &conn, &err)
+            rc = duckdb_v2_connection_create(self._db._db, &conn, &err)
         if rc != DUCKDB_V2_ERROR_NONE:
             cursor._db = None
-            check_v2(rc, err, "duckdb_v2_connect")
+            check_v2(rc, err, "duckdb_v2_connection_create")
         cursor._conn = conn
         self._db._acquire()
         if self._db._registry != NULL:
@@ -1981,7 +2053,7 @@ cdef class CApiConnectionImpl:
         return rows if ready else None
 
     def parse_sql(self, str query):
-        """Parse through v2 and report what the sql_statement surface allows"""
+        """Parse through v2 and report each statement's raw type, text and parameter names"""
         if self._closed:
             raise RuntimeError("Connection is closed")
 
@@ -1991,35 +2063,44 @@ cdef class CApiConnectionImpl:
         cdef duckdb_v2_error_t rc
         cdef bytes query_bytes = query.encode("utf-8")
         cdef const char *c_query = query_bytes
+        cdef list statements = []
+        cdef bint failed = False
+        cdef str message = ""
 
         with nogil:
             rc = duckdb_v2_parse_sql(self._conn, c_query, &iterator, &err)
-        try:
-            if rc != DUCKDB_V2_ERROR_NONE:
-                return _parse_result_error(last_error_text(err))
+        if rc != DUCKDB_V2_ERROR_NONE:
+            return _parse_result_error(statements, last_error_text(err))
 
-            # v2 reports a deferred parse error only at the failing statement, so walk them all.
+        try:
+            # v2 parses lazily: a deferred error surfaces at the failing statement, after the
+            # statements ahead of it, so keep what was yielded and record the failure.
             while True:
                 statement = NULL
                 with nogil:
                     rc = duckdb_v2_statement_iterator_next(iterator, &statement, &err)
                 if rc != DUCKDB_V2_ERROR_NONE:
-                    return _parse_result_error(last_error_text(err))
+                    # last_error_text destroys the handle it is given, and by value, so clear
+                    # the local to stop the loop-exit destroy below from freeing it again.
+                    message = last_error_text(err)
+                    err = NULL
+                    failed = True
+                    break
                 if statement == NULL:
                     break
-                with nogil:
-                    duckdb_v2_sql_statement_destroy(&statement)
+                try:
+                    statements.append(_statement_metadata(statement))
+                finally:
+                    with nogil:
+                        duckdb_v2_sql_statement_destroy(&statement)
 
             if err != NULL:
-                duckdb_v2_error_info_destroy(&err)
+                with nogil:
+                    duckdb_v2_error_info_destroy(&err)
         finally:
             with nogil:
                 duckdb_v2_statement_iterator_destroy(&iterator)
 
-        return {
-            "statement_type": "",
-            "table_refs": [],
-            "function_calls": [],
-            "error": True,
-            "error_message": _UNAVAILABLE_MESSAGE,
-        }
+        if failed:
+            return _parse_result_error(statements, message)
+        return _parse_result_ok(statements)

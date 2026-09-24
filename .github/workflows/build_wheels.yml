@@ -36,7 +36,7 @@ jobs:
           submodules: false
 
       - name: Install Astral UV
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
           cache-suffix: -${{ matrix.python }}-${{ matrix.platform.cibw_system }}_${{ matrix.platform.arch }}
@@ -87,7 +87,7 @@ jobs:
           submodules: false
 
       - name: Install Astral UV
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@v10.2.0
 
       - name: Build sdist
         run: uv build --sdist --out-dir dist

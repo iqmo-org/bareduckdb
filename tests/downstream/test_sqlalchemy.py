@@ -1,14 +1,24 @@
+import importlib.util
+import sys
+
 import pytest
 import tempfile
 import os
 
 import bareduckdb
 
-sqlalchemy = pytest.importorskip("sqlalchemy")
-duckdb_engine = pytest.importorskip("duckdb_engine")
+# find_spec, not importorskip: importing duckdb_engine first binds it to the official duckdb client.
+# Checked before aliasing, so a skipped module does not alias duckdb for the session.
+for _name in ("sqlalchemy", "duckdb_engine"):
+    if importlib.util.find_spec(_name) is None:
+        pytest.skip(f"{_name} is not installed", allow_module_level=True)
 
-# After the importorskip, so a collected-but-skipped module does not alias duckdb for the session.
 bareduckdb.register_as_duckdb()
+import duckdb_engine  # noqa: E402
+
+if duckdb_engine.duckdb is not bareduckdb:
+    raise ImportError(f"duckdb_engine is bound to {duckdb_engine.duckdb.__file__}, not bareduckdb")
+
 from sqlalchemy import create_engine, text, Table, Column, Integer, String, MetaData, select
 from sqlalchemy.orm import declarative_base, Session
 
@@ -283,3 +293,11 @@ class TestAdvancedFeatures:
             assert float(rows[0][1]) == 150.00
             assert rows[1][0] == 'Bob'
             assert float(rows[1][1]) == 75.00
+
+
+def test_engine_uses_bareduckdb():
+    engine = create_engine("duckdb:///:memory:")
+    with engine.connect() as conn:
+        inner = type(conn.connection.driver_connection._ConnectionWrapper__c)
+        assert inner.__module__.startswith("bareduckdb"), f"engine connection is {inner.__module__}.{inner.__name__}"
+    assert "_duckdb" not in sys.modules, "the official duckdb client was loaded"

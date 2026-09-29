@@ -910,7 +910,7 @@ cdef void _bd_report(duckdb_v2_error_info_handle *err, const char *message) noex
     text.ptr = message
     text.len = <idx_t>strlen(message)
     duckdb_v2_error_info_set_code(err[0], DUCKDB_V2_ERROR_INPUT_INVALID)
-    duckdb_v2_error_info_set_text(err[0], text)
+    duckdb_v2_error_info_set_text(err[0], &text)
 
 
 cdef bd_reg_entry *_bd_find_slot(bd_registry *reg, idx_t slot) noexcept nogil:
@@ -974,7 +974,7 @@ cdef void _bd_tf_bind(
     for i in range(col_count):
         if duckdb_v2_schema_get_field(ddb_schema, i, &field_name, &field_type, err) != DUCKDB_V2_ERROR_NONE:
             return
-        if duckdb_v2_table_function_bind_add_result_column(info, field_name, field_type, err) != DUCKDB_V2_ERROR_NONE:
+        if duckdb_v2_table_function_bind_add_result_column(info, &field_name, field_type, err) != DUCKDB_V2_ERROR_NONE:
             return
     # The caller's cheap len() at registration time; -1 means unknown, reported as inexact.
     if declared_cardinality >= 0:
@@ -1439,7 +1439,7 @@ cdef void _install_table_function(duckdb_v2_connection_handle conn, bd_registry 
                 rc = duckdb_v2_table_function_get_signature(func, &sig, &err)
             check_v2(rc, err, "duckdb_v2_table_function_get_signature")
             with nogil:
-                rc = duckdb_v2_function_signature_add_parameter(sig, parameter, bigint, NULL, &err)
+                rc = duckdb_v2_function_signature_add_parameter(sig, &parameter, bigint, NULL, &err)
             check_v2(rc, err, "duckdb_v2_function_signature_add_parameter")
         finally:
             with nogil:
@@ -1657,13 +1657,13 @@ cdef class CApiConnectionImpl:
                 setting.ptr = <const char *>value_bytes
                 setting.len = <idx_t>len(value_bytes)
                 with nogil:
-                    rc = duckdb_v2_instance_set_option(db, name, setting, &err)
+                    rc = duckdb_v2_instance_set_option(db, &name, &setting, &err)
                 check_v2(rc, err, f"duckdb_v2_instance_set_option({key})")
 
             # A NULL name derives the attach name from the path, and NULL options carry no
             # ATTACH-scoped options; make_default matches the single-database open this replaces.
             with nogil:
-                rc = duckdb_v2_instance_attach(db, path, NULL, NULL, True, &err)
+                rc = duckdb_v2_instance_attach(db, &path, NULL, NULL, True, &err)
             check_v2(rc, err, "duckdb_v2_instance_attach")
         except BaseException:
             # The handle is not adopted yet, so nothing else would release the database.

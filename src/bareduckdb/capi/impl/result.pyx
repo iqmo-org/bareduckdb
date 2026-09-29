@@ -588,7 +588,7 @@ cdef duckdb_v2_value_handle _decimal_to_value(
     c_scale = <uint8_t>scale
     with nogil:
         rc = duckdb_v2_value_create_decimal_with_connection(
-            conn, hv, c_width, c_scale, &out_value, &err
+            conn, &hv, c_width, c_scale, &out_value, &err
         )
     check_v2(rc, err, "duckdb_v2_value_create_decimal_with_connection")
     return out_value
@@ -609,7 +609,7 @@ cdef duckdb_v2_value_handle _uuid_to_value(
     hv.upper = <int64_t>upper_raw
     hv.lower = <uint64_t>(full & ((1 << 64) - 1))
     with nogil:
-        rc = duckdb_v2_value_create_uuid_with_connection(conn, hv, &out_value, &err)
+        rc = duckdb_v2_value_create_uuid_with_connection(conn, &hv, &out_value, &err)
     check_v2(rc, err, "duckdb_v2_value_create_uuid_with_connection")
     return out_value
 
@@ -627,7 +627,7 @@ cdef duckdb_v2_value_handle _timedelta_to_value(
     iv.days = <int32_t>val.days
     iv.micros = <int64_t>(val.seconds * 1_000_000 + val.microseconds)
     with nogil:
-        rc = duckdb_v2_value_create_interval_with_connection(conn, iv, &out_value, &err)
+        rc = duckdb_v2_value_create_interval_with_connection(conn, &iv, &out_value, &err)
     check_v2(rc, err, "duckdb_v2_value_create_interval_with_connection")
     return out_value
 
@@ -795,7 +795,7 @@ cdef duckdb_v2_value_handle _python_to_value(
             hv.lower = <uint64_t>(val & ((1 << 64) - 1))
             hv.upper = <int64_t>(val >> 64)
             with nogil:
-                rc = duckdb_v2_value_create_hugeint_with_connection(conn, hv, &out_value, &err)
+                rc = duckdb_v2_value_create_hugeint_with_connection(conn, &hv, &out_value, &err)
             check_v2(rc, err, "duckdb_v2_value_create_hugeint_with_connection")
         else:
             raise OverflowError(f"Python int {val} does not fit in a v2 HUGEINT")
@@ -813,7 +813,7 @@ cdef duckdb_v2_value_handle _python_to_value(
         sv.ptr = <const char *>as_bytes
         sv.len = <idx_t>len(as_bytes)
         with nogil:
-            rc = duckdb_v2_value_create_varchar_with_connection(conn, sv, &out_value, &err)
+            rc = duckdb_v2_value_create_varchar_with_connection(conn, &sv, &out_value, &err)
         check_v2(rc, err, "duckdb_v2_value_create_varchar_with_connection")
         return out_value
 
@@ -822,7 +822,7 @@ cdef duckdb_v2_value_handle _python_to_value(
         sv.ptr = <const char *>as_bytes
         sv.len = <idx_t>len(as_bytes)
         with nogil:
-            rc = duckdb_v2_value_create_blob_with_connection(conn, sv, &out_value, &err)
+            rc = duckdb_v2_value_create_blob_with_connection(conn, &sv, &out_value, &err)
         check_v2(rc, err, "duckdb_v2_value_create_blob_with_connection")
         return out_value
 

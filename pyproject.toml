@@ -77,7 +77,7 @@ build-backend = "scikit_build_core.build"
 [tool.scikit-build]
 minimum-version = "1.0"
 build-dir = "build/{wheel_tag}"
-cmake.version = ">=3.21"
+cmake.version = ">=4.4"
 cmake.build-type = "Release"
 cmake.source-dir = "."
 
@@ -213,10 +213,9 @@ url = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple"
 explicit = true
 
 [tool.uv.sources]
-# 3.15 has no stable pyarrow / pandas wheels; pull from the nightlies on 3.15+.
-# TODO: remove when 3.15 ships
+# 3.15 has no stable pyarrow wheels; pull from the nightlies on 3.15+.
+# TODO: remove when pyarrow ships cp315 wheels
 pyarrow = [{ index = "scientific-python-nightly", marker = "python_version >= '3.15'" }]
-pandas  = [{ index = "scientific-python-nightly", marker = "python_version >= '3.15'" }]
 
 [dependency-groups]
 dev = [
@@ -247,7 +246,7 @@ dev-gil = [
     "vortex-data;sys_platform != 'win32'",  # windows wheels: vortex-data/vortex#9739, merged, unreleased
 ]
 downstream = [
-    "duckdb-engine>=0.17.0",
+    "duckdb-engine>=0.17.0; python_version < '3.15'",  # duckdb ships no cp315 wheel
     # "ibis-framework[duckdb]>=11.0.0",  # disabled until supports pandas 3.0
     "ipython>=9.7.0",
     "jupysql>=0.11.1",

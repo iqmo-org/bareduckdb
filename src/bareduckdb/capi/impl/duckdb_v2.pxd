@@ -294,9 +294,6 @@ cdef extern from "duckdb_v2.h" nogil:
         void *internal_ptr
     ctypedef _duckdb_v2_attach_options *duckdb_v2_attach_options_handle "duckdb_v2_attach_options_handle"
 
-    ctypedef struct _duckdb_v2_query_progress "_duckdb_v2_query_progress":
-        void *internal_ptr
-    ctypedef _duckdb_v2_query_progress *duckdb_v2_query_progress_handle "duckdb_v2_query_progress_handle"
 
     ctypedef struct _duckdb_v2_error_info "_duckdb_v2_error_info":
         void *internal_ptr
@@ -419,30 +416,13 @@ cdef extern from "duckdb_v2.h" nogil:
     duckdb_v2_error_t duckdb_v2_connection_create(duckdb_v2_instance_handle db, duckdb_v2_connection_handle *out_conn, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_connection_destroy(duckdb_v2_connection_handle *conn)
     duckdb_v2_error_t duckdb_v2_connection_interrupt(duckdb_v2_connection_handle conn, duckdb_v2_error_info_handle *err)
-    duckdb_v2_error_t duckdb_v2_connection_query_progress(
+    duckdb_v2_error_t duckdb_v2_connection_progress_get(
         duckdb_v2_connection_handle conn,
-        duckdb_v2_query_progress_handle *out_progress,
-        duckdb_v2_error_info_handle *err
-    )
-
-    # query progress
-
-    duckdb_v2_error_t duckdb_v2_query_progress_get_percentage(
-        duckdb_v2_query_progress_handle progress,
         double *out_percentage,
-        duckdb_v2_error_info_handle *err
-    )
-    duckdb_v2_error_t duckdb_v2_query_progress_get_rows_processed(
-        duckdb_v2_query_progress_handle progress,
         uint64_t *out_rows_processed,
-        duckdb_v2_error_info_handle *err
-    )
-    duckdb_v2_error_t duckdb_v2_query_progress_get_total_rows_to_process(
-        duckdb_v2_query_progress_handle progress,
         uint64_t *out_total_rows_to_process,
         duckdb_v2_error_info_handle *err
     )
-    duckdb_v2_error_t duckdb_v2_query_progress_destroy(duckdb_v2_query_progress_handle *progress)
 
     # parsing and statements
 
@@ -933,7 +913,7 @@ cdef extern from "duckdb_v2.h" nogil:
     )
     duckdb_v2_error_t duckdb_v2_table_function_set_name(
         duckdb_v2_table_function_handle function,
-        duckdb_v2_str_t *name,
+        duckdb_v2_identifier_t *name,
         duckdb_v2_error_info_handle *err
     )
     duckdb_v2_error_t duckdb_v2_table_function_get_signature(

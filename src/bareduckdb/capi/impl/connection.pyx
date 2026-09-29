@@ -27,7 +27,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_connection_destroy,
     duckdb_v2_connection_handle,
     duckdb_v2_connection_interrupt,
-    duckdb_v2_connection_query_progress,
+    duckdb_v2_connection_progress_get,
     duckdb_v2_context_handle,
     duckdb_v2_data_chunk_destroy,
     duckdb_v2_data_chunk_get_size,
@@ -66,11 +66,6 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_qname_get_part_count,
     duckdb_v2_qname_handle,
     duckdb_v2_qname_hash,
-    duckdb_v2_query_progress_destroy,
-    duckdb_v2_query_progress_get_percentage,
-    duckdb_v2_query_progress_get_rows_processed,
-    duckdb_v2_query_progress_get_total_rows_to_process,
-    duckdb_v2_query_progress_handle,
     duckdb_v2_replacement_scan_add_argument,
     duckdb_v2_replacement_scan_create_with_connection,
     duckdb_v2_replacement_scan_create_with_instance,
@@ -1719,7 +1714,6 @@ cdef class CApiConnectionImpl:
 
     def query_progress(self):
         """Snapshot the running query's progress, or None when nothing is published"""
-        cdef duckdb_v2_query_progress_handle progress = NULL
         cdef duckdb_v2_error_info_handle err = NULL
         cdef duckdb_v2_error_t rc
         cdef double percentage = -1.0
@@ -1730,26 +1724,12 @@ cdef class CApiConnectionImpl:
             raise RuntimeError("Connection is closed")
 
         with nogil:
-            rc = duckdb_v2_connection_query_progress(self._conn, &progress, &err)
-        check_v2(rc, err, "duckdb_v2_connection_query_progress")
+            rc = duckdb_v2_connection_progress_get(
+                self._conn, &percentage, &rows_processed, &total_rows, &err
+            )
+        check_v2(rc, err, "duckdb_v2_connection_progress_get")
 
-        try:
-            with nogil:
-                rc = duckdb_v2_query_progress_get_percentage(progress, &percentage, &err)
-            check_v2(rc, err, "duckdb_v2_query_progress_get_percentage")
-
-            with nogil:
-                rc = duckdb_v2_query_progress_get_rows_processed(progress, &rows_processed, &err)
-            check_v2(rc, err, "duckdb_v2_query_progress_get_rows_processed")
-
-            with nogil:
-                rc = duckdb_v2_query_progress_get_total_rows_to_process(progress, &total_rows, &err)
-            check_v2(rc, err, "duckdb_v2_query_progress_get_total_rows_to_process")
-        finally:
-            with nogil:
-                duckdb_v2_query_progress_destroy(&progress)
-
-        # duckdb_v2.h:5500: -1 with both counts zero is "no information available".
+        # duckdb_v2.h:5856: -1 with both counts zero is "no information available".
         if percentage < 0 and rows_processed == 0 and total_rows == 0:
             return None
         return (percentage, rows_processed, total_rows)

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import datetime
+import itertools
 import logging
 import threading
 from typing import TYPE_CHECKING
+
+from ..capi.impl.errors import QueryCancelled  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:
     from typing import Any
@@ -151,6 +154,7 @@ class Result:
     _offset: int  # fetch offset
     _read: bool
     _consumed_by: str | None
+    _cancelled: BaseException | None  # the QueryCancelled a row fetch raised, re-raised on every later fetch
     _result_lock: threading.Lock
 
     def __init__(self, result_obj: Any):
@@ -180,6 +184,7 @@ class Result:
         self._was_deferred = self._capi is not None
         self._schema: tuple[tuple[str, ...], tuple[str, ...]] | None = None
         self._consumed_by = None
+        self._cancelled = None
         self._read = False
         self._offset = 0  # Current row offset for fetchone/fetchmany
         self._result_lock = threading.Lock()
@@ -203,8 +208,9 @@ class Result:
             self._deferred_schema()
 
             capi, self._capi = self._capi, None
-            self._table = capi.to_arrow()
-            return self._table
+            table = capi.to_arrow()
+            self._table = table
+            return table
         if self._consumed_by is not None:
             raise RuntimeError(
                 f"this result was consumed by {self._consumed_by}; re-execute query to call "
@@ -391,8 +397,16 @@ class Result:
 
         return register_io_source(source_generator, schema=polars_schema)  # type: ignore
 
+    def _raise_if_cancelled(self) -> None:
+        """Re-raise a cancellation this result already reported, as duckdb 2.0 does"""
+        exc = self._cancelled
+        if exc is not None:
+            # A fresh instance, so concurrent callers never share one traceback.
+            raise type(exc)(*exc.args)
+
     def _fetch_rows(self, size: int | None = None) -> list[tuple[Any, ...]]:
         """Fetch up to `size` rows from the current offset, or all remaining rows if size is None"""
+        self._raise_if_cancelled()
         if self._capi is not None or self._rows_iter is not None:
             return self._fetch_rows_streaming(size)
 
@@ -425,19 +439,28 @@ class Result:
 
     def _fetch_rows_streaming(self, size: int | None) -> list[tuple[Any, ...]]:
         """Step the engine's own row generator, so fetchmany never materializes the result"""
-        import itertools
-
         with self._result_lock:
+            self._raise_if_cancelled()
             capi = self._capi
-            if self._rows_iter is None and capi is not None:
-                self._claim("a row fetch")
-                self._deferred_schema()
-                self._rows_iter = capi.rows()
-                self._capi = None
+            try:
+                if self._rows_iter is None and capi is not None:
+                    self._claim("a row fetch")
+                    self._deferred_schema()
+                    self._rows_iter = capi.rows()
+                    self._capi = None
 
-            if size is None:
-                return list(self._rows_iter)
-            return list(itertools.islice(self._rows_iter, size))
+                rows_iter = self._rows_iter
+                if rows_iter is None:
+                    # close() ran between _fetch_rows' check and taking the lock
+                    return []
+                if size is None:
+                    return list(rows_iter)
+                return list(itertools.islice(rows_iter, size))
+            except QueryCancelled as exc:
+                # The generator is spent after raising; without this, later fetches read a clean end.
+                logger.debug("row fetch cancelled: %s", exc)
+                self._cancelled = exc
+                raise
 
     def fetchall(self) -> list[tuple[Any, ...]]:
         """Fetch all remaining rows from current cursor position"""

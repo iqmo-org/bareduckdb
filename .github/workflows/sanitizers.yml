@@ -190,7 +190,7 @@ jobs:
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages -e . --no-build-isolation -v
 
               echo 'Installing test dependencies'
-              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages pytest pytest-asyncio pytest-cov pytest-forked \
+              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages pytest anyio trio pytest-cov pytest-forked \
                 pytest-randomly pytest-run-parallel pytest-timeout pytest-xdist
 
               echo 'Installing nightly pandas and latest pyarrow'
@@ -280,13 +280,14 @@ jobs:
               # shrink the oversized fixtures so they are tractable under a sanitizer at -O0.
               if [ '${{ matrix.sanitizer }}' = 'TSAN' ]; then
                 # TSAN: Run parallel tests to expose race conditions.
-                # tests/aio is deliberately NOT deselected here. A 'not asyncio' filter would
-                # drop all of it (pytest-asyncio's auto mode marks every async test 'asyncio'),
+                # tests/aio is deliberately NOT deselected here. A 'not anyio' filter would
+                # drop all of it (every async test there carries anyio's 'anyio' marker),
                 # and that is the only place the aio connection pool sees concurrent exercise
                 # at all - the code that produced a 'free(): chunks in smallbin corrupted'
-                # crash. The risk of including it: if pytest-run-parallel and pytest-asyncio
-                # conflict, e.g. an event loop driven from more than one --parallel-threads
-                # copy, this workflow is where that surfaces.
+                # crash. Caveat: --iterations wraps each test in a sync function, which hides
+                # the coroutine from anyio's plugin, so tests/aio/conftest.py SKIPS the async
+                # tests under --iterations > 1 rather than letting them pass without running.
+                # Their repeated coverage is dev_versions.yml's --count pass.
                 set +e
                 THREADS=\$(($(nproc) < 4 ? $(nproc) : 4))
                 python -m pytest tests/ \

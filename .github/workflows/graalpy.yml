@@ -263,7 +263,7 @@ jobs:
         shell: bash
         run: |
           python -m pytest -o addopts= -p no:randomly --parallel-threads=4 --iterations=5 --tb=short \
-            -m "not asyncio and not parallel_threads" \
+            -m "not anyio and not parallel_threads" \
             tests/capi/test_locking.py \
             tests/capi/test_atomics.py \
             tests/capi/test_result.py \

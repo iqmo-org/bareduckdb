@@ -51,6 +51,11 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_ERROR_NONE,
     DUCKDB_V2_STATEMENT_TYPE_INVALID,
     duckdb_v2_error_t,
+    duckdb_v2_function_bind_get_arg_value,
+    duckdb_v2_function_bind_get_user_data,
+    duckdb_v2_function_bind_info_handle,
+    duckdb_v2_function_bind_set_bind_data,
+    DUCKDB_V2_FUNCTION_PARAMETER_KIND_POSITIONAL_ONLY,
     duckdb_v2_function_signature_add_parameter,
     duckdb_v2_function_signature_handle,
     duckdb_v2_identifier_t,
@@ -94,10 +99,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_statement_type_t,
     duckdb_v2_str_t,
     duckdb_v2_table_function_bind_add_result_column,
-    duckdb_v2_table_function_bind_get_arg_value,
-    duckdb_v2_table_function_bind_get_user_data,
     duckdb_v2_table_function_bind_info_handle,
-    duckdb_v2_table_function_bind_set_bind_data,
     duckdb_v2_table_function_bind_set_cardinality,
     duckdb_v2_table_function_create_with_connection,
     duckdb_v2_table_function_destroy,
@@ -926,7 +928,8 @@ cdef bd_reg_entry *_bd_find_slot(bd_registry *reg, idx_t slot) noexcept nogil:
 
 
 cdef void _bd_tf_bind(
-    duckdb_v2_table_function_bind_info_handle info,
+    duckdb_v2_function_bind_info_handle info,
+    duckdb_v2_table_function_bind_info_handle result,
     duckdb_v2_context_handle context,
     duckdb_v2_error_info_handle *err,
 ) noexcept nogil:
@@ -946,12 +949,12 @@ cdef void _bd_tf_bind(
     cdef int64_t declared_cardinality = -1
     cdef idx_t i
 
-    if duckdb_v2_table_function_bind_get_user_data(info, &user_data, NULL) != DUCKDB_V2_ERROR_NONE or user_data == NULL:
+    if duckdb_v2_function_bind_get_user_data(info, &user_data, NULL) != DUCKDB_V2_ERROR_NONE or user_data == NULL:
         _bd_report(err, "the arrow scan was called without its registry")
         return
     reg = <bd_registry *>user_data
 
-    if duckdb_v2_table_function_bind_get_arg_value(info, 0, &value, err) != DUCKDB_V2_ERROR_NONE:
+    if duckdb_v2_function_bind_get_arg_value(info, 0, &value, err) != DUCKDB_V2_ERROR_NONE:
         return
     rc = duckdb_v2_value_get_bigint(value, &slot, err)
     duckdb_v2_value_destroy(&value)
@@ -974,13 +977,13 @@ cdef void _bd_tf_bind(
     for i in range(col_count):
         if duckdb_v2_schema_get_field(ddb_schema, i, &field_name, &field_type, err) != DUCKDB_V2_ERROR_NONE:
             return
-        if duckdb_v2_table_function_bind_add_result_column(info, &field_name, field_type, err) != DUCKDB_V2_ERROR_NONE:
+        if duckdb_v2_table_function_bind_add_result_column(result, &field_name, field_type, err) != DUCKDB_V2_ERROR_NONE:
             return
     # The caller's cheap len() at registration time; -1 means unknown, reported as inexact.
     if declared_cardinality >= 0:
-        duckdb_v2_table_function_bind_set_cardinality(info, <idx_t>declared_cardinality, True, NULL)
+        duckdb_v2_table_function_bind_set_cardinality(result, <idx_t>declared_cardinality, True, NULL)
     else:
-        duckdb_v2_table_function_bind_set_cardinality(info, 0, False, NULL)
+        duckdb_v2_table_function_bind_set_cardinality(result, 0, False, NULL)
 
     # The slot id, never the entry pointer: a cached plan must not outlive what unregister unlinks.
     bind_data = <bd_bind_data *>malloc(sizeof(bd_bind_data))
@@ -992,7 +995,7 @@ cdef void _bd_tf_bind(
     data.ptr = <void *>bind_data
     data.destroy = _bd_free_opaque
     data.equals = NULL
-    if duckdb_v2_table_function_bind_set_bind_data(info, &data, err) != DUCKDB_V2_ERROR_NONE:
+    if duckdb_v2_function_bind_set_bind_data(info, &data, err) != DUCKDB_V2_ERROR_NONE:
         free(bind_data)
 
 
@@ -1439,7 +1442,9 @@ cdef void _install_table_function(duckdb_v2_connection_handle conn, bd_registry 
                 rc = duckdb_v2_table_function_get_signature(func, &sig, &err)
             check_v2(rc, err, "duckdb_v2_table_function_get_signature")
             with nogil:
-                rc = duckdb_v2_function_signature_add_parameter(sig, &parameter, bigint, NULL, &err)
+                rc = duckdb_v2_function_signature_add_parameter(
+                    sig, &parameter, bigint, NULL, DUCKDB_V2_FUNCTION_PARAMETER_KIND_POSITIONAL_ONLY, &err
+                )
             check_v2(rc, err, "duckdb_v2_function_signature_add_parameter")
         finally:
             with nogil:

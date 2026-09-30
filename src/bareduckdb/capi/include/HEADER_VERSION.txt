@@ -1,5 +1,3 @@
 # Source commit of external/duckdb from which duckdb_v2.h was vendored.
-# 2026-09-29 re-pin from c2ef9c4016 adds #26230 (structs passed by const pointer instead of by
-# value; table-function order-preservation flag) and #25990 (PASSTHROUGH statement type).
 
-89b1c146308bd9e55b35469d9270e78234a63f16
+028c980193d8115cff19d86e2e73e716376bf03f

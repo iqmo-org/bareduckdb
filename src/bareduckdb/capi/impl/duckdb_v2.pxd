@@ -197,6 +197,9 @@ cdef extern from "duckdb_v2.h" nogil:
         DUCKDB_V2_RESULT_STEP_STATUS_FINISHED "DUCKDB_V2_RESULT_STEP_STATUS_FINISHED"
         DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED "DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED"
 
+    ctypedef enum duckdb_v2_function_parameter_kind_t "DUCKDB_V2_FUNCTION_PARAMETER_KIND":
+        DUCKDB_V2_FUNCTION_PARAMETER_KIND_POSITIONAL_ONLY "DUCKDB_V2_FUNCTION_PARAMETER_KIND_POSITIONAL_ONLY"
+
     # transparent structs
 
     # Borrowed, length-delimited view. Never null-terminated; always honor len.
@@ -352,6 +355,11 @@ cdef extern from "duckdb_v2.h" nogil:
     ctypedef struct _duckdb_v2_table_function "_duckdb_v2_table_function":
         void *internal_ptr
     ctypedef _duckdb_v2_table_function *duckdb_v2_table_function_handle "duckdb_v2_table_function_handle"
+
+    # Borrowed; handed to every bind callback, carries the arguments, user data and bind data.
+    ctypedef struct _duckdb_v2_function_bind_info "_duckdb_v2_function_bind_info":
+        void *internal_ptr
+    ctypedef _duckdb_v2_function_bind_info *duckdb_v2_function_bind_info_handle "duckdb_v2_function_bind_info_handle"
 
     # Borrowed; handed to the table function callbacks only.
     ctypedef struct _duckdb_v2_table_function_bind_info "_duckdb_v2_table_function_bind_info":
@@ -875,6 +883,7 @@ cdef extern from "duckdb_v2.h" nogil:
         const duckdb_v2_identifier_t *name,
         duckdb_v2_logical_type_handle type,
         duckdb_v2_value_handle value,
+        duckdb_v2_function_parameter_kind_t kind,
         duckdb_v2_error_info_handle *err
     )
 
@@ -882,7 +891,8 @@ cdef extern from "duckdb_v2.h" nogil:
 
     # All run on an engine thread: noexcept, no GIL, report failure through `err`.
     ctypedef void (*duckdb_v2_table_function_bind_callback_fn)(
-        duckdb_v2_table_function_bind_info_handle info,
+        duckdb_v2_function_bind_info_handle info,
+        duckdb_v2_table_function_bind_info_handle result,
         duckdb_v2_context_handle context,
         duckdb_v2_error_info_handle *err
     ) noexcept nogil
@@ -950,18 +960,18 @@ cdef extern from "duckdb_v2.h" nogil:
     duckdb_v2_error_t duckdb_v2_table_function_register(duckdb_v2_table_function_handle function, duckdb_v2_error_info_handle *err)
     duckdb_v2_error_t duckdb_v2_table_function_destroy(duckdb_v2_table_function_handle *function)
 
-    duckdb_v2_error_t duckdb_v2_table_function_bind_get_user_data(
-        duckdb_v2_table_function_bind_info_handle info,
+    duckdb_v2_error_t duckdb_v2_function_bind_get_user_data(
+        duckdb_v2_function_bind_info_handle info,
         void **data,
         duckdb_v2_error_info_handle *err
     )
-    duckdb_v2_error_t duckdb_v2_table_function_bind_set_bind_data(
-        duckdb_v2_table_function_bind_info_handle info,
+    duckdb_v2_error_t duckdb_v2_function_bind_set_bind_data(
+        duckdb_v2_function_bind_info_handle info,
         duckdb_v2_opaque *data,
         duckdb_v2_error_info_handle *err
     )
-    duckdb_v2_error_t duckdb_v2_table_function_bind_get_arg_value(
-        duckdb_v2_table_function_bind_info_handle info,
+    duckdb_v2_error_t duckdb_v2_function_bind_get_arg_value(
+        duckdb_v2_function_bind_info_handle info,
         idx_t index,
         duckdb_v2_value_handle *value,
         duckdb_v2_error_info_handle *err

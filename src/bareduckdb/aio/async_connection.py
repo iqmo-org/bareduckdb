@@ -1,21 +1,36 @@
 """
-Async connection wrappers for bareduckdb.
+Async connection wrappers for bareduckdb, on anyio so they run under asyncio and trio.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
-from concurrent.futures import wait as futures_wait
+from collections import deque
 from functools import partial
-from typing import TYPE_CHECKING, Any, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, TypeVar
+
+try:
+    import anyio
+except ModuleNotFoundError as exc:
+    raise ImportError("bareduckdb.aio requires anyio: pip install bareduckdb[aio]") from exc
+
+from bareduckdb import QueryCancelled
 
 if TYPE_CHECKING:
     from bareduckdb.core.connection_base import ConnectionBase
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+# An interrupt that lands before statement_execute is lost, so cancellation repeats it at this period.
+_REINTERRUPT_INTERVAL = 0.01
+_POLL_INTERVAL = 0.001
+_SLOW_INTERRUPT_WARNING = 5.0
+# What an interrupted query raises: QueryCancelled from execute, OSError from the Arrow stream.
+_INTERRUPT_ERRORS: tuple[type[BaseException], ...] = (QueryCancelled, OSError)  # pyright: ignore[reportAssignmentType]
+_NOT_INITIALIZED = "Connection pool not initialized. Call 'await pool.connect()' or use 'async with AsyncConnectionPool()'."
 
 
 class AsyncConnectionPool:
@@ -55,87 +70,62 @@ class AsyncConnectionPool:
         self._read_only = read_only
         self._owner: Optional[ConnectionBase] = None
         self._connections: list[ConnectionBase] = []
-        # Built in connect(): an asyncio primitive must not outlive the loop that uses it.
-        self._available: Optional[asyncio.Queue[ConnectionBase]] = None
-        self._data_lock: Optional[asyncio.Lock] = None
-        self._executor: Optional[ThreadPoolExecutor] = None
-        # Work items still running on executor threads, after their asyncio task has returned.
-        self._inflight: set[Future[Any]] = set()
-        self._inflight_lock = threading.Lock()  # done callbacks discard from worker threads
+        self._idle: deque[ConnectionBase] = deque()
+        # Built in connect(): anyio primitives need a running backend.
+        self._slots: Optional[anyio.Semaphore] = None
+        self._data_lock: Optional[anyio.Lock] = None
+        self._limiter: Optional[anyio.CapacityLimiter] = None
         self._closing = False
 
     async def connect(self) -> AsyncConnectionPool:
         """Open the database and its cursors. Idempotent"""
         from bareduckdb.core.connection_base import ConnectionBase
 
-        if self._executor is not None:
+        if self._owner is not None:
             return self
 
         logger.debug("Creating pool of %d cursors over one database", self._pool_size)
+        # One token per cursor, plus one for open and close.
+        self._limiter = anyio.CapacityLimiter(self._pool_size + 1)
 
-        loop = asyncio.get_running_loop()
-        executor = ThreadPoolExecutor(max_workers=self._pool_size, thread_name_prefix="bareduckdb-aio")
+        owner = await self._in_thread(partial(ConnectionBase, self._database, config=self._config, read_only=self._read_only))
+        cursors: list[ConnectionBase] = []
         try:
-            owner = await loop.run_in_executor(
-                executor,
-                partial(ConnectionBase, self._database, config=self._config, read_only=self._read_only),
-            )
             # Serially: connection creation is not thread-safe and cursor() takes a global lock.
-            cursors = [await loop.run_in_executor(executor, owner.cursor) for _ in range(self._pool_size)]
+            for _ in range(self._pool_size):
+                cursors.append(await self._in_thread(owner.cursor))
         except BaseException:
-            # Without this the executor and its threads leak on a failed open.
-            executor.shutdown(wait=True)
+            logger.debug("Pool open failed after %d cursors; closing them", len(cursors), exc_info=True)
+            with anyio.CancelScope(shield=True):
+                await self._close_all(cursors, owner)
             raise
 
         self._owner = owner
         self._connections = cursors
-        self._available = asyncio.Queue()
-        self._data_lock = asyncio.Lock()
-        for conn in cursors:
-            self._available.put_nowait(conn)
-        self._executor = executor
+        self._idle = deque(cursors)
+        self._slots = anyio.Semaphore(len(cursors))
+        self._data_lock = anyio.Lock()
         self._closing = False
 
         logger.debug("Pool initialized with %d cursors", len(cursors))
         return self
 
     async def aclose(self) -> None:
-        """Close every cursor, then the owning connection, then the executor"""
-        # Set first: _run checks it between taking a connection and submitting, with no await between.
+        """Stop every in-flight query, then close every cursor and the owning connection. Idempotent"""
+        # Set first: _run checks it after taking a cursor, with no checkpoint between.
         self._closing = True
-        executor, self._executor = self._executor, None
-        conns, self._connections = self._connections, []
-        owner, self._owner = self._owner, None
-        self._available = None
+        conns, owner, idle = self._connections, self._owner, self._idle
+        self._connections, self._owner = [], None
+        self._slots = None
         self._data_lock = None
 
-        if executor is None:
+        if owner is None:
             return
 
-        loop = asyncio.get_running_loop()
-        try:
-            # Closing a connection mid-query corrupts the engine allocator, so drain every query first.
-            while True:
-                with self._inflight_lock:
-                    pending = [f for f in self._inflight if not f.done()]
-                if not pending:
-                    break
-                logger.debug("aclose: draining %d in-flight queries before closing", len(pending))
-                for conn in conns:
-                    try:
-                        conn.interrupt()
-                    except Exception:
-                        logger.warning("interrupt during aclose failed", exc_info=True)
-                await loop.run_in_executor(None, partial(futures_wait, pending))
-            with self._inflight_lock:
-                self._inflight = set()
-            # Cursors first, then the owner: the database closes with its last reference.
-            for conn in conns:
-                await loop.run_in_executor(executor, conn.close)
-            if owner is not None:
-                await loop.run_in_executor(executor, owner.close)
-        finally:
-            executor.shutdown(wait=True)
+        # Shielded: closing a connection mid-query corrupts the engine allocator, so a cancelled aclose still drains.
+        with anyio.CancelScope(shield=True):
+            await self._interrupt_until(lambda: len(idle) == len(conns), conns, "aclose")
+            await self._close_all(conns, owner)
 
     async def __aenter__(self) -> AsyncConnectionPool:
         return await self.connect()
@@ -154,67 +144,106 @@ class AsyncConnectionPool:
         """
         Execute SQL query on the next available cursor.
         """
-        executor, available, data_lock = self._executor, self._available, self._data_lock
-        if executor is None or available is None or data_lock is None:
-            raise RuntimeError("Connection pool not initialized. Call 'await pool.connect()' or use 'async with AsyncConnectionPool()'.")
+        slots, data_lock = self._slots, self._data_lock
+        if slots is None or data_lock is None or self._closing:
+            raise RuntimeError(_NOT_INITIALIZED)
 
         # The replacement-scan registry is database-scoped
         if data:
             async with data_lock:
-                return await self._run(executor, available, query, parameters, data)
-        return await self._run(executor, available, query, parameters, data)
+                return await self._run(slots, query, parameters, data)
+        return await self._run(slots, query, parameters, data)
 
     async def _run(
         self,
-        executor: ThreadPoolExecutor,
-        available: asyncio.Queue[ConnectionBase],
+        slots: anyio.Semaphore,
         query: str,
         parameters: Sequence[Any] | dict[str, Any] | None,
         data: dict[str, Any] | None,
     ) -> Any:
-        loop = asyncio.get_running_loop()
-        conn = await available.get()
-        if self._closing:
-            available.put_nowait(conn)
-            raise RuntimeError("Connection pool not initialized. Call 'await pool.connect()' or use 'async with AsyncConnectionPool()'.")
-        work = executor.submit(
-            partial(conn._call, query, parameters=parameters, data=data),  # type: ignore[reportPrivateUsage]
-        )
-        with self._inflight_lock:
-            self._inflight.add(work)
-        work.add_done_callback(self._forget_inflight)
+        idle = self._idle
+        await slots.acquire()
+        conn = idle.popleft()
         try:
-            return await asyncio.wrap_future(work, loop=loop)
-        except asyncio.CancelledError:
-            # Cancelling the future does not stop the worker thread; the interrupt does.
-            try:
-                conn.interrupt()
-            except Exception:
-                logger.warning("interrupt after cancellation failed", exc_info=True)
-            raise
+            # The deque check catches an aclose() and a new connect() while this task waited.
+            if self._closing or self._idle is not idle:
+                raise RuntimeError(_NOT_INITIALIZED)
+            call = partial(conn._call, query, parameters=parameters, data=data)  # type: ignore[reportPrivateUsage]
+            return await self._in_thread(call, conn, query)
         finally:
-            # The connection stays busy until the worker thread leaves _call; handing it back early is a use-after-free.
-            if work.done():
-                # put_nowait, not await put: the queue is unbounded, and this must not be a cancellation point or a cancelled task loses its pool slot.
-                available.put_nowait(conn)
-            else:
-                work.add_done_callback(partial(self._release_later, loop, available, conn))
+            # _in_thread returns only once the worker thread has left _call; handing the cursor back earlier is a use-after-free.
+            idle.append(conn)
+            slots.release()
+
+    async def _in_thread(self, fn: Callable[[], T], conn: Optional[ConnectionBase] = None, query: str = "") -> T:
+        """Runs fn on a worker thread and returns only once that thread has left fn."""
+        claim = threading.Lock()
+        finished = threading.Event()
+        state: dict[str, Any] = {"phase": "pending"}
+
+        def work() -> None:
+            with claim:
+                if state["phase"] == "abandoned":
+                    return
+                state["phase"] = "running"
+            try:
+                state["value"] = fn()
+            except BaseException as exc:
+                state["error"] = exc
+            finally:
+                finished.set()
+
+        try:
+            # Abandoning, rather than run_sync's shield, because a native asyncio cancel (wait_for) bypasses that shield anyway.
+            await anyio.to_thread.run_sync(work, abandon_on_cancel=True, limiter=self._limiter)
+        except anyio.get_cancelled_exc_class():
+            with claim:
+                started = state["phase"] == "running"
+                if not started:
+                    state["phase"] = "abandoned"
+            if started:
+                await self._interrupt_until(finished.is_set, [conn] if conn is not None else [], query or repr(fn))
+                error = state.get("error")
+                if error is not None and not isinstance(error, _INTERRUPT_ERRORS):
+                    logger.debug("query failed while being cancelled; raising its error: %.200s", query)
+                    raise error from None
+            raise
+        if "error" in state:
+            raise state["error"]
+        return state["value"]
 
     @staticmethod
-    def _release_later(
-        loop: asyncio.AbstractEventLoop,
-        available: "asyncio.Queue[ConnectionBase]",
-        conn: "ConnectionBase",
-        _work: Future[Any],
-    ) -> None:
-        """Returns a connection to the pool from the worker thread that freed it."""
-        try:
-            loop.call_soon_threadsafe(available.put_nowait, conn)
-        except RuntimeError:
-            # The loop is already closed; the pool is gone and nothing can take the connection.
-            logger.debug("event loop closed before the connection could be returned to the pool")
+    async def _interrupt_until(done: Callable[[], bool], conns: Sequence[ConnectionBase], what: str) -> None:
+        """Re-interrupts conns until done(), since an interrupt that lands before statement_execute is a no-op."""
+        cancelled = anyio.get_cancelled_exc_class()
+        started = anyio.current_time()
+        next_interrupt = started
+        warned = failed = False
+        with anyio.CancelScope(shield=True):
+            while not done():
+                now = anyio.current_time()
+                if now >= next_interrupt:
+                    next_interrupt = now + _REINTERRUPT_INTERVAL
+                    for conn in conns:
+                        try:
+                            conn.interrupt()
+                        except Exception:
+                            logger.log(logging.DEBUG if failed else logging.WARNING, "interrupt failed; retrying", exc_info=True)
+                            failed = True
+                if not warned and now - started > _SLOW_INTERRUPT_WARNING:
+                    # Never abandoned: handing back a cursor whose thread still runs is a use-after-free.
+                    logger.warning("still waiting %.1fs after the first interrupt: %.200s", now - started, what)
+                    warned = True
+                try:
+                    await anyio.sleep(_POLL_INTERVAL)
+                except cancelled:
+                    # A repeated native asyncio cancel reaches through the shield; the thread must still be waited for.
+                    logger.debug("cancelled again while waiting for a worker thread; still waiting")
 
-    def _forget_inflight(self, work: Future[Any]) -> None:
-        """Drops a finished work item, on the worker thread that finished it."""
-        with self._inflight_lock:
-            self._inflight.discard(work)
+    async def _close_all(self, cursors: list[ConnectionBase], owner: ConnectionBase) -> None:
+        """Closes cursors first, then the owner, since the database closes with its last reference."""
+        for conn in [*cursors, owner]:
+            try:
+                await self._in_thread(conn.close)
+            except Exception:
+                logger.warning("closing a pool connection failed", exc_info=True)

@@ -46,6 +46,7 @@ class StatementType(IntEnum):
     CONNECT = 31
     DISCONNECT = 32
     EXTERNAL_RESOURCE = 33
+    PASSTHROUGH = 34
 
 
 class ExpectedResultType(Enum):

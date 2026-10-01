@@ -1,6 +1,7 @@
 """Cancelling an awaited pool query interrupts it, so the cursor comes back promptly."""
 
 import asyncio
+import threading
 import time
 
 import anyio
@@ -17,33 +18,70 @@ SLOW = "select count(*) from range(1000000000000) t(i) where i % 7 = 0"
 asyncio_only = pytest.mark.parametrize("anyio_backend", ["asyncio"])
 
 
-def slow_reader(drained):
-    """A reader that takes about 0.2 s to drain, which an interrupt cannot shorten."""
-    import pyarrow as pa
+class GatedReader:
+    """A reader that parks the worker thread inside register() until the test releases it."""
 
-    schema = pa.schema([("x", pa.int64())])
+    def __init__(self):
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.drained = False
 
-    # register() drains a reader eagerly on the worker thread, and an interrupt cannot stop a sleep.
-    def batches():
-        for i in range(10):
-            time.sleep(0.02)
-            yield pa.record_batch([pa.array([i])], schema=schema)
-        drained.append(True)
+    def reader(self):
+        import pyarrow as pa
 
-    return pa.RecordBatchReader.from_batches(schema, batches())
+        schema = pa.schema([("x", pa.int64())])
+
+        # register() drains a reader eagerly on the worker thread, and an interrupt cannot stop a wait.
+        def batches():
+            self.started.set()
+            if not self.release.wait(10.0):
+                raise TimeoutError("the test never released the reader")
+            yield pa.record_batch([pa.array([1])], schema=schema)
+            self.drained = True
+
+        return pa.RecordBatchReader.from_batches(schema, batches())
+
+
+async def wait_until(predicate, what, timeout=10.0):
+    """Polls predicate on the event loop, failing after timeout."""
+    deadline = anyio.current_time() + timeout
+    while not predicate():
+        assert anyio.current_time() < deadline, f"timed out after {timeout}s waiting for {what}"
+        await anyio.sleep(0.001)
+
+
+# Long enough for a cursor handed back too early to show; a slow machine can only miss that, not fail falsely.
+PARKED_CHECK = 0.05
 
 
 async def test_cancelled_execute_returns_only_after_its_thread():
     """The cursor goes back to the pool only once the worker thread has left the query."""
     pytest.importorskip("pyarrow")
     async with AsyncConnectionPool(pool_size=1, config={"threads": "1"}) as pool:
-        for delay in (0.02, 0.1):
-            drained = []
+        for delay in (0.0, 0.02):
+            gate = GatedReader()
+            scope = anyio.CancelScope()
+            returned = anyio.Event()
+
+            async def run():
+                with scope:
+                    await pool.execute("select count(*) from src", data={"src": gate.reader()})
+                returned.set()
+
             with anyio.fail_after(10.0):
-                with anyio.move_on_after(delay) as scope:
-                    await pool.execute("select count(*) from src", data={"src": slow_reader(drained)})
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(run)
+                    try:
+                        await wait_until(gate.started.is_set, "worker to enter the reader")
+                        await anyio.sleep(delay)
+                        scope.cancel()
+                        await anyio.sleep(PARKED_CHECK)
+                        assert not returned.is_set(), f"execute returned while its worker thread was parked: delay={delay}"
+                        assert len(pool._idle) == 0, f"cursor handed back while in use: delay={delay} idle={len(pool._idle)}"
+                    finally:
+                        gate.release.set()
             assert scope.cancelled_caught, f"delay={delay}"
-            assert drained, f"execute returned before its worker thread finished: delay={delay}"
+            assert gate.drained, f"delay={delay}"
             assert len(pool._idle) == 1, f"delay={delay} idle={len(pool._idle)}"
 
 
@@ -88,19 +126,59 @@ async def test_repeated_native_cancel_still_waits_for_the_thread():
     pytest.importorskip("pyarrow")
     async with AsyncConnectionPool(pool_size=1, config={"threads": "1"}) as pool:
         for delay in (1e-04, 0.005, 0.03):
-            drained = []
-            task = asyncio.ensure_future(pool.execute("select count(*) from src", data={"src": slow_reader(drained)}))
-            await asyncio.sleep(0.02)
-            task.cancel()
-            await asyncio.sleep(delay)
-            task.cancel()
+            gate = GatedReader()
+            task = asyncio.ensure_future(pool.execute("select count(*) from src", data={"src": gate.reader()}))
+            try:
+                await wait_until(gate.started.is_set, "worker to enter the reader")
+                task.cancel()
+                await asyncio.sleep(delay)
+                task.cancel()
+                await asyncio.sleep(PARKED_CHECK)
+                assert not task.done(), f"task returned while its worker thread was parked: delay={delay}"
+                assert len(pool._idle) == 0, f"cursor handed back while in use: delay={delay} idle={len(pool._idle)}"
+            finally:
+                gate.release.set()
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(task, timeout=10.0)
-            # The worker drains the whole reader before it can return, so an early return shows up here.
-            assert drained, f"task returned before its worker thread finished: delay={delay}"
+            assert gate.drained, f"delay={delay}"
             assert len(pool._idle) == 1, f"delay={delay} idle={len(pool._idle)}"
         result = await asyncio.wait_for(pool.execute("select 42"), timeout=10.0)
         assert result.num_rows == 1, f"unexpected follow-up result: {result!r}"
+
+
+async def test_cancel_before_the_worker_starts_abandons_the_call():
+    """A cancel while run_sync still waits for a thread abandons the call, so the query never runs."""
+    pytest.importorskip("pyarrow")
+    async with AsyncConnectionPool(pool_size=1, config={"threads": "1"}) as pool:
+        limiter = pool._limiter
+        # Holding every token keeps run_sync pending for as long as the test needs.
+        holders = [object() for _ in range(int(limiter.total_tokens))]
+        for holder in holders:
+            await limiter.acquire_on_behalf_of(holder)
+        gate = GatedReader()
+        gate.release.set()
+        try:
+            with anyio.fail_after(10.0):
+                async with anyio.create_task_group() as tg:
+                    scope = anyio.CancelScope()
+
+                    async def run():
+                        with scope:
+                            await pool.execute("select count(*) from src", data={"src": gate.reader()})
+
+                    tg.start_soon(run)
+                    await wait_until(lambda: limiter.statistics().tasks_waiting == 1, "run_sync to wait for a thread")
+                    scope.cancel()
+            assert scope.cancelled_caught
+            assert len(pool._idle) == 1, f"idle={len(pool._idle)}"
+        finally:
+            for holder in holders:
+                limiter.release_on_behalf_of(holder)
+        with anyio.fail_after(10.0):
+            result = await pool.execute("select 42")
+        assert result.num_rows == 1, f"unexpected follow-up result: {result!r}"
+        # The follow-up used a worker thread, so an abandoned call that still ran would have entered the reader by now.
+        assert not gate.started.is_set(), "the abandoned call ran after all"
 
 
 async def test_pool_still_works_after_a_cancellation(gather):

@@ -43,7 +43,7 @@ jobs:
 
       - name: Build and test wheels
         if: matrix.platform.cibw_system != 'musllinux'
-        uses: pypa/cibuildwheel@v4.2.1
+        uses: pypa/cibuildwheel@v4.3.0
         env:
           CIBW_TEST_COMMAND: pytest {project}/tests --import-mode=importlib --ignore={project}/tests/experimental --ignore={project}/tests/downstream --ignore={project}/tests/comparison --ignore={project}/tests/benchmarks -v -n auto --cov=bareduckdb --cov-report=term-missing
           CIBW_TEST_EXTRAS: "test"
@@ -53,7 +53,7 @@ jobs:
 
       - name: Build and test wheels (musllinux)
         if: matrix.platform.cibw_system == 'musllinux'
-        uses: pypa/cibuildwheel@v4.2.1
+        uses: pypa/cibuildwheel@v4.3.0
         env:
           CIBW_TEST_COMMAND: |
             set -e

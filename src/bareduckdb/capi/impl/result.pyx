@@ -5,6 +5,7 @@
 
 import datetime
 import decimal
+import logging
 import uuid
 
 from libc.stdint cimport (
@@ -19,6 +20,7 @@ from libc.stdint cimport (
 )
 from libc.stdlib cimport free, malloc
 
+from bareduckdb.capi.impl.arrow cimport export_arrow_result
 from bareduckdb.capi.impl.connection cimport (
     CApiConnectionImpl,
     bd_registry,
@@ -61,6 +63,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_LOGICAL_TYPE_ID_UBIGINT,
     DUCKDB_V2_LOGICAL_TYPE_ID_UHUGEINT,
     DUCKDB_V2_LOGICAL_TYPE_ID_UINTEGER,
+    DUCKDB_V2_LOGICAL_TYPE_ID_UNKNOWN,
     DUCKDB_V2_LOGICAL_TYPE_ID_USMALLINT,
     DUCKDB_V2_LOGICAL_TYPE_ID_UTINYINT,
     DUCKDB_V2_LOGICAL_TYPE_ID_UUID,
@@ -71,7 +74,18 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_RESULT_STEP_STATUS_WAITING,
     DUCKDB_V2_RESULT_TYPE_QUERY_RESULT,
     DUCKDB_V2_STATEMENT_TYPE_CREATE,
+    DUCKDB_V2_STATEMENT_TYPE_EXPLAIN,
+    DUCKDB_V2_STATEMENT_TYPE_MULTI,
+    DUCKDB_V2_STATEMENT_TYPE_SELECT,
+    DUCKDB_V2_VECTOR_TYPE_CONSTANT,
+    DUCKDB_V2_VECTOR_TYPE_DICTIONARY,
+    DUCKDB_V2_VECTOR_TYPE_FLAT,
+    DUCKDB_V2_VECTOR_TYPE_OTHER,
     idx_t,
+    duckdb_v2_arrow_result_destroy,
+    duckdb_v2_arrow_result_drain,
+    duckdb_v2_arrow_result_get_result_type,
+    duckdb_v2_arrow_result_handle,
     duckdb_v2_bignum_decode,
     duckdb_v2_bool_t,
     duckdb_v2_connection_create_type_from_id,
@@ -110,9 +124,11 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_schema_get_field,
     duckdb_v2_schema_handle,
     duckdb_v2_sql_statement_destroy,
+    duckdb_v2_sql_statement_get_type,
     duckdb_v2_sql_statement_handle,
     duckdb_v2_statement_bind,
     duckdb_v2_statement_execute,
+    duckdb_v2_statement_execute_arrow,
     duckdb_v2_statement_iterator_destroy,
     duckdb_v2_statement_iterator_handle,
     duckdb_v2_statement_iterator_next,
@@ -170,7 +186,9 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_value_handle,
     duckdb_v2_value_is_null,
     duckdb_v2_vector_get_value,
+    duckdb_v2_vector_get_vector_type,
     duckdb_v2_vector_handle,
+    duckdb_v2_vector_type_t,
 )
 from bareduckdb.capi.impl.atomics cimport (
     bdv2_cas,
@@ -178,6 +196,7 @@ from bareduckdb.capi.impl.atomics cimport (
     bdv2_lock,
     bdv2_store_release,
     bdv2_unlock,
+    bdv2_yield,
 )
 from bareduckdb.capi.impl.errors cimport (
     check_v2,
@@ -188,12 +207,26 @@ from bareduckdb.capi.impl.errors cimport (
 
 from bareduckdb.capi.impl.errors import QueryCancelled
 
+_logger = logging.getLogger("bareduckdb.capi.result")
+
+ROWS_NOT_ARROW = " ".join("""
+    arrow export: this statement already ran as a row result, and DuckDB cannot convert a row
+    result to Arrow. A statement other than SELECT runs at execute() for its effect, and reading
+    the columns of a statement whose types bind cannot resolve submits it as rows. Fetch its
+    rows, or pass output_type='arrow_table' to execute()
+""".split())
+
+# CApiResult._pending: bound and unsubmitted, being submitted by one consumer, or neither.
+cdef long _NOT_PENDING = 0
+cdef long _PENDING = 1
+cdef long _SUBMITTING = 2
+
 
 _EPOCH_DATE = datetime.date(1970, 1, 1)
 _EPOCH_DATETIME = datetime.datetime(1970, 1, 1)
 _EPOCH_DATETIME_UTC = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
 
-# dtime_tz_t packing, duckdb_v2.h:9325. The same constants core/arrow_timetz.py reads.
+# dtime_tz_t packing, as the header's TIME_TZ docs give it. The same constants core/arrow_timetz.py reads.
 _TIME_TZ_OFFSET_BITS = 24
 _TIME_TZ_OFFSET_MASK = 0xFFFFFF
 _TIME_TZ_OFFSET_BIAS = 57599
@@ -201,8 +234,14 @@ _TIME_TZ_OFFSET_BIAS = 57599
 
 # execute(): parse -> bind -> execute, iterating the whole statement iterator
 
-def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_rows=None):
-    """Execute every statement, draining earlier results; return the last one"""
+def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_rows=None, bint arrow=False):
+    """Execute every statement, draining earlier results; return the last one.
+
+    With arrow, the last statement runs as an Arrow result and an ArrowResult comes back.
+    Without it, a last SELECT, EXPLAIN or statement group is only bound and comes back as a
+    pending CApiResult, submitted once by its first consumer as rows or as Arrow; any other
+    last statement runs here, as it must for its side effect.
+    """
     cdef duckdb_v2_connection_handle c_conn = conn._conn
     cdef bytes query_bytes = query.encode("utf-8")
     cdef const char *c_query = query_bytes
@@ -214,7 +253,7 @@ def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_ro
     with nogil:
         bd_registry_acquire(reg)
     try:
-        return _execute_bound(conn, c_conn, c_query, parameters, batch_rows, reg, &transferred)
+        return _execute_bound(conn, c_conn, c_query, parameters, batch_rows, arrow, reg, &transferred)
     finally:
         if not transferred:
             with nogil:
@@ -227,6 +266,7 @@ cdef object _execute_bound(
     const char *c_query,
     object parameters,
     object batch_rows,
+    bint arrow,
     bd_registry *reg,
     bint *transferred,
 ):
@@ -238,10 +278,7 @@ cdef object _execute_bound(
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef idx_t rows_changed = 0
-    cdef CApiResult py_result
-    cdef duckdb_v2_result_type_t result_type
     cdef duckdb_v2_statement_type_t statement_type
-    cdef bint materialize = False
 
     with nogil:
         rc = duckdb_v2_parse_sql(c_conn, c_query, &iterator, &err)
@@ -249,24 +286,23 @@ cdef object _execute_bound(
 
     try:
         with nogil:
-            rc = duckdb_v2_statement_iterator_next(iterator, &current, &err)
+            rc = duckdb_v2_statement_iterator_next(iterator, &upcoming, &err)
         check_v2(rc, err, "duckdb_v2_statement_iterator_next")
-        if current == NULL:
+        if upcoming == NULL:
             raise RuntimeError("no SQL statement to execute")
 
         try:
             while True:
-                current_result = _execute_one(c_conn, current, parameters)
-
+                current = upcoming
+                upcoming = NULL
+                # Parse only: the iterator binds nothing, so looking ahead runs nothing early.
                 with nogil:
                     rc = duckdb_v2_statement_iterator_next(iterator, &upcoming, &err)
-                if rc != DUCKDB_V2_ERROR_NONE:
-                    _destroy_result(current_result)
-                    check_v2(rc, err, "duckdb_v2_statement_iterator_next")
-
+                check_v2(rc, err, "duckdb_v2_statement_iterator_next")
                 if upcoming == NULL:
                     break
 
+                current_result = _execute_one(c_conn, current, _build_params(c_conn, current, parameters))
                 # Destroy before check_v2: a raise leaves this C local unreachable.
                 with nogil:
                     rc = duckdb_v2_result_drain(current_result, &rows_changed, &err)
@@ -275,40 +311,225 @@ cdef object _execute_bound(
                 check_v2(rc, err, "duckdb_v2_result_drain")
                 with nogil:
                     duckdb_v2_sql_statement_destroy(&current)
-                current = upcoming
-                upcoming = NULL
-        finally:
+        except BaseException:
             with nogil:
                 duckdb_v2_sql_statement_destroy(&current)
+                duckdb_v2_sql_statement_destroy(&upcoming)
+            raise
     finally:
         with nogil:
             duckdb_v2_statement_iterator_destroy(&iterator)
 
-    if current_result != NULL:
+    try:
+        if arrow:
+            return _execute_arrow_last(conn, current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred)
         with nogil:
-            rc = duckdb_v2_result_get_result_type(current_result, &result_type, &err)
+            rc = duckdb_v2_sql_statement_get_type(current, &statement_type, &err)
+        check_v2(rc, err, "duckdb_v2_sql_statement_get_type")
+        if statement_type == DUCKDB_V2_STATEMENT_TYPE_SELECT or statement_type == DUCKDB_V2_STATEMENT_TYPE_EXPLAIN:
+            py_result = _defer_bound(conn, &current, parameters, batch_rows, reg, transferred)
+            if py_result is not None:
+                return py_result
+        elif statement_type == DUCKDB_V2_STATEMENT_TYPE_MULTI:
+            # Bind rejects a group, so its schema resolves once the first consumer submits it.
+            return _pending_result(conn, &current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred)
+        return _execute_last(conn, current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred)
+    finally:
+        # A pending result took ownership of the statement and set this to NULL.
+        with nogil:
+            duckdb_v2_sql_statement_destroy(&current)
+
+
+cdef object _execute_arrow_last(
+    CApiConnectionImpl conn,
+    duckdb_v2_sql_statement_handle statement,
+    _Params params,
+    object batch_rows,
+    bd_registry *reg,
+    bint *transferred,
+):
+    """Execute the last statement as an Arrow result, moving the registry borrow onto it"""
+    cdef duckdb_v2_arrow_result_handle handle = NULL
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_result_type_t result_type
+    cdef idx_t rows_changed = 0
+    cdef ArrowResult out
+
+    handle = _execute_one_arrow(conn._conn, statement, params, batch_rows)
+    out = ArrowResult.__new__(ArrowResult)
+    out._handle = handle
+    out._reg = reg
+    out._borrow = 1
+    transferred[0] = True
+
+    with nogil:
+        rc = duckdb_v2_arrow_result_get_result_type(out._handle, &result_type, &err)
+    if rc != DUCKDB_V2_ERROR_NONE:
+        # A statement expanding into a group (PIVOT) has no metadata until the stream steps it.
+        if err != NULL:
+            duckdb_v2_error_info_destroy(&err)
+    elif result_type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT:
+        # Run it here for its effect, as the row path does; the export then carries the schema only.
+        with nogil:
+            rc = duckdb_v2_arrow_result_drain(out._handle, &rows_changed, &err)
+        check_v2(rc, err, "duckdb_v2_arrow_result_drain")
+    return out
+
+
+cdef object _defer_bound(
+    CApiConnectionImpl conn,
+    duckdb_v2_sql_statement_handle *statement_slot,
+    object parameters,
+    object batch_rows,
+    bd_registry *reg,
+    bint *transferred,
+):
+    """Bind a last SELECT or EXPLAIN into a pending result, or return None to have it executed now.
+
+    None is returned when bind fails, so execution raises the error with its LINE context, when
+    the supplied values do not match the parameters, so execution reports the mismatch, and
+    never otherwise. A parameter whose type bind cannot infer leaves the schema to resolve on
+    submission, since bind then reports a placeholder column.
+    """
+    cdef duckdb_v2_schema_handle out_schema = NULL
+    cdef duckdb_v2_schema_handle out_parameters = NULL
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef idx_t declared = 0
+    cdef _Params params = None
+    cdef CApiResult py_result
+    cdef bint schema_known
+
+    with nogil:
+        rc = duckdb_v2_statement_bind(conn._conn, statement_slot[0], &out_schema, &out_parameters, &err)
+    if rc != DUCKDB_V2_ERROR_NONE:
+        if err != NULL:
+            with nogil:
+                duckdb_v2_error_info_destroy(&err)
+        _logger.debug("bind failed; executing so the error carries its LINE context")
+        return None
+
+    try:
+        with nogil:
+            rc = duckdb_v2_schema_get_count(out_parameters, &declared, &err)
+        check_v2(rc, err, "duckdb_v2_schema_get_count")
+        if declared != <idx_t>(0 if parameters is None else len(parameters)):
+            _logger.debug("bind declares %d parameters; executing to report the mismatch", declared)
+            return None
+
+        schema_known = not (_schema_has_unknown(out_parameters) or _schema_has_unknown(out_schema))
+        if parameters is not None:
+            params = _params_from_bind(conn._conn, out_parameters, parameters)
+        py_result = _pending_result(conn, statement_slot, params, batch_rows, reg, transferred)
+        if schema_known:
+            py_result._schema = out_schema
+            out_schema = NULL
+            py_result._build_column_metadata()
+            bdv2_store_release(&py_result._schema_ready, 1)
+        return py_result
+    finally:
+        if out_schema != NULL:
+            with nogil:
+                duckdb_v2_schema_destroy(&out_schema)
+        if out_parameters != NULL:
+            with nogil:
+                duckdb_v2_schema_destroy(&out_parameters)
+
+
+cdef bint _schema_has_unknown(duckdb_v2_schema_handle schema) except -1:
+    """Report whether any field is UNKNOWN, bind's mark for a type it could not infer"""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef idx_t count = 0
+    cdef idx_t i
+    cdef duckdb_v2_identifier_t name
+    cdef duckdb_v2_logical_type_handle field_type
+
+    if schema == NULL:
+        return False
+    with nogil:
+        rc = duckdb_v2_schema_get_count(schema, &count, &err)
+    check_v2(rc, err, "duckdb_v2_schema_get_count")
+    for i in range(count):
+        with nogil:
+            rc = duckdb_v2_schema_get_field(schema, i, &name, &field_type, &err)
+        check_v2(rc, err, "duckdb_v2_schema_get_field")
+        if _logical_type_id(field_type) == DUCKDB_V2_LOGICAL_TYPE_ID_UNKNOWN:
+            return True
+    return False
+
+
+cdef CApiResult _pending_result(
+    CApiConnectionImpl conn,
+    duckdb_v2_sql_statement_handle *statement_slot,
+    _Params params,
+    object batch_rows,
+    bd_registry *reg,
+    bint *transferred,
+):
+    """Wrap a bound but unsubmitted statement, taking the statement and the registry borrow"""
+    cdef CApiResult py_result = CApiResult.__new__(CApiResult)
+
+    if batch_rows is not None:
+        py_result._batch_rows = <unsigned long long>batch_rows
+    py_result._conn_obj = conn
+    py_result._reg = reg
+    py_result._borrow = 1
+    transferred[0] = True
+    py_result._statement = statement_slot[0]
+    statement_slot[0] = NULL
+    py_result._params = params
+    py_result._pending = 1
+    return py_result
+
+
+cdef object _execute_last(
+    CApiConnectionImpl conn,
+    duckdb_v2_sql_statement_handle statement,
+    _Params params,
+    object batch_rows,
+    bd_registry *reg,
+    bint *transferred,
+):
+    """Execute the last statement now as a chunk result, draining it when it returns no rows"""
+    cdef duckdb_v2_result_handle current_result = NULL
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef idx_t rows_changed = 0
+    cdef CApiResult py_result
+    cdef duckdb_v2_result_type_t result_type
+    cdef duckdb_v2_statement_type_t statement_type
+    cdef bint materialize = False
+    cdef bint drained = False
+
+    current_result = _execute_one(conn._conn, statement, params)
+
+    with nogil:
+        rc = duckdb_v2_result_get_result_type(current_result, &result_type, &err)
+    if rc != DUCKDB_V2_ERROR_NONE:
+        # A statement expanding into a group (PIVOT) has no metadata until the caller steps it.
+        if err != NULL:
+            duckdb_v2_error_info_destroy(&err)
+    elif result_type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT:
+        with nogil:
+            rc = duckdb_v2_result_drain(current_result, &rows_changed, &err)
         if rc != DUCKDB_V2_ERROR_NONE:
-            # A statement expanding into a group (PIVOT) has no metadata until the caller steps it.
+            _destroy_result(current_result)
+            check_v2(rc, err, "duckdb_v2_result_drain")
+        drained = True
+    else:
+        # CREATE SECRET is the one CREATE that returns rows, and it applies its effect from
+        # the source operator, so an unstepped result never creates the secret. Every other
+        # CREATE reports NOTHING or CHANGED_ROWS (CTAS) and is drained above, so nothing
+        # large is forced here. The rows are kept, matching duckdb-python's [(True,)].
+        with nogil:
+            rc = duckdb_v2_result_get_statement_type(current_result, &statement_type, &err)
+        if rc != DUCKDB_V2_ERROR_NONE:
             if err != NULL:
                 duckdb_v2_error_info_destroy(&err)
-        elif result_type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT:
-            with nogil:
-                rc = duckdb_v2_result_drain(current_result, &rows_changed, &err)
-            if rc != DUCKDB_V2_ERROR_NONE:
-                _destroy_result(current_result)
-                check_v2(rc, err, "duckdb_v2_result_drain")
-        else:
-            # CREATE SECRET is the one CREATE that returns rows, and it applies its effect from
-            # the source operator, so an unstepped result never creates the secret. Every other
-            # CREATE reports NOTHING or CHANGED_ROWS (CTAS) and is drained above, so nothing
-            # large is forced here. The rows are kept, matching duckdb-python's [(True,)].
-            with nogil:
-                rc = duckdb_v2_result_get_statement_type(current_result, &statement_type, &err)
-            if rc != DUCKDB_V2_ERROR_NONE:
-                if err != NULL:
-                    duckdb_v2_error_info_destroy(&err)
-            elif statement_type == DUCKDB_V2_STATEMENT_TYPE_CREATE:
-                materialize = True
+        elif statement_type == DUCKDB_V2_STATEMENT_TYPE_CREATE:
+            materialize = True
 
     py_result = CApiResult.__new__(CApiResult)
     if batch_rows is not None:
@@ -318,6 +539,7 @@ cdef object _execute_bound(
     py_result._reg = reg
     py_result._borrow = 1
     transferred[0] = True
+    py_result._drained = drained
     if materialize:
         py_result._run_to_first_chunk()
     return py_result
@@ -329,100 +551,167 @@ cdef void _destroy_result(duckdb_v2_result_handle result) noexcept:
             duckdb_v2_result_destroy(&result)
 
 
-cdef duckdb_v2_result_handle _execute_one(
+cdef class _Params:
+    """Parameter values bound for one statement, owned so the statement can be executed again"""
+
+    def __cinit__(self):
+        self.values = NULL
+        self.names = NULL
+        self.count = 0
+        self.owned = []
+
+    def __dealloc__(self):
+        cdef idx_t i
+        if self.values != NULL:
+            for i in range(self.count):
+                if self.values[i] != NULL:
+                    with nogil:
+                        duckdb_v2_value_destroy(&self.values[i])
+        free(self.values)
+        free(self.names)
+
+
+cdef _Params _build_params(
     duckdb_v2_connection_handle conn,
     duckdb_v2_sql_statement_handle statement,
     object parameters,
-) except? NULL:
-    """Bind one statement, build its parameter values from `parameters`, and execute it"""
+):
+    """Bind one statement and build its parameter values from `parameters`, or None for none"""
     cdef duckdb_v2_schema_handle out_schema = NULL
     cdef duckdb_v2_schema_handle out_parameters = NULL
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
-    cdef duckdb_v2_result_handle result = NULL
-    cdef duckdb_v2_identifier_t *name_arr = NULL
-    cdef duckdb_v2_value_handle *value_arr = NULL
-    cdef idx_t param_count = 0
-    cdef idx_t i
-    cdef bint use_names = False
-    cdef duckdb_v2_logical_type_handle target_type = NULL
 
     if parameters is None:
         # Skip bind entirely
-        with nogil:
-            rc = duckdb_v2_statement_execute(conn, statement, NULL, NULL, 0, &result, &err)
-        check_v2(rc, err, "duckdb_v2_statement_execute")
-        return result
+        return None
 
     with nogil:
         rc = duckdb_v2_statement_bind(conn, statement, &out_schema, &out_parameters, &err)
-    check_v2(rc, err, "duckdb_v2_statement_bind")
+    if rc != DUCKDB_V2_ERROR_NONE:
+        return _params_after_failed_bind(conn, rc, err, parameters)
     if out_schema != NULL:
         with nogil:
             duckdb_v2_schema_destroy(&out_schema)
-
     try:
-
-        use_names = isinstance(parameters, dict)
-        items = list(parameters.items()) if use_names else list(parameters)
-        param_count = <idx_t>len(items)
-
-        if param_count == 0:
-            with nogil:
-                rc = duckdb_v2_statement_execute(conn, statement, NULL, NULL, 0, &result, &err)
-            check_v2(rc, err, "duckdb_v2_statement_execute")
-            return result
-
-        owned_bytes = []
-        try:
-            value_arr = <duckdb_v2_value_handle *>malloc(param_count * sizeof(duckdb_v2_value_handle))
-            if value_arr == NULL:
-                raise MemoryError("failed to allocate the v2 parameter value array")
-            for i in range(param_count):
-                value_arr[i] = NULL
-
-            if use_names:
-                name_arr = <duckdb_v2_identifier_t *>malloc(param_count * sizeof(duckdb_v2_identifier_t))
-                if name_arr == NULL:
-                    raise MemoryError("failed to allocate the v2 parameter name array")
-
-            for i in range(param_count):
-                if use_names:
-                    key, val = items[i]
-                    key_bytes = (<str>key).encode("utf-8")
-                    owned_bytes.append(key_bytes)
-                    name_arr[i].ptr = <const char *>key_bytes
-                    name_arr[i].len = <idx_t>len(key_bytes)
-                    target_type = _named_target_type(out_parameters, <str>key)
-                else:
-                    val = items[i]
-                    target_type = _positional_target_type(out_parameters, i)
-                value_arr[i] = _python_to_value(conn, val, target_type)
-
-            with nogil:
-                rc = duckdb_v2_statement_execute(
-                    conn,
-                    statement,
-                    <const duckdb_v2_identifier_t *>name_arr if use_names else NULL,
-                    value_arr,
-                    param_count,
-                    &result,
-                    &err,
-                )
-            check_v2(rc, err, "duckdb_v2_statement_execute")
-            return result
-        finally:
-            if value_arr != NULL:
-                for i in range(param_count):
-                    if value_arr[i] != NULL:
-                        with nogil:
-                            duckdb_v2_value_destroy(&value_arr[i])
-            free(value_arr)
-            free(name_arr)
+        return _params_from_bind(conn, out_parameters, parameters)
     finally:
         if out_parameters != NULL:
             with nogil:
                 duckdb_v2_schema_destroy(&out_parameters)
+
+
+cdef _Params _params_after_failed_bind(
+    duckdb_v2_connection_handle conn,
+    duckdb_v2_error_t rc,
+    duckdb_v2_error_info_handle err,
+    object parameters,
+):
+    """Build untyped values after a failed bind, so execution raises the error with its LINE context"""
+    try:
+        check_v2(rc, err, "duckdb_v2_statement_bind")
+    except QueryCancelled:
+        raise
+    except RuntimeError as bind_error:
+        _logger.debug("bind failed (%s); executing so the error carries its LINE context", bind_error)
+        try:
+            return _params_from_bind(conn, NULL, parameters)
+        except Exception:
+            _logger.debug("could not build untyped parameter values; raising the bind error", exc_info=True)
+            raise bind_error
+
+
+cdef _Params _params_from_bind(
+    duckdb_v2_connection_handle conn,
+    duckdb_v2_schema_handle out_parameters,
+    object parameters,
+):
+    """Build parameter values from `parameters`, typed by the parameter schema bind reported"""
+    cdef idx_t param_count = 0
+    cdef idx_t i
+    cdef bint use_names = False
+    cdef duckdb_v2_logical_type_handle target_type = NULL
+    cdef _Params out = _Params.__new__(_Params)
+
+    use_names = isinstance(parameters, dict)
+    items = list(parameters.items()) if use_names else list(parameters)
+    param_count = <idx_t>len(items)
+    if param_count == 0:
+        return out
+
+    out.values = <duckdb_v2_value_handle *>malloc(param_count * sizeof(duckdb_v2_value_handle))
+    if out.values == NULL:
+        raise MemoryError("failed to allocate the v2 parameter value array")
+    for i in range(param_count):
+        out.values[i] = NULL
+    out.count = param_count
+
+    if use_names:
+        out.names = <duckdb_v2_identifier_t *>malloc(param_count * sizeof(duckdb_v2_identifier_t))
+        if out.names == NULL:
+            raise MemoryError("failed to allocate the v2 parameter name array")
+
+    for i in range(param_count):
+        if use_names:
+            key, val = items[i]
+            key_bytes = (<str>key).encode("utf-8")
+            out.owned.append(key_bytes)
+            out.names[i].ptr = <const char *>key_bytes
+            out.names[i].len = <idx_t>len(key_bytes)
+            target_type = _named_target_type(out_parameters, <str>key)
+        else:
+            val = items[i]
+            target_type = _positional_target_type(out_parameters, i)
+        out.values[i] = _python_to_value(conn, val, target_type)
+    return out
+
+
+cdef duckdb_v2_result_handle _execute_one(
+    duckdb_v2_connection_handle conn,
+    duckdb_v2_sql_statement_handle statement,
+    _Params params,
+) except? NULL:
+    """Execute one statement as a chunk result with its already-built parameter values"""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_result_handle result = NULL
+    cdef const duckdb_v2_identifier_t *names = NULL
+    cdef const duckdb_v2_value_handle *values = NULL
+    cdef idx_t count = 0
+
+    if params is not None:
+        names = params.names
+        values = params.values
+        count = params.count
+    with nogil:
+        rc = duckdb_v2_statement_execute(conn, statement, names, values, count, &result, &err)
+    check_v2(rc, err, "duckdb_v2_statement_execute")
+    return result
+
+
+cdef duckdb_v2_arrow_result_handle _execute_one_arrow(
+    duckdb_v2_connection_handle conn,
+    duckdb_v2_sql_statement_handle statement,
+    _Params params,
+    object batch_rows,
+) except? NULL:
+    """Execute one statement as an Arrow result; batch_rows of 0 or None is DuckDB's default"""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_arrow_result_handle result = NULL
+    cdef const duckdb_v2_identifier_t *names = NULL
+    cdef const duckdb_v2_value_handle *values = NULL
+    cdef idx_t count = 0
+    cdef idx_t rows = 0 if not batch_rows else <idx_t>batch_rows
+
+    if params is not None:
+        names = params.names
+        values = params.values
+        count = params.count
+    with nogil:
+        rc = duckdb_v2_statement_execute_arrow(conn, statement, names, values, count, rows, &result, &err)
+    check_v2(rc, err, "duckdb_v2_statement_execute_arrow")
+    return result
 
 
 cdef duckdb_v2_logical_type_handle _positional_target_type(
@@ -879,7 +1168,7 @@ cdef duckdb_v2_error_t step_result_chunk(
     duckdb_v2_result_step_status_t *out_status,
     duckdb_v2_error_info_handle *out_err,
 ) noexcept nogil:
-    """Step a result one chunk without the GIL; single consumer (duckdb_v2.h:256)"""
+    """Step a result one chunk without the GIL; single consumer, per the header's result docs"""
     cdef duckdb_v2_error_t rc
 
     out_chunk[0] = NULL
@@ -911,6 +1200,10 @@ cdef class CApiResult:
     def __cinit__(self):
         self._conn_obj = None
         self._result = NULL
+        self._statement = NULL
+        self._params = None
+        self._pending = 0
+        self._drained = False
         self._schema = NULL
         self._destroyed = 0
         self._consumed = 0
@@ -932,8 +1225,10 @@ cdef class CApiResult:
         self._conn_obj = conn_obj
         self._result = result
 
-    cdef duckdb_v2_schema_handle _ensure_schema(self) except NULL:
-        """Return the output schema, resolving it and the column metadata on first use"""
+    cdef int _ensure_schema(self) except -1:
+        """Resolve the output schema and the column metadata on first use"""
+        if bdv2_load_acquire(&self._destroyed):
+            raise RuntimeError("result already destroyed")
         if not bdv2_load_acquire(&self._schema_ready):
             # A C spinlock, taken with the GIL released since the section below drops it.
             with nogil:
@@ -943,7 +1238,7 @@ cdef class CApiResult:
                     self._resolve_schema()
             finally:
                 bdv2_unlock(&self._schema_lock)
-        return self._schema
+        return 0
 
     cdef void _resolve_schema(self) except *:
         """Fetch the output schema, advancing one step at a time until its metadata exists"""
@@ -952,6 +1247,9 @@ cdef class CApiResult:
 
         if self._destroyed:
             raise RuntimeError("result already destroyed")
+        if self._pending:
+            # Bind could not supply the schema, so asking for it fixes the format as rows.
+            self.submit()
         if self._result == NULL:
             # get_schema on NULL reports INPUT_INVALID, which the loop below would misread.
             raise RuntimeError("this result's schema was already handed to an Arrow export")
@@ -1060,6 +1358,8 @@ cdef class CApiResult:
         """Yield each result row as a tuple of Python scalars, consuming the stream"""
         cdef duckdb_v2_data_chunk_handle chunk
         self._ensure_schema()
+        # Marks the rows as started, which an Arrow swap refuses; a second rows() call reads on.
+        bdv2_cas(&self._consumed, 0, 1)
         try:
             while True:
                 chunk = self._next_chunk()
@@ -1088,12 +1388,14 @@ cdef class CApiResult:
 
         if self._destroyed:
             raise RuntimeError("result already destroyed")
-        if self._consumed:
+        if self._consumed == 2:
             raise RuntimeError("result was already consumed by an Arrow export")
         if self._pending_chunk != NULL:
             return self._take_pending_chunk()
         if self._finished:
             return NULL
+        if self._pending:
+            self.submit()
 
         with nogil:
             rc = step_result_chunk(self._result, &self._finished, &chunk, &status, &err)
@@ -1103,68 +1405,164 @@ cdef class CApiResult:
             raise QueryCancelled("INTERRUPT Error: Interrupted!")
         return chunk
 
-    cdef void _claim_for_export(self) except *:
-        """Take exclusive, one-shot ownership of this result for an Arrow export"""
+    @property
+    def batch_rows(self):
+        """The explicit execute(batch_rows=...) cap, or 0 when the caller set none"""
+        return self._batch_rows
+
+    @property
+    def returns_rows(self):
+        """False when the statement returned no rows and was drained at execute()"""
+        return not self._drained
+
+    @property
+    def pending(self):
+        """True while the statement is bound but not yet submitted as rows or Arrow"""
+        return bdv2_load_acquire(&self._pending) != _NOT_PENDING
+
+    @property
+    def schema_known(self):
+        """True when the columns can be read without submitting the statement"""
+        return bool(bdv2_load_acquire(&self._schema_ready))
+
+    @property
+    def connection(self):
+        """The connection this result was executed on"""
+        return self._conn_obj
+
+    def submit(self):
+        """Submit a pending statement as a chunk result; once submitted, or after another caller's submission, a no-op"""
+        cdef duckdb_v2_result_handle result = NULL
+        cdef long state
+
+        while True:
+            if bdv2_load_acquire(&self._destroyed):
+                raise RuntimeError("result already destroyed")
+            state = bdv2_load_acquire(&self._pending)
+            if state == _NOT_PENDING:
+                return
+            if state == _PENDING:
+                self._check_connection_open()
+                if bdv2_cas(&self._pending, _PENDING, _SUBMITTING):
+                    break
+                continue
+            # Another caller is submitting: wait for it, since returning now would read no result.
+            with nogil:
+                bdv2_yield()
+        try:
+            result = _execute_one(self._conn_obj._conn, self._statement, self._params)
+        except BaseException:
+            self._release_handles()
+            bdv2_store_release(&self._pending, _NOT_PENDING)
+            raise
+        finally:
+            with nogil:
+                duckdb_v2_sql_statement_destroy(&self._statement)
+            self._params = None
+        self._result = result
+        # Released last: a waiting caller that sees this must also see the result.
+        bdv2_store_release(&self._pending, _NOT_PENDING)
+
+    cdef void _check_connection_open(self) except *:
+        if self._conn_obj is None or self._conn_obj._closed:
+            raise RuntimeError(
+                "the connection was closed before this result was consumed; a SELECT runs at its first consumer"
+            )
+
+    def to_arrow_result(self, batch_rows=None):
+        """Submit this pending result as an ArrowResult, consuming it.
+
+        Only a pending result can become Arrow: DuckDB fixes the format at submission and offers no
+        conversion. batch_rows is a maximum on the rows in one Arrow array; 0 or None is DuckDB's
+        default.
+        """
+        cdef duckdb_v2_arrow_result_handle handle = NULL
+        cdef ArrowResult out
+
         if self._destroyed:
             raise RuntimeError("result already destroyed")
-        if not bdv2_cas(&self._consumed, 0, 1):
+        if self._consumed:
             raise RuntimeError("arrow export: this result was already consumed")
+        if self._drained:
+            raise RuntimeError("arrow export: this statement returned no rows and was drained at execute()")
+        if bdv2_load_acquire(&self._pending) == _NOT_PENDING:
+            raise RuntimeError(ROWS_NOT_ARROW)
+        self._check_connection_open()
+        if not bdv2_cas(&self._pending, _PENDING, _SUBMITTING):
+            raise RuntimeError("arrow export: this result was already submitted")
+        if not bdv2_cas(&self._consumed, 0, 2):
+            # A row consumer started first; leave the statement to it.
+            bdv2_store_release(&self._pending, _PENDING)
+            raise RuntimeError("arrow export: this result was already consumed")
+        try:
+            handle = _execute_one_arrow(self._conn_obj._conn, self._statement, self._params, batch_rows)
+        except BaseException:
+            self._release_handles()
+            bdv2_store_release(&self._pending, _NOT_PENDING)
+            raise
+        finally:
+            with nogil:
+                duckdb_v2_sql_statement_destroy(&self._statement)
+            self._params = None
+        bdv2_store_release(&self._pending, _NOT_PENDING)
 
-    cdef duckdb_v2_result_handle _release_result_ownership(self) noexcept:
-        """Hand the result handle to a caller that takes over destroying it"""
-        cdef duckdb_v2_result_handle result = self._result
-        self._result = NULL
-        return result
-
-    cdef bd_registry *_take_registry_borrow(self) noexcept:
-        """Hand the registry borrow to a caller that takes over releasing it, or NULL"""
-        if not bdv2_cas(&self._borrow, 1, 0):
-            return NULL
-        return self._reg
+        out = ArrowResult.__new__(ArrowResult)
+        out._handle = handle
+        # The borrow moves across without a gap, so the scan stays covered throughout.
+        if bdv2_cas(&self._borrow, 1, 0):
+            out._reg = self._reg
+            out._borrow = 1
+        return out
 
     def to_arrow(self, batch_rows=None, timetz_utc=False):
         """Materialize the whole result as a pyarrow.Table through one Arrow C stream.
 
-        batch_rows is a strict maximum on the rows in one batch. execute(batch_rows=...)
-        supplies it when this call does not, and with neither the table is built in one chunk,
-        which is what keeps to_numpy and to_pandas off a copy.
+        batch_rows is a maximum on the rows in one batch. execute(batch_rows=...) supplies it
+        when this call does not, and with neither the engine is asked for very large batches.
         timetz_utc normalizes TIMETZ to UTC and raises without arrow_lossless_conversion.
         """
-        from bareduckdb.capi.impl.arrow import DEFAULT_TABLE_BATCH_ROWS, arrow_table_from_result
+        import pyarrow
+
+        from bareduckdb.capi.arrow_export import arrow_result_of
+        from bareduckdb.capi.impl.arrow import DEFAULT_TABLE_BATCH_ROWS
 
         if batch_rows is None:
             batch_rows = self._batch_rows
         if not batch_rows:
             batch_rows = DEFAULT_TABLE_BATCH_ROWS
+        capsule = arrow_result_of(self, batch_rows).__arrow_c_stream__()
+        reader = pyarrow.RecordBatchReader._import_from_c_capsule(capsule)
+        try:
+            table = reader.read_all()
+        finally:
+            # Releases the stream, and with it the registry borrow, without waiting for the GC.
+            reader.close()
         if not timetz_utc:
-            return arrow_table_from_result(self, batch_rows)
+            return table
 
         from bareduckdb.core.arrow_timetz import require_lossless_timetz, timetz_to_utc
 
-        table = arrow_table_from_result(self, batch_rows)
         require_lossless_timetz(table.schema)
         return timetz_to_utc(table)
 
     def __arrow_c_stream__(self, requested_schema=None, timetz_utc=False, batch_rows=None):
         """Export this result as an Arrow C Stream capsule, consuming it.
 
-        batch_rows is a hint from a caller that will materialize the whole stream, so that a
-        single large batch costs nothing saving the consumer a chunk walk. Explicit
-        execute(batch_rows=...) outranks it. Neither setup: DuckDB's DEFAULT_STREAM_BATCH_ROWS
-
+        batch_rows is a hint from a caller that will materialize the whole stream. Explicit
+        execute(batch_rows=...) outranks it. Neither set: DuckDB's own default.
         timetz_utc normalizes TIMETZ to UTC and raises without arrow_lossless_conversion.
         """
-        from bareduckdb.capi.impl.arrow import DEFAULT_STREAM_BATCH_ROWS, arrow_stream_from_result
+        from bareduckdb.capi.arrow_export import arrow_result_of
 
-        batch_rows = self._batch_rows or batch_rows or DEFAULT_STREAM_BATCH_ROWS
+        batch_rows = self._batch_rows or batch_rows or 0
+        capsule = arrow_result_of(self, batch_rows).__arrow_c_stream__(requested_schema)
         if not timetz_utc:
-            return arrow_stream_from_result(self, batch_rows, requested_schema)
+            return capsule
 
         import pyarrow
 
         from bareduckdb.core.arrow_timetz import require_lossless_timetz, timetz_to_utc_reader
 
-        capsule = arrow_stream_from_result(self, batch_rows, requested_schema)
         reader = pyarrow.RecordBatchReader._import_from_c_capsule(capsule)
         require_lossless_timetz(reader.schema)
         return timetz_to_utc_reader(reader).__arrow_c_stream__()
@@ -1177,6 +1575,13 @@ cdef class CApiResult:
         self._destroy()
 
     cdef void _destroy(self) noexcept:
+        """Destroy the result once a submission in progress on another thread has finished"""
+        while bdv2_load_acquire(&self._pending) == _SUBMITTING:
+            with nogil:
+                bdv2_yield()
+        self._release_handles()
+
+    cdef void _release_handles(self) noexcept:
         """Destroy the result, schema, and buffered chunk once, whichever thread gets there first"""
         if not bdv2_cas(&self._destroyed, 0, 1):
             return
@@ -1189,11 +1594,65 @@ cdef class CApiResult:
         if self._result != NULL:
             with nogil:
                 duckdb_v2_result_destroy(&self._result)
+        if self._statement != NULL:
+            with nogil:
+                duckdb_v2_sql_statement_destroy(&self._statement)
+        self._params = None
         # After the result, so nothing can still be scanning a registered source's chunks.
         if bdv2_cas(&self._borrow, 1, 0):
             with nogil:
                 bd_registry_release(self._reg)
         self._conn_obj = None
+
+
+cdef class ArrowResult:
+    """A v2 Arrow result, unstepped until exported once as an Arrow C stream"""
+
+    def __cinit__(self):
+        self._handle = NULL
+        self._reg = NULL
+        self._borrow = 0
+        self._consumed = 0
+
+    def __arrow_c_stream__(self, requested_schema=None):
+        """Export this result as an Arrow C Stream capsule, consuming it.
+
+        requested_schema is accepted for protocol conformance and ignored.
+        """
+        cdef duckdb_v2_arrow_result_handle handle
+        cdef bd_registry *reg = NULL
+
+        if not bdv2_cas(&self._consumed, 0, 1):
+            raise RuntimeError("arrow export: this result was already consumed")
+        handle = self._handle
+        self._handle = NULL
+        if bdv2_cas(&self._borrow, 1, 0):
+            reg = self._reg
+        try:
+            return export_arrow_result(&handle, &reg)
+        finally:
+            # Set only when the export failed: the stream did not take the borrow.
+            if reg != NULL:
+                with nogil:
+                    bd_registry_release(reg)
+
+    def close(self):
+        """Destroy the result without running it. Safe to call more than once, from any thread"""
+        self._destroy()
+
+    def __dealloc__(self):
+        self._destroy()
+
+    cdef void _destroy(self) noexcept:
+        """Destroy the handle and drop the borrow, unless an export already took both"""
+        if not bdv2_cas(&self._consumed, 0, 1):
+            return
+        if self._handle != NULL:
+            with nogil:
+                duckdb_v2_arrow_result_destroy(&self._handle)
+        if bdv2_cas(&self._borrow, 1, 0):
+            with nogil:
+                bd_registry_release(self._reg)
 
 
 # Chunk / value decoding: the value-based "total fallback reader" route
@@ -1317,7 +1776,7 @@ cdef object _decode_value(
 
     if kind == "enum":
         # value_get_varchar refuses an ENUM: it borrows from the value, so it cannot convert.
-        # A real cast is the sanctioned route (duckdb_v2.h:11099), and there is no ENUM to
+        # A real cast is the sanctioned route (value_cast_with_connection's doc), and there is no ENUM to
         # integer cast to read the dictionary index with instead. The VARCHAR target is built
         # once per chunk by _decode_chunk and borrowed here.
         if varchar_type[0] == NULL:
@@ -1337,7 +1796,7 @@ cdef object _decode_value(
                 duckdb_v2_value_destroy(&child)
 
     if kind == "tuple":
-        # Positional like "struct", but unnamed: duckdb_v2.h:3649 gives TUPLE [i] = field i.
+        # Positional like "struct", but unnamed: the header gives TUPLE [i] = field i.
         child_decoders = decoder[1]
         with nogil:
             rc = duckdb_v2_value_get_child_count(value, &child_count, &err)
@@ -1379,7 +1838,7 @@ cdef object _decode_value(
             rc = duckdb_v2_value_get_child_count(value, &child_count, &err)
         check_v2(rc, err, "duckdb_v2_value_get_child_count")
         out_map = {}
-        # duckdb_v2.h:7150: a MAP's children alternate key, value.
+        # value_get_child_count's doc: a MAP value's children alternate key, value.
         for i in range(0, child_count, 2):
             with nogil:
                 rc = duckdb_v2_value_get_child(value, i, &child, &err)
@@ -1774,3 +2233,47 @@ cdef object _build_decoder(duckdb_v2_logical_type_handle col_type):
         return ("map", key_decoder, value_decoder)
 
     return ("scalar", type_id, logical_type_name(col_type))
+
+
+_VECTOR_TYPE_NAMES = {
+    <int>DUCKDB_V2_VECTOR_TYPE_OTHER: "OTHER",
+    <int>DUCKDB_V2_VECTOR_TYPE_FLAT: "FLAT",
+    <int>DUCKDB_V2_VECTOR_TYPE_CONSTANT: "CONSTANT",
+    <int>DUCKDB_V2_VECTOR_TYPE_DICTIONARY: "DICTIONARY",
+}
+
+
+def probe_vector_types(CApiResult result):
+    """Report each chunk's per-column vector representation, for diagnostics"""
+    cdef duckdb_v2_data_chunk_handle chunk = NULL
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef idx_t vec_count = 0
+    cdef idx_t i
+    cdef duckdb_v2_vector_handle vec = NULL
+    cdef duckdb_v2_vector_type_t vtype = DUCKDB_V2_VECTOR_TYPE_OTHER
+    cdef list out = []
+    cdef list row
+
+    while True:
+        chunk = result._next_chunk()
+        if chunk == NULL:
+            break
+        try:
+            with nogil:
+                rc = duckdb_v2_data_chunk_get_vector_count(chunk, &vec_count, &err)
+            check_v2(rc, err, "duckdb_v2_data_chunk_get_vector_count")
+            row = []
+            for i in range(vec_count):
+                with nogil:
+                    rc = duckdb_v2_data_chunk_get_vector(chunk, i, &vec, &err)
+                check_v2(rc, err, "duckdb_v2_data_chunk_get_vector")
+                with nogil:
+                    rc = duckdb_v2_vector_get_vector_type(vec, &vtype, &err)
+                check_v2(rc, err, "duckdb_v2_vector_get_vector_type")
+                row.append(_VECTOR_TYPE_NAMES.get(<int>vtype, "UNKNOWN"))
+            out.append(row)
+        finally:
+            with nogil:
+                duckdb_v2_data_chunk_destroy(&chunk)
+    return out

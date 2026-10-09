@@ -22,7 +22,7 @@ def test_core_named_parameters():
         assert(result.to_pylist()[-1]["i"] == 6)
 
 _XF_UNTYPED_NULL = pytest.mark.xfail(
-    reason="an untyped NULL parameter builds a SQLNULL logical type, which duckdb_v2.h:7583 says create_type_from_id rejects; execute then reports 'Not all parameters were bound'",
+    reason="an untyped NULL parameter builds a SQLNULL logical type, which create_type_from_id's doc says it rejects; execute then reports 'Not all parameters were bound'",
     strict=True,
 )
 _XF_TZ_AWARE_PARAM = pytest.mark.xfail(

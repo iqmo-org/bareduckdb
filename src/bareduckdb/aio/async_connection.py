@@ -28,7 +28,7 @@ T = TypeVar("T")
 _REINTERRUPT_INTERVAL = 0.01
 _POLL_INTERVAL = 0.001
 _SLOW_INTERRUPT_WARNING = 5.0
-# What an interrupted query raises: QueryCancelled from execute, OSError from the Arrow stream.
+# What an interrupted query raises: QueryCancelled, or OSError from an Arrow stream read outside the consumers that translate it.
 _INTERRUPT_ERRORS: tuple[type[BaseException], ...] = (QueryCancelled, OSError)  # pyright: ignore[reportAssignmentType]
 _NOT_INITIALIZED = "Connection pool not initialized. Call 'await pool.connect()' or use 'async with AsyncConnectionPool()'."
 

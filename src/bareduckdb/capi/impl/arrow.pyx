@@ -1,7 +1,7 @@
 # cython: language_level=3
 # cython: freethreading_compatible=True
 
-"""Arrow export for v2 results through DuckDB's own duckdb_v2_result_to_arrow_stream"""
+"""Arrow export of v2 Arrow results through DuckDB's own duckdb_v2_arrow_result_to_arrow_c_stream"""
 
 import logging
 
@@ -16,34 +16,22 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     ArrowArrayStream,
     ArrowSchema,
     DUCKDB_V2_ERROR_NONE,
-    DUCKDB_V2_VECTOR_TYPE_CONSTANT,
-    DUCKDB_V2_VECTOR_TYPE_DICTIONARY,
-    DUCKDB_V2_VECTOR_TYPE_FLAT,
-    DUCKDB_V2_VECTOR_TYPE_OTHER,
-    duckdb_v2_data_chunk_destroy,
-    duckdb_v2_data_chunk_get_vector,
-    duckdb_v2_data_chunk_get_vector_count,
-    duckdb_v2_data_chunk_handle,
+    duckdb_v2_arrow_result_destroy,
+    duckdb_v2_arrow_result_handle,
+    duckdb_v2_arrow_result_to_arrow_c_stream,
     duckdb_v2_error_info_handle,
     duckdb_v2_error_t,
-    duckdb_v2_result_handle,
-    duckdb_v2_result_to_arrow_stream,
-    duckdb_v2_vector_get_vector_type,
-    duckdb_v2_vector_handle,
-    duckdb_v2_vector_type_t,
-    idx_t,
 )
 from bareduckdb.capi.impl.errors cimport check_v2
-from bareduckdb.capi.impl.result cimport CApiResult
 
 _logger = logging.getLogger("bareduckdb.capi.arrow")
 
-# DuckDB's own CV2_DEFAULT_ARROW_BATCH_SIZE, selected by a batch_rows of 0 or None.
+# DuckDB's own default Arrow batch size, selected by a batch_rows of 0 or None.
 DEFAULT_BATCH_ROWS = 131_072
 
 DEFAULT_STREAM_BATCH_ROWS = DEFAULT_BATCH_ROWS
 
-# Large enough that to_arrow yields a single chunk, which keeps to_numpy and to_pandas copy-free.
+# A maximum, not a chunk count: with more than one thread the engine still emits short arrays.
 DEFAULT_TABLE_BATCH_ROWS = 16_777_216
 
 
@@ -83,7 +71,8 @@ cdef void _owned_release(ArrowArrayStream *stream) noexcept nogil:
         return
     if owner.inner.release != NULL:
         owner.inner.release(&owner.inner)
-    bd_registry_release(owner.reg)
+    if owner.reg != NULL:
+        bd_registry_release(owner.reg)
     free(owner)
 
 
@@ -99,44 +88,41 @@ cdef void capsule_destructor(object capsule) noexcept:
     free(stream)
 
 
-cdef object _export_stream(CApiResult result, object batch_rows):
-    """Surrender the result to duckdb_v2_result_to_arrow_stream and wrap it in a capsule"""
+cdef object export_arrow_result(duckdb_v2_arrow_result_handle *handle, bd_registry **reg):
+    """Hand an Arrow result to DuckDB's stream and wrap it in a capsule.
+
+    The handle is consumed either way: DuckDB takes it on success and it is destroyed here on
+    failure. On success the stream also takes the registry borrow and *reg is set to NULL.
+    """
     cdef ArrowArrayStream *stream = NULL
     cdef bd_stream_owner *owner = NULL
-    cdef duckdb_v2_result_handle handle = NULL
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
-    cdef idx_t rows = 0 if not batch_rows else <idx_t>batch_rows
-
-    # Before the claim, so a refused export leaves the result readable through rows().
-    if result._pending_chunk != NULL:
-        raise RuntimeError(
-            "arrow export: a chunk was already fetched from this result, so DuckDB's "
-            "exporter would export it short by that chunk"
-        )
-    result._claim_for_export()
 
     stream = <ArrowArrayStream *>malloc(sizeof(ArrowArrayStream))
     owner = <bd_stream_owner *>malloc(sizeof(bd_stream_owner))
     if stream == NULL or owner == NULL:
         free(stream)
         free(owner)
+        with nogil:
+            duckdb_v2_arrow_result_destroy(handle)
         raise MemoryError("failed to allocate the Arrow stream")
     memset(stream, 0, sizeof(ArrowArrayStream))
     memset(owner, 0, sizeof(bd_stream_owner))
 
-    # Ownership moves into the call, which consumes the result on failure as well as success.
-    handle = result._release_result_ownership()
     with nogil:
-        rc = duckdb_v2_result_to_arrow_stream(&handle, rows, &owner.inner, &err)
+        rc = duckdb_v2_arrow_result_to_arrow_c_stream(handle, &owner.inner, &err)
     if rc != DUCKDB_V2_ERROR_NONE:
         free(stream)
         free(owner)
-        stream = NULL
-        check_v2(rc, err, "duckdb_v2_result_to_arrow_stream")
+        # Unlike the removed result_to_arrow_stream, a failed conversion leaves the result ours.
+        with nogil:
+            duckdb_v2_arrow_result_destroy(handle)
+        check_v2(rc, err, "duckdb_v2_arrow_result_to_arrow_c_stream")
 
     # pyarrow moves the struct out of the capsule, so the stream holds the borrow, not the capsule.
-    owner.reg = result._take_registry_borrow()
+    owner.reg = reg[0]
+    reg[0] = NULL
     stream.private_data = <void *>owner
     stream.get_schema = _owned_get_schema
     stream.get_next = _owned_get_next
@@ -152,67 +138,18 @@ cdef object _export_stream(CApiResult result, object batch_rows):
         raise
 
 
-def arrow_stream_from_result(CApiResult result, batch_rows=None, requested_schema=None):
-    """Export a result as an Arrow C Stream capsule, taking ownership of it.
-
-    batch_rows is a strict maximum per batch; a falsy value selects DEFAULT_BATCH_ROWS.
-    requested_schema is accepted for protocol conformance and ignored.
-    """
-    return _export_stream(result, batch_rows)
+def arrow_stream_from_result(result, batch_rows=None, requested_schema=None):
+    """Export an unconsumed CApiResult as an Arrow C Stream capsule, consuming it"""
+    return result.__arrow_c_stream__(requested_schema, batch_rows=batch_rows)
 
 
-def arrow_table_from_result(CApiResult result, batch_rows=None):
-    """Materialize a v2 result as a pyarrow.Table through one stream and one schema"""
-    import pyarrow
-
-    capsule = arrow_stream_from_result(result, batch_rows)
-    reader = pyarrow.RecordBatchReader._import_from_c_capsule(capsule)
-    try:
-        return reader.read_all()
-    finally:
-        # Releases the stream, and with it the registry borrow, without waiting for the GC.
-        reader.close()
+def arrow_table_from_result(result, batch_rows=None):
+    """Materialize an unconsumed CApiResult as a pyarrow.Table"""
+    return result.to_arrow(batch_rows)
 
 
-_VECTOR_TYPE_NAMES = {
-    <int>DUCKDB_V2_VECTOR_TYPE_OTHER: "OTHER",
-    <int>DUCKDB_V2_VECTOR_TYPE_FLAT: "FLAT",
-    <int>DUCKDB_V2_VECTOR_TYPE_CONSTANT: "CONSTANT",
-    <int>DUCKDB_V2_VECTOR_TYPE_DICTIONARY: "DICTIONARY",
-}
-
-
-def probe_vector_types(CApiResult result):
+def probe_vector_types(result):
     """Report each chunk's per-column vector representation, for diagnostics"""
-    cdef duckdb_v2_data_chunk_handle chunk = NULL
-    cdef duckdb_v2_error_info_handle err = NULL
-    cdef duckdb_v2_error_t rc
-    cdef idx_t vec_count = 0
-    cdef idx_t i
-    cdef duckdb_v2_vector_handle vec = NULL
-    cdef duckdb_v2_vector_type_t vtype = DUCKDB_V2_VECTOR_TYPE_OTHER
-    cdef list out = []
-    cdef list row
+    from bareduckdb.capi.impl.result import probe_vector_types as _probe
 
-    while True:
-        chunk = result._next_chunk()
-        if chunk == NULL:
-            break
-        try:
-            with nogil:
-                rc = duckdb_v2_data_chunk_get_vector_count(chunk, &vec_count, &err)
-            check_v2(rc, err, "duckdb_v2_data_chunk_get_vector_count")
-            row = []
-            for i in range(vec_count):
-                with nogil:
-                    rc = duckdb_v2_data_chunk_get_vector(chunk, i, &vec, &err)
-                check_v2(rc, err, "duckdb_v2_data_chunk_get_vector")
-                with nogil:
-                    rc = duckdb_v2_vector_get_vector_type(vec, &vtype, &err)
-                check_v2(rc, err, "duckdb_v2_vector_get_vector_type")
-                row.append(_VECTOR_TYPE_NAMES.get(<int>vtype, "UNKNOWN"))
-            out.append(row)
-        finally:
-            with nogil:
-                duckdb_v2_data_chunk_destroy(&chunk)
-    return out
+    return _probe(result)

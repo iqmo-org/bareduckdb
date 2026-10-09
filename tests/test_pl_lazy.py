@@ -154,16 +154,17 @@ class TestResultPolarsKeywords:
         conn.execute("SELECT i as id FROM range(300000) t(i)")
         assert conn._last_result_get().pl(rechunk=True).n_chunks() == 1
 
-    def test_result_pl_is_single_chunk_without_needing_rechunk(self):
-        """pl() materializes, so it asks the engine for one batch rather than rechunking after"""
+    def test_result_pl_returns_every_row_without_rechunk(self):
+        """pl() asks for very large batches; the engine may still emit short ones with several threads"""
         conn = Connection()
         conn.execute("SELECT i as id FROM range(300000) t(i)")
-        assert conn._last_result_get().pl().n_chunks() == 1
+        assert len(conn._last_result_get().pl()) == 300000
 
     def test_result_pl_honours_an_explicit_batch_size(self):
         conn = Connection()
         conn.execute("SELECT i as id FROM range(300000) t(i)", batch_size=100_000)
-        assert conn._last_result_get().pl().n_chunks() == 3
+        sizes = [len(chunk) for chunk in conn._last_result_get().pl().get_column("id").get_chunks()]
+        assert sum(sizes) == 300000 and max(sizes) <= 100_000, sizes
 
     def test_result_pl_lazy_true_returns_a_lazyframe(self):
         conn = Connection(output_type="arrow_reader")

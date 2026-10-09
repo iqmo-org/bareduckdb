@@ -340,6 +340,10 @@ cdef extern from "duckdb_v2.h" nogil:
         void *internal_ptr
     ctypedef _duckdb_v2_arrow_importer *duckdb_v2_arrow_importer_handle "duckdb_v2_arrow_importer_handle"
 
+    ctypedef struct _duckdb_v2_arrow_result "_duckdb_v2_arrow_result":
+        void *internal_ptr
+    ctypedef _duckdb_v2_arrow_result *duckdb_v2_arrow_result_handle "duckdb_v2_arrow_result_handle"
+
     ctypedef struct _duckdb_v2_replacement_scan "_duckdb_v2_replacement_scan":
         void *internal_ptr
     ctypedef _duckdb_v2_replacement_scan *duckdb_v2_replacement_scan_handle "duckdb_v2_replacement_scan_handle"
@@ -799,9 +803,29 @@ cdef extern from "duckdb_v2.h" nogil:
     # arrow import and export (header MODULE: arrow)
     # The Arrow structs are the arrow_c_data.h ones declared above.
 
-    duckdb_v2_error_t duckdb_v2_result_to_arrow_stream(
-        duckdb_v2_result_handle *result,
+    duckdb_v2_error_t duckdb_v2_statement_execute_arrow(
+        duckdb_v2_connection_handle conn,
+        duckdb_v2_sql_statement_handle statement,
+        const duckdb_v2_identifier_t *parameter_names,
+        const duckdb_v2_value_handle *parameter_values,
+        idx_t parameter_count,
         idx_t batch_size,
+        duckdb_v2_arrow_result_handle *out_result,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_arrow_result_destroy(duckdb_v2_arrow_result_handle *result)
+    duckdb_v2_error_t duckdb_v2_arrow_result_drain(
+        duckdb_v2_arrow_result_handle result,
+        idx_t *out_rows_changed,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_arrow_result_get_result_type(
+        duckdb_v2_arrow_result_handle result,
+        duckdb_v2_result_type_t *out_type,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_arrow_result_to_arrow_c_stream(
+        duckdb_v2_arrow_result_handle *result,
         ArrowArrayStream *out_stream,
         duckdb_v2_error_info_handle *err
     )

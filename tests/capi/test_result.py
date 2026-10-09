@@ -535,20 +535,42 @@ def test_statement_expanding_into_a_group_executes(make_conn):
     assert list(result.rows()) == [(1, 2)]
 
 
-def test_resolving_a_group_schema_takes_no_chunk(make_conn):
-    """The schema resolves before the first chunk, so the Arrow export still sees every row"""
+def test_resolving_a_group_schema_submits_it_as_rows(make_conn):
+    """A group's schema needs stepping, which submits it as rows; the rows still all arrive"""
     conn = make_conn()
     _run(conn, "CREATE TABLE pivchunk(k VARCHAR, v INTEGER)")
     _run(conn, "INSERT INTO pivchunk VALUES ('a', 1), ('b', 2), ('a', 10)")
     result = execute(conn, "PIVOT pivchunk ON k USING sum(v)")
+    assert result.pending
     assert result.columns == ("a", "b")
     assert result.schema_steps > 0
-    table = result.to_arrow()
-    assert table.num_rows == 1
+    assert not result.pending
+    assert [tuple(int(v) for v in row) for row in result.rows()] == [(11, 2)]
+
+
+def test_a_group_goes_straight_to_arrow_when_nothing_read_its_schema(make_conn):
+    """Bind rejects a group, so it stays pending and the first consumer may still pick Arrow"""
+    pytest.importorskip("pyarrow")
+    conn = make_conn()
+    _run(conn, "CREATE TABLE pivarrow(k VARCHAR, v INTEGER)")
+    _run(conn, "INSERT INTO pivarrow VALUES ('a', 1), ('b', 2), ('a', 10)")
+    table = execute(conn, "PIVOT pivarrow ON k USING sum(v)").to_arrow()
     assert {name: [int(v) for v in table.column(name).to_pylist()] for name in table.column_names} == {
         "a": [11],
         "b": [2],
     }
+
+
+def test_arrow_after_reading_a_group_schema_names_the_row_submission(make_conn):
+    """Reading the schema submitted it as rows, and DuckDB cannot convert rows to Arrow"""
+    pytest.importorskip("pyarrow")
+    conn = make_conn()
+    _run(conn, "CREATE TABLE pivrows(k VARCHAR, v INTEGER)")
+    _run(conn, "INSERT INTO pivrows VALUES ('a', 1)")
+    result = execute(conn, "PIVOT pivrows ON k USING sum(v)")
+    assert result.columns == ("a",)
+    with pytest.raises(RuntimeError, match="already ran as a row result"):
+        result.to_arrow()
 
 
 @pytest.mark.parametrize(
@@ -564,13 +586,24 @@ def test_resolving_an_ordinary_schema_takes_no_step(make_conn, sql):
 
 
 def test_columns_after_an_arrow_export_says_what_happened(make_conn):
-    """The handle is gone, so this must name the export rather than step a NULL result"""
+    """A group has no bound schema, so after the export this must name it rather than step a NULL result"""
+    conn = make_conn()
+    pytest.importorskip("pyarrow")
+    _run(conn, "CREATE TABLE pivexport(k VARCHAR, v INTEGER)")
+    _run(conn, "INSERT INTO pivexport VALUES ('a', 1)")
+    result = execute(conn, "PIVOT pivexport ON k USING sum(v)")
+    result.__arrow_c_stream__()
+    with pytest.raises(RuntimeError, match="Arrow export"):
+        result.columns
+
+
+def test_a_select_keeps_its_bound_columns_after_an_arrow_export(make_conn):
+    """Bind supplied the schema at execute(), so the export does not take it away"""
     conn = make_conn()
     pytest.importorskip("pyarrow")
     result = execute(conn, "SELECT 1 AS a")
     result.__arrow_c_stream__()
-    with pytest.raises(RuntimeError, match="Arrow export"):
-        result.columns
+    assert result.columns == ("a",)
 
 
 def test_call_impl_routes_to_execute(make_conn):
@@ -667,3 +700,86 @@ def test_column_types_render_their_parameters(make_conn):
     # Reading the schema must not consume a chunk.
     assert result.schema_steps == 0
     assert list(result.rows()) == [(1, {1: "x"}, (1,))]
+
+
+def _run_isolated(body):
+    """Run a script in a fresh interpreter, so a crash fails the test instead of killing the worker"""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = "import faulthandler; faulthandler.enable()\n" + textwrap.dedent(body)
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, f"returncode {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+
+
+@pytest.mark.parallel_threads(1)
+def test_columns_after_close_raises():
+    _run_isolated(
+        """
+        import pytest
+        import bareduckdb
+        from bareduckdb.capi.impl.result import execute
+
+        conn = bareduckdb.connect()
+        result = execute(conn._impl, "select 1 as a")
+        assert result.columns == ("a",)
+        result.close()
+        with pytest.raises(RuntimeError, match="result already destroyed"):
+            result.columns
+        """
+    )
+
+
+@pytest.mark.parallel_threads(1)
+def test_rows_after_a_failed_submission_raises():
+    """A held, partially read result refuses the next submission; the refused result stays refused"""
+    _run_isolated(
+        """
+        import pytest
+        import bareduckdb
+        from bareduckdb.capi.impl.result import execute
+
+        conn = bareduckdb.connect()
+        held = execute(conn._impl, "select * from range(100000)")
+        rows = held.rows()
+        next(rows)
+        refused = execute(conn._impl, "select 2 as x")
+        with pytest.raises(RuntimeError):
+            list(refused.rows())
+        rows.close()
+        for name, access in (("rows", lambda: list(refused.rows())), ("columns", lambda: refused.columns)):
+            with pytest.raises(RuntimeError, match="result already destroyed"):
+                print(name, access(), flush=True)
+        """
+    )
+
+
+@pytest.mark.parallel_threads(1)
+def test_concurrent_submit_returns_only_once_the_result_exists(make_conn):
+    """A second submit() racing the first must not return before the statement has been submitted"""
+    outcomes = []
+    for _ in range(50):
+        conn = make_conn()
+        # An UNKNOWN parameter type leaves the schema to the submitted result, so columns needs it.
+        result = execute(conn, "select ? as a from range(1000)", [7])
+        barrier = threading.Barrier(2)
+        got: list = []
+
+        def submit_then_read():
+            barrier.wait()
+            try:
+                result.submit()
+                got.append(result.columns)
+            except RuntimeError as exc:
+                got.append(exc)
+
+        threads = [threading.Thread(target=submit_then_read) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        outcomes.append(tuple(map(repr, got)))
+        assert got == [("a",), ("a",)], f"outcome: {got!r}"
+        assert len(list(result.rows())) == 1000
+    print(f"concurrent submit outcomes: {sorted(set(outcomes))}")

@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from . import PyArrowCapsule
 
 from ..compat.result_compat import Result
-from .connection_base import ConnectionBase
+from .connection_base import ConnectionBase, _Deferred
 from .sql_statement import Statement, build_statement
 
 logger = logging.getLogger(__name__)
@@ -138,8 +138,12 @@ class ConnectionAPI(ConnectionBase):
         data: Mapping[str, Any] | None = None,
         batch_size: int = 0,
     ):
-        """Run query. batch_size is a strict maximum on the rows in one Arrow batch - 0 selects DuckDB's default"""
-        self._last_result = None
+        """Run query. batch_size is a maximum on the rows in one Arrow batch - 0 selects DuckDB's default"""
+        last, self._last_result = self._last_result, None
+        if last is not None:
+            last._release_data()
+        # Dropped here, not at return: a live engine result would refuse the next statement.
+        del last
         if output_type is None and self._default_output_type == "arrow_capsule":
             call_output_type = None
         else:
@@ -147,8 +151,9 @@ class ConnectionAPI(ConnectionBase):
 
         query, data = self._preprocess(query, data)
 
-        result = self._call(query=query, output_type=call_output_type, parameters=parameters, data=data, batch_size=batch_size)
-        result = Result(result)
+        deferred = _Deferred(self) if call_output_type is None else None
+        result = self._call(query=query, output_type=call_output_type, parameters=parameters, data=data, batch_size=batch_size, deferred=deferred)
+        result = Result(result, deferred=deferred)
         self._last_result = result
 
         return self

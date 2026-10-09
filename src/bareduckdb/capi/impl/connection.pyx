@@ -1696,14 +1696,14 @@ cdef class CApiConnectionImpl:
         # Also connection-scoped: the binder consults those before the built-in file scans.
         _install_connection_dispatcher(conn, handle._registry)
 
-    def call_impl(self, *, str query, str mode, uint64_t batch_size, object parameters=None):
-        """Route a query onto the v2 execution path and return its CApiResult"""
+    def call_impl(self, *, str query, str mode="stream", uint64_t batch_size=0, object parameters=None, bint arrow=False):
+        """Route a query onto the v2 execution path; arrow asks for an ArrowResult where the statement allows"""
         if self._closed:
             raise RuntimeError("Connection is closed")
 
-        # v2 has one streamed fetch path, so mode is ignored; batch_size is the Arrow coalescing target.
+        # mode is ignored; batch_size is the maximum rows per Arrow array.
         from bareduckdb.capi.impl.result import execute
-        return execute(self, query, parameters, batch_size)
+        return execute(self, query, parameters, batch_size, arrow)
 
     def interrupt(self):
         """Interrupt the query running on this connection; a no-op when none is active"""
@@ -1734,7 +1734,7 @@ cdef class CApiConnectionImpl:
             )
         check_v2(rc, err, "duckdb_v2_connection_progress_get")
 
-        # duckdb_v2.h:5856: -1 with both counts zero is "no information available".
+        # connection_progress_get's doc: -1 with both counts zero is "no information available".
         if percentage < 0 and rows_processed == 0 and total_rows == 0:
             return None
         return (percentage, rows_processed, total_rows)

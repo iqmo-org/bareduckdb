@@ -381,15 +381,16 @@ class Result:
         else:
             return self.arrow_table().to_pandas()
 
-    def pl(self, rechunk: bool = False, lazy: bool = False) -> pl.DataFrame:
+    def pl(self, rows_per_batch: int | None = None, *, lazy: bool = False, rechunk: bool = False) -> pl.DataFrame:
+        """Fetch as a polars DataFrame; None for rows_per_batch keeps one chunk, unlike duckdb-python's 1M."""
         if lazy:  # pl_lazy makes more sense from a typing perspective
-            return self.pl_lazy()  # type: ignore
+            return self.pl_lazy(batch_size=rows_per_batch)  # type: ignore
 
         import polars as pl
 
         with self._result_lock:
             self._take_for_arrow("pl()")
-        self._stream_batch_rows = _MATERIALIZING_BATCH_ROWS
+        self._stream_batch_rows = rows_per_batch or _MATERIALIZING_BATCH_ROWS
         try:
             # Passing self uses the __arrow_c_stream__ protocol, so pyarrow is never imported
             frame = pl.DataFrame(self)

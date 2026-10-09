@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 
 from ..core.connection_api import ConnectionAPI
+from ..core.connection_base import ConnectionBase
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +139,9 @@ class Connection(ConnectionAPI):
         The cursor will see secrets, extensions, and configuration from the
         parent connection, while maintaining independent query state.
         """
-        cursor_impl = self._impl.create_cursor()
+        # Keeps create_cursor() and close() on this parent apart; unlocked, they race and crash.
+        with ConnectionBase._DUCKDB_INIT_LOCK:
+            cursor_impl = self._impl.create_cursor()
 
         # Connection takes output_type, not arrow_table_collector
         cursor_conn = Connection(

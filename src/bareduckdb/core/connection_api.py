@@ -149,7 +149,11 @@ class ConnectionAPI(ConnectionBase):
         else:
             call_output_type = output_type if output_type is not None else self._default_output_type
 
-        query, data = self._preprocess(query, data)
+        from .. import features
+
+        # Without table-reference extraction _preprocess finds nothing, so skip its parse and SHOW TABLES.
+        if features["sql_parsing"]:
+            query, data = self._preprocess(query, data)
 
         deferred = _Deferred(self) if call_output_type is None else None
         result = self._call(query=query, output_type=call_output_type, parameters=parameters, data=data, batch_size=batch_size, deferred=deferred)
@@ -302,8 +306,9 @@ class ConnectionAPI(ConnectionBase):
     def df(self):
         return self._last_result_get().df()
 
-    def pl(self, lazy: bool = False, rechunk: bool = False):
-        return self._last_result_get().pl(lazy=lazy, rechunk=rechunk)
+    def pl(self, rows_per_batch: int | None = None, *, lazy: bool = False, rechunk: bool = False):
+        """Fetch as a polars DataFrame, matching duckdb-python's pl(rows_per_batch, *, lazy)."""
+        return self._last_result_get().pl(rows_per_batch, lazy=lazy, rechunk=rechunk)
 
     def pl_lazy(self, batch_size: int | None = None):
         return self._last_result_get().pl_lazy(batch_size=batch_size)

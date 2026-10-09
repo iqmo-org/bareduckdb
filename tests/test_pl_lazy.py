@@ -182,3 +182,39 @@ class TestResultPolarsKeywords:
         conn = Connection()
         conn.execute("SELECT i as id FROM range(300000) t(i)")
         assert conn.pl(rechunk=True).n_chunks() == 1
+
+
+class TestPlSignatureMatchesDuckdb:
+    """Both pl() surfaces follow duckdb-python: pl(rows_per_batch=..., *, lazy=False), plus rechunk="""
+
+    @staticmethod
+    def _surfaces():
+        conn = Connection()
+        conn.execute("SELECT i as id FROM range(5000) t(i)")
+        yield "connection", conn.pl
+        conn = Connection()
+        conn.execute("SELECT i as id FROM range(5000) t(i)")
+        yield "result", conn._last_result_get().pl
+
+    @pytest.mark.parametrize("kwargs", [{}, {"rechunk": True}, {"lazy": False}, {"rows_per_batch": 1000}])
+    def test_both_surfaces_accept_the_same_keywords(self, kwargs):
+        for name, pl_method in self._surfaces():
+            frame = pl_method(**kwargs)
+            assert len(frame) == 5000, (name, kwargs)
+
+    def test_lazy_keyword_returns_a_lazyframe_on_both(self):
+        for name, pl_method in self._surfaces():
+            frame = pl_method(lazy=True)
+            assert frame.__class__.__name__ == "LazyFrame", name
+            assert len(frame.collect()) == 5000, name
+
+    def test_first_positional_is_rows_per_batch_on_both(self):
+        """duckdb-python reads pl(1000) as rows_per_batch, so the frame comes back in 1000-row chunks"""
+        for name, pl_method in self._surfaces():
+            sizes = [len(c) for c in pl_method(1000).get_column("id").get_chunks()]
+            assert sum(sizes) == 5000 and max(sizes) <= 1000, (name, sizes)
+
+    def test_a_second_positional_raises_type_error_on_both(self):
+        for name, pl_method in self._surfaces():
+            with pytest.raises(TypeError):
+                pl_method(1000, True)

@@ -23,21 +23,25 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_arrow_importer_next_chunk,
     duckdb_v2_bool_t,
     duckdb_v2_connection_create,
-    duckdb_v2_connection_create_type_from_id,
     duckdb_v2_connection_destroy,
+    duckdb_v2_connection_get_factory,
     duckdb_v2_connection_handle,
     duckdb_v2_connection_interrupt,
     duckdb_v2_connection_progress_get,
+    duckdb_v2_connection_register_replacement_scan,
+    duckdb_v2_connection_register_table_function,
+    duckdb_v2_context_get_factory,
     duckdb_v2_context_handle,
     duckdb_v2_data_chunk_destroy,
     duckdb_v2_data_chunk_get_size,
     duckdb_v2_data_chunk_get_vector,
     duckdb_v2_data_chunk_handle,
     duckdb_v2_instance_attach,
-    duckdb_v2_instance_create,
+    duckdb_v2_instance_create_with_options,
     duckdb_v2_instance_destroy,
+    duckdb_v2_instance_get_factory,
     duckdb_v2_instance_handle,
-    duckdb_v2_instance_set_option,
+    duckdb_v2_instance_register_replacement_scan,
     duckdb_v2_environment_create,
     duckdb_v2_environment_destroy,
     duckdb_v2_environment_get_instance_count,
@@ -51,6 +55,8 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_ERROR_NONE,
     DUCKDB_V2_STATEMENT_TYPE_INVALID,
     duckdb_v2_error_t,
+    duckdb_v2_factory_create_type_from_id,
+    duckdb_v2_factory_handle,
     duckdb_v2_function_bind_get_arg_value,
     duckdb_v2_function_bind_get_user_data,
     duckdb_v2_function_bind_info_handle,
@@ -72,14 +78,12 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_qname_handle,
     duckdb_v2_qname_hash,
     duckdb_v2_replacement_scan_add_argument,
-    duckdb_v2_replacement_scan_create_with_connection,
-    duckdb_v2_replacement_scan_create_with_instance,
+    duckdb_v2_replacement_scan_create,
     duckdb_v2_replacement_scan_destroy,
     duckdb_v2_replacement_scan_get_name,
     duckdb_v2_replacement_scan_get_user_data,
     duckdb_v2_replacement_scan_handle,
     duckdb_v2_replacement_scan_info_handle,
-    duckdb_v2_replacement_scan_register,
     duckdb_v2_replacement_scan_set_callback,
     duckdb_v2_replacement_scan_set_function_name,
     duckdb_v2_replacement_scan_set_user_data,
@@ -101,7 +105,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_table_function_bind_add_result_column,
     duckdb_v2_table_function_bind_info_handle,
     duckdb_v2_table_function_bind_set_cardinality,
-    duckdb_v2_table_function_create_with_connection,
+    duckdb_v2_table_function_create,
     duckdb_v2_table_function_destroy,
     duckdb_v2_table_function_exec_get_column_count,
     duckdb_v2_table_function_exec_get_global_state,
@@ -122,7 +126,6 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_table_function_partition_data_get_local_state,
     duckdb_v2_table_function_partition_data_info_handle,
     duckdb_v2_table_function_partition_data_set_batch_index,
-    duckdb_v2_table_function_register,
     duckdb_v2_table_function_set_bind_callback,
     duckdb_v2_table_function_set_exec_callback,
     duckdb_v2_table_function_set_init_global_callback,
@@ -131,7 +134,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_table_function_set_partition_data_callback,
     duckdb_v2_table_function_set_projection_pushdown,
     duckdb_v2_table_function_set_user_data,
-    duckdb_v2_value_create_bigint_with_context,
+    duckdb_v2_value_create_bigint,
     duckdb_v2_value_destroy,
     duckdb_v2_value_get_bigint,
     duckdb_v2_value_handle,
@@ -1283,6 +1286,7 @@ cdef void _bd_dispatch(
     cdef duckdb_v2_qname_handle probe = NULL
     cdef bd_reg_entry *entry = NULL
     cdef duckdb_v2_value_handle value = NULL
+    cdef duckdb_v2_factory_handle factory = NULL
     cdef uint64_t name_hash
 
     if duckdb_v2_replacement_scan_get_user_data(info, &user_data, NULL) != DUCKDB_V2_ERROR_NONE:
@@ -1323,10 +1327,12 @@ cdef void _bd_dispatch(
         bdv2_unlock(&entry.lock)
 
     if bdv2_load_acquire(&entry.state) == BD_ENTRY_READY:
-        if duckdb_v2_value_create_bigint_with_context(context, <int64_t>entry.slot, &value, err) == DUCKDB_V2_ERROR_NONE:
-            if duckdb_v2_replacement_scan_set_function_name(info, reg.tf_name, err) == DUCKDB_V2_ERROR_NONE:
-                duckdb_v2_replacement_scan_add_argument(info, value, err)
-            duckdb_v2_value_destroy(&value)
+        # The context's factory is borrowed for this callback only, so it is fetched per claim.
+        if duckdb_v2_context_get_factory(context, &factory, err) == DUCKDB_V2_ERROR_NONE:
+            if duckdb_v2_value_create_bigint(factory, <int64_t>entry.slot, &value, err) == DUCKDB_V2_ERROR_NONE:
+                if duckdb_v2_replacement_scan_set_function_name(info, reg.tf_name, err) == DUCKDB_V2_ERROR_NONE:
+                    duckdb_v2_replacement_scan_add_argument(info, value, err)
+                duckdb_v2_value_destroy(&value)
     else:
         # A failed import is an error, not a decline: declining would hide it behind "table does not exist".
         # Listed as consumed too, so the next query re-arms it and retries the import.
@@ -1356,8 +1362,14 @@ cdef void _bd_parse_name(str name, duckdb_v2_qname_handle *out_name, duckdb_v2_q
     out_name[0] = built
 
 
-cdef void _configure_dispatcher(duckdb_v2_replacement_scan_handle scan, bd_registry *reg) except *:
-    """Point one freshly created scan at the registry and register it, then destroy the builder"""
+cdef void _install_dispatcher(
+    duckdb_v2_factory_handle factory,
+    duckdb_v2_instance_handle db,
+    duckdb_v2_connection_handle conn,
+    bd_registry *reg,
+) except *:
+    """Create a scan pointed at the registry and register it on conn, or database-wide when conn is NULL"""
+    cdef duckdb_v2_replacement_scan_handle scan = NULL
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_opaque data
@@ -1367,6 +1379,9 @@ cdef void _configure_dispatcher(duckdb_v2_replacement_scan_handle scan, bd_regis
     data.destroy = NULL
     data.equals = NULL
 
+    with nogil:
+        rc = duckdb_v2_replacement_scan_create(factory, &scan, &err)
+    check_v2(rc, err, "duckdb_v2_replacement_scan_create")
     try:
         with nogil:
             rc = duckdb_v2_replacement_scan_set_callback(scan, _bd_dispatch, &err)
@@ -1374,9 +1389,14 @@ cdef void _configure_dispatcher(duckdb_v2_replacement_scan_handle scan, bd_regis
         with nogil:
             rc = duckdb_v2_replacement_scan_set_user_data(scan, &data, &err)
         check_v2(rc, err, "duckdb_v2_replacement_scan_set_user_data")
-        with nogil:
-            rc = duckdb_v2_replacement_scan_register(scan, &err)
-        check_v2(rc, err, "duckdb_v2_replacement_scan_register")
+        if conn != NULL:
+            with nogil:
+                rc = duckdb_v2_connection_register_replacement_scan(conn, scan, &err)
+            check_v2(rc, err, "duckdb_v2_connection_register_replacement_scan")
+        else:
+            with nogil:
+                rc = duckdb_v2_instance_register_replacement_scan(db, scan, &err)
+            check_v2(rc, err, "duckdb_v2_instance_register_replacement_scan")
     finally:
         # The header asks for this after registration too; it does not affect the registered scan.
         with nogil:
@@ -1385,27 +1405,25 @@ cdef void _configure_dispatcher(duckdb_v2_replacement_scan_handle scan, bd_regis
 
 cdef void _install_database_dispatcher(duckdb_v2_instance_handle db, bd_registry *reg) except *:
     """Register the dispatcher database-wide, so any connection to this database sees registrations"""
-    cdef duckdb_v2_replacement_scan_handle scan = NULL
+    cdef duckdb_v2_factory_handle factory = NULL
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     with nogil:
-        rc = duckdb_v2_replacement_scan_create_with_instance(db, &scan, &err)
-    check_v2(rc, err, "duckdb_v2_replacement_scan_create_with_instance")
-    _configure_dispatcher(scan, reg)
+        rc = duckdb_v2_instance_get_factory(db, &factory, &err)
+    check_v2(rc, err, "duckdb_v2_instance_get_factory")
+    _install_dispatcher(factory, db, NULL, reg)
 
 
-cdef void _install_connection_dispatcher(duckdb_v2_connection_handle conn, bd_registry *reg) except *:
+cdef void _install_connection_dispatcher(
+    duckdb_v2_factory_handle factory, duckdb_v2_connection_handle conn, bd_registry *reg
+) except *:
     """Register the same dispatcher connection-scoped, which the binder consults before the built-in file scans"""
-    cdef duckdb_v2_replacement_scan_handle scan = NULL
-    cdef duckdb_v2_error_info_handle err = NULL
-    cdef duckdb_v2_error_t rc
-    with nogil:
-        rc = duckdb_v2_replacement_scan_create_with_connection(conn, &scan, &err)
-    check_v2(rc, err, "duckdb_v2_replacement_scan_create_with_connection")
-    _configure_dispatcher(scan, reg)
+    _install_dispatcher(factory, NULL, conn, reg)
 
 
-cdef void _install_table_function(duckdb_v2_connection_handle conn, bd_registry *reg) except *:
+cdef void _install_table_function(
+    duckdb_v2_factory_handle factory, duckdb_v2_connection_handle conn, bd_registry *reg
+) except *:
     """Register the scan function on this connection's database, once, before any query binds"""
     cdef duckdb_v2_table_function_handle func = NULL
     cdef duckdb_v2_function_signature_handle sig = NULL
@@ -1426,8 +1444,8 @@ cdef void _install_table_function(duckdb_v2_connection_handle conn, bd_registry 
     data.equals = NULL
 
     with nogil:
-        rc = duckdb_v2_table_function_create_with_connection(conn, &func, &err)
-    check_v2(rc, err, "duckdb_v2_table_function_create_with_connection")
+        rc = duckdb_v2_table_function_create(factory, &func, &err)
+    check_v2(rc, err, "duckdb_v2_table_function_create")
     try:
         with nogil:
             rc = duckdb_v2_table_function_set_name(func, &name, &err)
@@ -1435,8 +1453,8 @@ cdef void _install_table_function(duckdb_v2_connection_handle conn, bd_registry 
 
         # One required positional BIGINT, the registry slot id: user data never reaches the SQL layer.
         with nogil:
-            rc = duckdb_v2_connection_create_type_from_id(conn, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, NULL, NULL, 0, &bigint, &err)
-        check_v2(rc, err, "duckdb_v2_connection_create_type_from_id(BIGINT)")
+            rc = duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, NULL, NULL, 0, &bigint, &err)
+        check_v2(rc, err, "duckdb_v2_factory_create_type_from_id(BIGINT)")
         try:
             with nogil:
                 rc = duckdb_v2_table_function_get_signature(func, &sig, &err)
@@ -1475,8 +1493,8 @@ cdef void _install_table_function(duckdb_v2_connection_handle conn, bd_registry 
             rc = duckdb_v2_table_function_set_partition_data_callback(func, _bd_tf_partition_data, &err)
         check_v2(rc, err, "duckdb_v2_table_function_set_partition_data_callback")
         with nogil:
-            rc = duckdb_v2_table_function_register(func, &err)
-        check_v2(rc, err, "duckdb_v2_table_function_register")
+            rc = duckdb_v2_connection_register_table_function(conn, func, &err)
+        check_v2(rc, err, "duckdb_v2_connection_register_table_function")
     finally:
         # The header asks for this after registration too; it does not affect the registered function.
         with nogil:
@@ -1603,6 +1621,7 @@ cdef class CApiConnectionImpl:
     def __cinit__(self, database=None, config=None, read_only=False):
         self._db = None
         self._conn = NULL
+        self._factory = NULL
         self._database_path = "" if database is None else str(database)
         self._closed = False
         self._close_claimed = 0
@@ -1613,15 +1632,17 @@ cdef class CApiConnectionImpl:
         cdef duckdb_v2_environment_handle env
         cdef duckdb_v2_instance_handle db = NULL
         cdef duckdb_v2_connection_handle conn = NULL
+        cdef duckdb_v2_factory_handle factory = NULL
         cdef _InstanceHandle handle
         cdef duckdb_v2_error_info_handle err = NULL
         cdef duckdb_v2_error_t rc
         cdef duckdb_v2_str_t path
-        cdef duckdb_v2_identifier_t name
-        cdef duckdb_v2_str_t setting
+        cdef duckdb_v2_str_t *option_names = NULL
+        cdef duckdb_v2_str_t *option_values = NULL
+        cdef idx_t option_count
+        cdef idx_t i
         cdef bytes path_bytes = None
-        cdef bytes name_bytes
-        cdef bytes value_bytes
+        cdef list encoded
         cdef dict settings = {"autoinstall_known_extensions": "false"}
         cdef str attach_path
         cdef str key
@@ -1649,27 +1670,34 @@ cdef class CApiConnectionImpl:
             for key, value in config.items():
                 settings[str(key)] = str(value)
 
-        with nogil:
-            rc = duckdb_v2_instance_create(env, &db, &err)
-        check_v2(rc, err, "duckdb_v2_instance_create")
+        # Every setting is a startup option, passed at creation: the instance starts eagerly.
+        # The bytes in `encoded` own the memory the two arrays point into until the call returns.
+        encoded = [(key.encode("utf-8"), value.encode("utf-8")) for key, value in settings.items()]
+        option_count = <idx_t>len(encoded)
+        option_names = <duckdb_v2_str_t *>malloc(option_count * sizeof(duckdb_v2_str_t))
+        option_values = <duckdb_v2_str_t *>malloc(option_count * sizeof(duckdb_v2_str_t))
+        if option_names == NULL or option_values == NULL:
+            free(option_names)
+            free(option_values)
+            raise MemoryError()
+        try:
+            for i in range(option_count):
+                option_names[i].ptr = <const char *>(<bytes>encoded[i][0])
+                option_names[i].len = <idx_t>len(<bytes>encoded[i][0])
+                option_values[i].ptr = <const char *>(<bytes>encoded[i][1])
+                option_values[i].len = <idx_t>len(<bytes>encoded[i][1])
+            with nogil:
+                rc = duckdb_v2_instance_create_with_options(env, option_names, option_values, option_count, &db, &err)
+        finally:
+            free(option_names)
+            free(option_values)
+        check_v2(rc, err, "duckdb_v2_instance_create_with_options")
 
         try:
-            # Every setting is a startup setting: the instance has not started until the attach below.
-            for key, value in settings.items():
-                name_bytes = key.encode("utf-8")
-                value_bytes = value.encode("utf-8")
-                name.ptr = <const char *>name_bytes
-                name.len = <idx_t>len(name_bytes)
-                setting.ptr = <const char *>value_bytes
-                setting.len = <idx_t>len(value_bytes)
-                with nogil:
-                    rc = duckdb_v2_instance_set_option(db, &name, &setting, &err)
-                check_v2(rc, err, f"duckdb_v2_instance_set_option({key})")
-
             # A NULL name derives the attach name from the path, and NULL options carry no
             # ATTACH-scoped options; make_default matches the single-database open this replaces.
             with nogil:
-                rc = duckdb_v2_instance_attach(db, &path, NULL, NULL, True, &err)
+                rc = duckdb_v2_instance_attach(db, NULL, &path, NULL, True, &err)
             check_v2(rc, err, "duckdb_v2_instance_attach")
         except BaseException:
             # The handle is not adopted yet, so nothing else would release the database.
@@ -1692,10 +1720,15 @@ cdef class CApiConnectionImpl:
             check_v2(rc, err, "duckdb_v2_connection_create")
         self._conn = conn
         handle._acquire()
+        # Borrowed for the connection's lifetime; values, types and casts are created through it.
+        with nogil:
+            rc = duckdb_v2_connection_get_factory(conn, &factory, &err)
+        check_v2(rc, err, "duckdb_v2_connection_get_factory")
+        self._factory = factory
         # On the database, so every cursor and later connection can bind a dispatcher claim.
-        _install_table_function(conn, handle._registry)
+        _install_table_function(factory, conn, handle._registry)
         # Also connection-scoped: the binder consults those before the built-in file scans.
-        _install_connection_dispatcher(conn, handle._registry)
+        _install_connection_dispatcher(factory, conn, handle._registry)
 
     def call_impl(self, *, str query, str mode="stream", uint64_t batch_size=0, object parameters=None, bint arrow=False):
         """Route a query onto the v2 execution path; arrow asks for an ArrowResult where the statement allows"""
@@ -1763,6 +1796,7 @@ cdef class CApiConnectionImpl:
             with nogil:
                 duckdb_v2_connection_destroy(&self._conn)
         self._conn = NULL
+        self._factory = NULL
         if self._db is not None:
             self._db._release()
         self._db = None
@@ -1785,6 +1819,7 @@ cdef class CApiConnectionImpl:
 
         cdef CApiConnectionImpl cursor = CApiConnectionImpl.__new__(CApiConnectionImpl)
         cdef duckdb_v2_connection_handle conn = NULL
+        cdef duckdb_v2_factory_handle factory = NULL
         cdef duckdb_v2_error_info_handle err = NULL
         cdef duckdb_v2_error_t rc
 
@@ -1800,8 +1835,12 @@ cdef class CApiConnectionImpl:
             check_v2(rc, err, "duckdb_v2_connection_create")
         cursor._conn = conn
         self._db._acquire()
+        with nogil:
+            rc = duckdb_v2_connection_get_factory(conn, &factory, &err)
+        check_v2(rc, err, "duckdb_v2_connection_get_factory")
+        cursor._factory = factory
         if self._db._registry != NULL:
-            _install_connection_dispatcher(conn, self._db._registry)
+            _install_connection_dispatcher(factory, conn, self._db._registry)
         return cursor
 
     cdef bd_registry *_registry(self) except NULL:

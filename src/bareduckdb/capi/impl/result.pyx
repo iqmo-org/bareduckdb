@@ -88,8 +88,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_arrow_result_handle,
     duckdb_v2_bignum_decode,
     duckdb_v2_bool_t,
-    duckdb_v2_connection_create_type_from_id,
-    duckdb_v2_connection_create_type_from_text,
+    duckdb_v2_connection_get_factory,
     duckdb_v2_connection_handle,
     duckdb_v2_data_chunk_destroy,
     duckdb_v2_data_chunk_get_size,
@@ -99,6 +98,9 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_error_info_destroy,
     duckdb_v2_error_info_handle,
     duckdb_v2_error_t,
+    duckdb_v2_factory_create_type_from_id,
+    duckdb_v2_factory_create_type_from_text,
+    duckdb_v2_factory_handle,
     duckdb_v2_hugeint_t,
     duckdb_v2_identifier_t,
     duckdb_v2_interval_t,
@@ -137,22 +139,22 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_statement_type_t,
     duckdb_v2_str_t,
     duckdb_v2_uhugeint_t,
-    duckdb_v2_value_cast_with_connection,
-    duckdb_v2_value_create_bigint_with_connection,
-    duckdb_v2_value_create_blob_with_connection,
-    duckdb_v2_value_create_bool_with_connection,
-    duckdb_v2_value_create_date_with_connection,
-    duckdb_v2_value_create_decimal_with_connection,
-    duckdb_v2_value_create_double_with_connection,
-    duckdb_v2_value_create_hugeint_with_connection,
-    duckdb_v2_value_create_interval_with_connection,
-    duckdb_v2_value_create_list_with_connection,
-    duckdb_v2_value_create_map_with_connection,
-    duckdb_v2_value_create_null_with_connection,
-    duckdb_v2_value_create_time_with_connection,
-    duckdb_v2_value_create_timestamp_with_connection,
-    duckdb_v2_value_create_uuid_with_connection,
-    duckdb_v2_value_create_varchar_with_connection,
+    duckdb_v2_value_cast,
+    duckdb_v2_value_create_bigint,
+    duckdb_v2_value_create_blob,
+    duckdb_v2_value_create_bool,
+    duckdb_v2_value_create_date,
+    duckdb_v2_value_create_decimal,
+    duckdb_v2_value_create_double,
+    duckdb_v2_value_create_hugeint,
+    duckdb_v2_value_create_interval,
+    duckdb_v2_value_create_list,
+    duckdb_v2_value_create_map,
+    duckdb_v2_value_create_null,
+    duckdb_v2_value_create_time,
+    duckdb_v2_value_create_timestamp,
+    duckdb_v2_value_create_uuid,
+    duckdb_v2_value_create_varchar,
     duckdb_v2_value_destroy,
     duckdb_v2_value_get_bigint,
     duckdb_v2_value_get_blob,
@@ -774,6 +776,9 @@ cdef _Params _params_from_bind(
     cdef idx_t i
     cdef bint use_names = False
     cdef duckdb_v2_logical_type_handle target_type = NULL
+    cdef duckdb_v2_factory_handle factory = NULL
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
     cdef _Params out = _Params.__new__(_Params)
 
     use_names = isinstance(parameters, dict)
@@ -781,6 +786,11 @@ cdef _Params _params_from_bind(
     param_count = <idx_t>len(items)
     if param_count == 0:
         return out
+
+    # Borrowed from the connection, which outlives this call; the values are built through it.
+    with nogil:
+        rc = duckdb_v2_connection_get_factory(conn, &factory, &err)
+    check_v2(rc, err, "duckdb_v2_connection_get_factory")
 
     out.values = <duckdb_v2_value_handle *>malloc(param_count * sizeof(duckdb_v2_value_handle))
     if out.values == NULL:
@@ -805,7 +815,7 @@ cdef _Params _params_from_bind(
         else:
             val = items[i]
             target_type = _positional_target_type(out_parameters, i)
-        out.values[i] = _python_to_value(conn, val, target_type)
+        out.values[i] = _python_to_value(factory, val, target_type)
     return out
 
 
@@ -964,7 +974,7 @@ cdef duckdb_v2_logical_type_handle _declared_child_type(
 
 
 cdef duckdb_v2_logical_type_handle _primitive_type(
-    duckdb_v2_connection_handle conn, duckdb_v2_logical_type_id_t type_id
+    duckdb_v2_factory_handle factory, duckdb_v2_logical_type_id_t type_id
 ) except NULL:
     """Build an owned parameterless logical type from its id"""
     cdef duckdb_v2_error_info_handle err = NULL
@@ -972,12 +982,12 @@ cdef duckdb_v2_logical_type_handle _primitive_type(
     cdef duckdb_v2_logical_type_handle out_type = NULL
 
     with nogil:
-        rc = duckdb_v2_connection_create_type_from_id(conn, type_id, NULL, NULL, 0, &out_type, &err)
-    check_v2(rc, err, "duckdb_v2_connection_create_type_from_id")
+        rc = duckdb_v2_factory_create_type_from_id(factory, type_id, NULL, NULL, 0, &out_type, &err)
+    check_v2(rc, err, "duckdb_v2_factory_create_type_from_id")
     return out_type
 
 
-cdef duckdb_v2_logical_type_handle _sqlnull_type(duckdb_v2_connection_handle conn) except NULL:
+cdef duckdb_v2_logical_type_handle _sqlnull_type(duckdb_v2_factory_handle factory) except NULL:
     """Build an owned SQLNULL type, duckdb-python's type for None; create_type_from_id refuses that id"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
@@ -987,8 +997,8 @@ cdef duckdb_v2_logical_type_handle _sqlnull_type(duckdb_v2_connection_handle con
     text.ptr = _SQLNULL_TYPE_TEXT
     text.len = len(_SQLNULL_TYPE_TEXT)
     with nogil:
-        rc = duckdb_v2_connection_create_type_from_text(conn, &text, &out_type, &err)
-    check_v2(rc, err, "duckdb_v2_connection_create_type_from_text(SQLNULL)")
+        rc = duckdb_v2_factory_create_type_from_text(factory, &text, &out_type, &err)
+    check_v2(rc, err, "duckdb_v2_factory_create_type_from_text(SQLNULL)")
     return out_type
 
 
@@ -1001,7 +1011,7 @@ cdef void _int_to_hugeint(object value, duckdb_v2_hugeint_t *out) except *:
 
 
 cdef duckdb_v2_value_handle _decimal_to_value(
-    duckdb_v2_connection_handle conn, object val
+    duckdb_v2_factory_handle factory, object val
 ) except? NULL:
     """Bind a decimal.Decimal as a DECIMAL whose width and scale come from its own digits"""
     cdef duckdb_v2_error_info_handle err = NULL
@@ -1034,15 +1044,15 @@ cdef duckdb_v2_value_handle _decimal_to_value(
     c_width = <uint8_t>width
     c_scale = <uint8_t>scale
     with nogil:
-        rc = duckdb_v2_value_create_decimal_with_connection(
-            conn, &hv, c_width, c_scale, &out_value, &err
+        rc = duckdb_v2_value_create_decimal(
+            factory, &hv, c_width, c_scale, &out_value, &err
         )
-    check_v2(rc, err, "duckdb_v2_value_create_decimal_with_connection")
+    check_v2(rc, err, "duckdb_v2_value_create_decimal")
     return out_value
 
 
 cdef duckdb_v2_value_handle _uuid_to_value(
-    duckdb_v2_connection_handle conn, object val
+    duckdb_v2_factory_handle factory, object val
 ) except? NULL:
     """Bind a uuid.UUID, applying the sign-bit flip _hugeint_to_uuid undoes on the read path"""
     cdef duckdb_v2_error_info_handle err = NULL
@@ -1056,13 +1066,13 @@ cdef duckdb_v2_value_handle _uuid_to_value(
     hv.upper = <int64_t>upper_raw
     hv.lower = <uint64_t>(full & ((1 << 64) - 1))
     with nogil:
-        rc = duckdb_v2_value_create_uuid_with_connection(conn, &hv, &out_value, &err)
-    check_v2(rc, err, "duckdb_v2_value_create_uuid_with_connection")
+        rc = duckdb_v2_value_create_uuid(factory, &hv, &out_value, &err)
+    check_v2(rc, err, "duckdb_v2_value_create_uuid")
     return out_value
 
 
 cdef duckdb_v2_value_handle _timedelta_to_value(
-    duckdb_v2_connection_handle conn, object val
+    duckdb_v2_factory_handle factory, object val
 ) except? NULL:
     """Bind a datetime.timedelta as an INTERVAL; a timedelta carries no months, so months is 0"""
     cdef duckdb_v2_error_info_handle err = NULL
@@ -1074,13 +1084,13 @@ cdef duckdb_v2_value_handle _timedelta_to_value(
     iv.days = <int32_t>val.days
     iv.micros = <int64_t>(val.seconds * 1_000_000 + val.microseconds)
     with nogil:
-        rc = duckdb_v2_value_create_interval_with_connection(conn, &iv, &out_value, &err)
-    check_v2(rc, err, "duckdb_v2_value_create_interval_with_connection")
+        rc = duckdb_v2_value_create_interval(factory, &iv, &out_value, &err)
+    check_v2(rc, err, "duckdb_v2_value_create_interval")
     return out_value
 
 
 cdef duckdb_v2_value_handle _list_to_value(
-    duckdb_v2_connection_handle conn, object val, duckdb_v2_logical_type_handle target_type
+    duckdb_v2_factory_handle factory, object val, duckdb_v2_logical_type_handle target_type
 ) except? NULL:
     """Bind a Python list as a LIST, naming the element type only when the parameter declares one"""
     cdef duckdb_v2_error_info_handle err = NULL
@@ -1096,7 +1106,7 @@ cdef duckdb_v2_value_handle _list_to_value(
     try:
         # An empty list has nothing to resolve a child type from, so it needs one named outright.
         if count == 0 and child_type == NULL:
-            child_type = _primitive_type(conn, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER)
+            child_type = _primitive_type(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER)
         if count > 0:
             children = <duckdb_v2_value_handle *>malloc(count * sizeof(duckdb_v2_value_handle))
             if children == NULL:
@@ -1105,14 +1115,14 @@ cdef duckdb_v2_value_handle _list_to_value(
                 children[i] = NULL
             # One SQLNULL type for every untyped None, since building it costs a transaction.
             if child_type == NULL and any(item is None for item in val):
-                null_type = _sqlnull_type(conn)
+                null_type = _sqlnull_type(factory)
             for i in range(count):
-                children[i] = _python_to_value(conn, val[i], null_type if val[i] is None and child_type == NULL else child_type)
+                children[i] = _python_to_value(factory, val[i], null_type if val[i] is None and child_type == NULL else child_type)
         with nogil:
-            rc = duckdb_v2_value_create_list_with_connection(
-                conn, child_type, children, count, &out_value, &err
+            rc = duckdb_v2_value_create_list(
+                factory, child_type, children, count, &out_value, &err
             )
-        check_v2(rc, err, "duckdb_v2_value_create_list_with_connection")
+        check_v2(rc, err, "duckdb_v2_value_create_list")
     finally:
         if children != NULL:
             for i in range(count):
@@ -1130,7 +1140,7 @@ cdef duckdb_v2_value_handle _list_to_value(
 
 
 cdef duckdb_v2_value_handle _dict_to_value(
-    duckdb_v2_connection_handle conn, object val, duckdb_v2_logical_type_handle target_type
+    duckdb_v2_factory_handle factory, object val, duckdb_v2_logical_type_handle target_type
 ) except? NULL:
     """Bind a Python dict as a MAP, naming key and value types only when the parameter declares them"""
     cdef duckdb_v2_error_info_handle err = NULL
@@ -1151,9 +1161,9 @@ cdef duckdb_v2_value_handle _dict_to_value(
         # An empty map has nothing to resolve its two child types from, so both must be named outright.
         if count == 0:
             if key_type == NULL:
-                key_type = _primitive_type(conn, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR)
+                key_type = _primitive_type(factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR)
             if value_type == NULL:
-                value_type = _primitive_type(conn, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER)
+                value_type = _primitive_type(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER)
         if count > 0:
             keys = <duckdb_v2_value_handle *>malloc(count * sizeof(duckdb_v2_value_handle))
             values = <duckdb_v2_value_handle *>malloc(count * sizeof(duckdb_v2_value_handle))
@@ -1163,19 +1173,19 @@ cdef duckdb_v2_value_handle _dict_to_value(
                 keys[i] = NULL
                 values[i] = NULL
             if value_type == NULL and any(item[1] is None for item in items):
-                null_type = _sqlnull_type(conn)
+                null_type = _sqlnull_type(factory)
             for i in range(count):
                 if items[i][0] is None:
                     raise ValueError("cannot bind a dict with a None key as a DuckDB MAP: MAP keys must be non-NULL")
-                keys[i] = _python_to_value(conn, items[i][0], key_type)
+                keys[i] = _python_to_value(factory, items[i][0], key_type)
                 values[i] = _python_to_value(
-                    conn, items[i][1], null_type if items[i][1] is None and value_type == NULL else value_type
+                    factory, items[i][1], null_type if items[i][1] is None and value_type == NULL else value_type
                 )
         with nogil:
-            rc = duckdb_v2_value_create_map_with_connection(
-                conn, key_type, value_type, keys, values, count, &out_value, &err
+            rc = duckdb_v2_value_create_map(
+                factory, key_type, value_type, keys, values, count, &out_value, &err
             )
-        check_v2(rc, err, "duckdb_v2_value_create_map_with_connection")
+        check_v2(rc, err, "duckdb_v2_value_create_map")
     finally:
         if keys != NULL:
             for i in range(count):
@@ -1202,7 +1212,7 @@ cdef duckdb_v2_value_handle _dict_to_value(
 
 
 cdef duckdb_v2_value_handle _python_to_value(
-    duckdb_v2_connection_handle conn, object val, duckdb_v2_logical_type_handle target_type
+    duckdb_v2_factory_handle factory, object val, duckdb_v2_logical_type_handle target_type
 ) except? NULL:
     """Build one owned duckdb_v2_value from a Python parameter value"""
     cdef duckdb_v2_error_info_handle err = NULL
@@ -1224,12 +1234,12 @@ cdef duckdb_v2_value_handle _python_to_value(
         if target_type != NULL and _logical_type_id(target_type) != DUCKDB_V2_LOGICAL_TYPE_ID_UNKNOWN:
             null_type = target_type
         else:
-            null_type = _sqlnull_type(conn)
+            null_type = _sqlnull_type(factory)
             own_null_type = True
         try:
             with nogil:
-                rc = duckdb_v2_value_create_null_with_connection(conn, null_type, &out_value, &err)
-            check_v2(rc, err, "duckdb_v2_value_create_null_with_connection")
+                rc = duckdb_v2_value_create_null(factory, null_type, &out_value, &err)
+            check_v2(rc, err, "duckdb_v2_value_create_null")
         finally:
             if own_null_type:
                 with nogil:
@@ -1239,22 +1249,22 @@ cdef duckdb_v2_value_handle _python_to_value(
     if isinstance(val, bool):
         bool_val = <duckdb_v2_bool_t>val
         with nogil:
-            rc = duckdb_v2_value_create_bool_with_connection(conn, bool_val, &out_value, &err)
-        check_v2(rc, err, "duckdb_v2_value_create_bool_with_connection")
+            rc = duckdb_v2_value_create_bool(factory, bool_val, &out_value, &err)
+        check_v2(rc, err, "duckdb_v2_value_create_bool")
         return out_value
 
     if isinstance(val, int):
         if -(2 ** 63) <= val < 2 ** 63:
             int64_val = <int64_t>val
             with nogil:
-                rc = duckdb_v2_value_create_bigint_with_connection(conn, int64_val, &out_value, &err)
-            check_v2(rc, err, "duckdb_v2_value_create_bigint_with_connection")
+                rc = duckdb_v2_value_create_bigint(factory, int64_val, &out_value, &err)
+            check_v2(rc, err, "duckdb_v2_value_create_bigint")
         elif -(2 ** 127) <= val < 2 ** 127:
             hv.lower = <uint64_t>(val & ((1 << 64) - 1))
             hv.upper = <int64_t>(val >> 64)
             with nogil:
-                rc = duckdb_v2_value_create_hugeint_with_connection(conn, &hv, &out_value, &err)
-            check_v2(rc, err, "duckdb_v2_value_create_hugeint_with_connection")
+                rc = duckdb_v2_value_create_hugeint(factory, &hv, &out_value, &err)
+            check_v2(rc, err, "duckdb_v2_value_create_hugeint")
         else:
             raise OverflowError(f"Python int {val} does not fit in a v2 HUGEINT")
         return out_value
@@ -1262,8 +1272,8 @@ cdef duckdb_v2_value_handle _python_to_value(
     if isinstance(val, float):
         double_val = <double>val
         with nogil:
-            rc = duckdb_v2_value_create_double_with_connection(conn, double_val, &out_value, &err)
-        check_v2(rc, err, "duckdb_v2_value_create_double_with_connection")
+            rc = duckdb_v2_value_create_double(factory, double_val, &out_value, &err)
+        check_v2(rc, err, "duckdb_v2_value_create_double")
         return out_value
 
     if isinstance(val, str):
@@ -1271,8 +1281,8 @@ cdef duckdb_v2_value_handle _python_to_value(
         sv.ptr = <const char *>as_bytes
         sv.len = <idx_t>len(as_bytes)
         with nogil:
-            rc = duckdb_v2_value_create_varchar_with_connection(conn, &sv, &out_value, &err)
-        check_v2(rc, err, "duckdb_v2_value_create_varchar_with_connection")
+            rc = duckdb_v2_value_create_varchar(factory, &sv, &out_value, &err)
+        check_v2(rc, err, "duckdb_v2_value_create_varchar")
         return out_value
 
     if isinstance(val, (bytes, bytearray)):
@@ -1280,8 +1290,8 @@ cdef duckdb_v2_value_handle _python_to_value(
         sv.ptr = <const char *>as_bytes
         sv.len = <idx_t>len(as_bytes)
         with nogil:
-            rc = duckdb_v2_value_create_blob_with_connection(conn, &sv, &out_value, &err)
-        check_v2(rc, err, "duckdb_v2_value_create_blob_with_connection")
+            rc = duckdb_v2_value_create_blob(factory, &sv, &out_value, &err)
+        check_v2(rc, err, "duckdb_v2_value_create_blob")
         return out_value
 
     if isinstance(val, datetime.datetime):
@@ -1290,15 +1300,15 @@ cdef duckdb_v2_value_handle _python_to_value(
             delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds
         )
         with nogil:
-            rc = duckdb_v2_value_create_timestamp_with_connection(conn, micros_val, &out_value, &err)
-        check_v2(rc, err, "duckdb_v2_value_create_timestamp_with_connection")
+            rc = duckdb_v2_value_create_timestamp(factory, micros_val, &out_value, &err)
+        check_v2(rc, err, "duckdb_v2_value_create_timestamp")
         return out_value
 
     if isinstance(val, datetime.date):
         days_val = <int32_t>((val - _EPOCH_DATE).days)
         with nogil:
-            rc = duckdb_v2_value_create_date_with_connection(conn, days_val, &out_value, &err)
-        check_v2(rc, err, "duckdb_v2_value_create_date_with_connection")
+            rc = duckdb_v2_value_create_date(factory, days_val, &out_value, &err)
+        check_v2(rc, err, "duckdb_v2_value_create_date")
         return out_value
 
     if isinstance(val, datetime.time):
@@ -1306,24 +1316,24 @@ cdef duckdb_v2_value_handle _python_to_value(
             (val.hour * 3600 + val.minute * 60 + val.second) * 1_000_000 + val.microsecond
         )
         with nogil:
-            rc = duckdb_v2_value_create_time_with_connection(conn, micros_val, &out_value, &err)
-        check_v2(rc, err, "duckdb_v2_value_create_time_with_connection")
+            rc = duckdb_v2_value_create_time(factory, micros_val, &out_value, &err)
+        check_v2(rc, err, "duckdb_v2_value_create_time")
         return out_value
 
     if isinstance(val, datetime.timedelta):
-        return _timedelta_to_value(conn, val)
+        return _timedelta_to_value(factory, val)
 
     if isinstance(val, decimal.Decimal):
-        return _decimal_to_value(conn, val)
+        return _decimal_to_value(factory, val)
 
     if isinstance(val, uuid.UUID):
-        return _uuid_to_value(conn, val)
+        return _uuid_to_value(factory, val)
 
     if isinstance(val, list):
-        return _list_to_value(conn, val, target_type)
+        return _list_to_value(factory, val, target_type)
 
     if isinstance(val, dict):
-        return _dict_to_value(conn, val, target_type)
+        return _dict_to_value(factory, val, target_type)
 
     raise TypeError(f"cannot bind Python {type(val).__name__} as a query parameter")
 
@@ -1542,7 +1552,7 @@ cdef class CApiResult:
                 if chunk == NULL:
                     return
                 try:
-                    rows = _decode_chunk(chunk, self._column_decoders, self._conn_obj._conn)
+                    rows = _decode_chunk(chunk, self._column_decoders, self._conn_obj._factory)
                 finally:
                     _destroy_chunk(chunk)
                 yield rows
@@ -1848,7 +1858,7 @@ cdef void _destroy_chunk(duckdb_v2_data_chunk_handle chunk) noexcept:
 
 
 cdef list _decode_chunk(
-    duckdb_v2_data_chunk_handle chunk, list decoders, duckdb_v2_connection_handle conn
+    duckdb_v2_data_chunk_handle chunk, list decoders, duckdb_v2_factory_handle factory
 ):
     """Decode a chunk into row tuples, one column at a time"""
     cdef idx_t size = 0
@@ -1881,7 +1891,7 @@ cdef list _decode_chunk(
             if decoder[0] == "scalar" and _scalar_supported(decoder[1]):
                 columns.append(_decode_scalar_column(vector, size, decoder[1], decoder[2], col))
             else:
-                columns.append([_decode_cell(vector, row, decoder, conn, &varchar_type) for row in range(size)])
+                columns.append([_decode_cell(vector, row, decoder, factory, &varchar_type) for row in range(size)])
     finally:
         if varchar_type != NULL:
             with nogil:
@@ -1946,7 +1956,7 @@ cdef object _decode_cell(
     duckdb_v2_vector_handle vector,
     idx_t row,
     tuple decoder,
-    duckdb_v2_connection_handle conn,
+    duckdb_v2_factory_handle factory,
     duckdb_v2_logical_type_handle *varchar_type,
 ):
     cdef duckdb_v2_value_handle value = NULL
@@ -1957,7 +1967,7 @@ cdef object _decode_cell(
         rc = duckdb_v2_vector_get_value(vector, row, &value, &err)
     check_v2(rc, err, "duckdb_v2_vector_get_value")
     try:
-        return _decode_value(value, decoder, conn, varchar_type)
+        return _decode_value(value, decoder, factory, varchar_type)
     finally:
         with nogil:
             duckdb_v2_value_destroy(&value)
@@ -1966,7 +1976,7 @@ cdef object _decode_cell(
 cdef object _decode_value(
     duckdb_v2_value_handle value,
     tuple decoder,
-    duckdb_v2_connection_handle conn,
+    duckdb_v2_factory_handle factory,
     duckdb_v2_logical_type_handle *varchar_type,
 ):
     cdef duckdb_v2_bool_t is_null = False
@@ -1998,7 +2008,7 @@ cdef object _decode_value(
                 rc = duckdb_v2_value_get_child(value, i, &child, &err)
             check_v2(rc, err, "duckdb_v2_value_get_child")
             try:
-                out_list.append(_decode_value(child, child_decoder, conn, varchar_type))
+                out_list.append(_decode_value(child, child_decoder, factory, varchar_type))
             finally:
                 with nogil:
                     duckdb_v2_value_destroy(&child)
@@ -2007,16 +2017,14 @@ cdef object _decode_value(
 
     if kind == "enum":
         # value_get_varchar refuses an ENUM: it borrows from the value, so it cannot convert.
-        # A real cast is the sanctioned route (value_cast_with_connection's doc), and there is no ENUM to
+        # A real cast is the sanctioned route (value_cast's doc), and there is no ENUM to
         # integer cast to read the dictionary index with instead. The VARCHAR target is built
         # once per chunk by _decode_chunk and borrowed here.
         if varchar_type[0] == NULL:
-            varchar_type[0] = _primitive_type(conn, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR)
+            varchar_type[0] = _primitive_type(factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR)
         with nogil:
-            rc = duckdb_v2_value_cast_with_connection(
-                conn, value, varchar_type[0], &child, &err
-            )
-        check_v2(rc, err, "duckdb_v2_value_cast_with_connection(enum)")
+            rc = duckdb_v2_value_cast(factory, value, varchar_type[0], &child, &err)
+        check_v2(rc, err, "duckdb_v2_value_cast(enum)")
         try:
             with nogil:
                 rc = duckdb_v2_value_get_varchar(child, &label, &err)
@@ -2038,7 +2046,7 @@ cdef object _decode_value(
                 rc = duckdb_v2_value_get_child(value, i, &child, &err)
             check_v2(rc, err, "duckdb_v2_value_get_child")
             try:
-                out_tuple.append(_decode_value(child, child_decoders[i], conn, varchar_type))
+                out_tuple.append(_decode_value(child, child_decoders[i], factory, varchar_type))
             finally:
                 with nogil:
                     duckdb_v2_value_destroy(&child)
@@ -2056,7 +2064,7 @@ cdef object _decode_value(
             check_v2(rc, err, "duckdb_v2_value_get_child")
             try:
                 field_name, field_decoder = fields[i]
-                out_dict[field_name] = _decode_value(child, field_decoder, conn, varchar_type)
+                out_dict[field_name] = _decode_value(child, field_decoder, factory, varchar_type)
             finally:
                 with nogil:
                     duckdb_v2_value_destroy(&child)
@@ -2075,7 +2083,7 @@ cdef object _decode_value(
                 rc = duckdb_v2_value_get_child(value, i, &child, &err)
             check_v2(rc, err, "duckdb_v2_value_get_child")
             try:
-                map_key = _decode_value(child, key_decoder, conn, varchar_type)
+                map_key = _decode_value(child, key_decoder, factory, varchar_type)
             finally:
                 with nogil:
                     duckdb_v2_value_destroy(&child)
@@ -2083,7 +2091,7 @@ cdef object _decode_value(
                 rc = duckdb_v2_value_get_child(value, i + 1, &child, &err)
             check_v2(rc, err, "duckdb_v2_value_get_child")
             try:
-                out_map[map_key] = _decode_value(child, value_decoder, conn, varchar_type)
+                out_map[map_key] = _decode_value(child, value_decoder, factory, varchar_type)
             finally:
                 with nogil:
                     duckdb_v2_value_destroy(&child)

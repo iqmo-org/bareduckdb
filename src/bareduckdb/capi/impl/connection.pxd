@@ -7,6 +7,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_connection_handle,
     duckdb_v2_instance_handle,
     duckdb_v2_environment_handle,
+    duckdb_v2_factory_handle,
     duckdb_v2_qname_handle,
     duckdb_v2_schema_handle,
     idx_t,
@@ -116,6 +117,8 @@ cdef class CApiEnvironment:
 cdef class CApiConnectionImpl:
     cdef _InstanceHandle _db
     cdef duckdb_v2_connection_handle _conn
+    # Borrowed from _conn and valid exactly as long as it is.
+    cdef duckdb_v2_factory_handle _factory
     cdef str _database_path
     cdef bint _closed
     cdef long _close_claimed

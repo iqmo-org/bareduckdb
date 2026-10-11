@@ -26,6 +26,12 @@ cdef duckdb_v2_error_t step_result_chunk(
 ) noexcept nogil
 
 
+# A parsed statement shared by the parse cache and the pending results that borrow it.
+cdef struct bd_shared_statement:
+    duckdb_v2_sql_statement_handle handle
+    long refs
+
+
 cdef class _Params:
     cdef duckdb_v2_value_handle *values
     cdef duckdb_v2_identifier_t *names
@@ -38,6 +44,8 @@ cdef class CApiResult:
     cdef duckdb_v2_result_handle _result
     # A pending result's bound statement and parameters, submitted once by the first consumer.
     cdef duckdb_v2_sql_statement_handle _statement
+    # Non-NULL when _statement is borrowed from it; a C reference, so GC teardown order cannot double free.
+    cdef bd_shared_statement *_shared
     cdef _Params _params
     # 1 while bound but not submitted, 2 while one caller submits it, then 0.
     cdef long _pending
@@ -68,6 +76,7 @@ cdef class CApiResult:
     cdef duckdb_v2_data_chunk_handle _take_pending_chunk(self) noexcept
     cdef duckdb_v2_data_chunk_handle _next_chunk(self) except? NULL
     cdef void _check_connection_open(self) except *
+    cdef void _drop_statement(self) noexcept
     cdef void _destroy(self) noexcept
     cdef void _release_handles(self) noexcept
 

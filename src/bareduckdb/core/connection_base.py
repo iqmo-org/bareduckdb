@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from ..capi.arrow_export import cancel_translating_reader, cancelled_from
 from ..capi.impl.connection import CApiConnectionImpl as ConnectionImpl  # type: ignore[import-untyped]
+from ..capi.parse_cache import DEFAULT_PARSE_CACHE_SIZE, ParseCache
 
 if TYPE_CHECKING:
     from typing import Any, Literal, Mapping, Optional, Sequence  # type: ignore[attr-defined]
@@ -155,6 +156,7 @@ class ConnectionBase:
     # RLock: _call() holds this across paths that re-enter _register_capsule; it also guards the _uncached_* dicts against unregister().
     _lock: threading.RLock
     _registered_objects: dict[str, Any]
+    _parse_cache_size: int
     _database_path: str | None
     _arrow_table_collector: Literal["arrow", "stream"]
     arrow_table_collector: Literal["arrow", "stream"]
@@ -170,6 +172,7 @@ class ConnectionBase:
         *,
         arrow_table_collector: Literal["arrow", "stream"] = "arrow",
         init_sql: str | None = None,
+        parse_cache_size: int = DEFAULT_PARSE_CACHE_SIZE,
         _from_impl: Any = None,
     ) -> None:
         """
@@ -181,8 +184,13 @@ class ConnectionBase:
             read_only: Whether to open database in read-only mode
             arrow_table_collector: Arrow collection mode ("arrow" or "stream")
             init_sql: SQL to run when creating the connection
+            parse_cache_size: Parsed single SELECTs kept for reuse, keyed by SQL text; 0 disables
             _from_impl: Internal parameter for creating cursor with shared database
         """
+
+        if parse_cache_size < 0:
+            raise ValueError(f"parse_cache_size must be 0 (disabled) or more, got {parse_cache_size}")
+        self._parse_cache_size = parse_cache_size
 
         if _from_impl is not None:
             # Creating a cursor - use the provided ConnectionImpl directly
@@ -196,6 +204,8 @@ class ConnectionBase:
             self.arrow_table_collector = arrow_table_collector
             self._interrupts = 0
             self._interrupts_lock = threading.Lock()
+            if parse_cache_size:
+                self._impl.install_parse_cache(ParseCache(parse_cache_size))
 
             if init_sql:
                 self._run_to_end(init_sql)
@@ -218,6 +228,8 @@ class ConnectionBase:
             self.arrow_table_collector = arrow_table_collector
             self._interrupts = 0
             self._interrupts_lock = threading.Lock()
+            if parse_cache_size:
+                self._impl.install_parse_cache(ParseCache(parse_cache_size))
 
             if init_sql:
                 self._run_to_end(init_sql)
@@ -534,6 +546,7 @@ class ConnectionBase:
         return ConnectionBase(
             _from_impl=cursor_impl,
             arrow_table_collector=self.arrow_table_collector,
+            parse_cache_size=self._parse_cache_size,
         )
 
     def appender(

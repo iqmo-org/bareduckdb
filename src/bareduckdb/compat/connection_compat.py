@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from typing import Any, Literal, Mapping, Optional, Sequence
 
 
+from ..capi.parse_cache import DEFAULT_PARSE_CACHE_SIZE
 from ..core.connection_api import ConnectionAPI
 from ..core.connection_base import ConnectionBase
 
@@ -27,6 +28,7 @@ class Connection(ConnectionAPI):
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_capsule",
         udtf_functions: Optional[dict] = None,
         enable_replacement_scan: bool = False,
+        parse_cache_size: int = DEFAULT_PARSE_CACHE_SIZE,
         _from_impl: Any = None,
     ) -> None:
         """
@@ -39,6 +41,7 @@ class Connection(ConnectionAPI):
             read_only: default False
             udtf_functions: Dict of UDTF name -> function for template expansion
             enable_replacement_scan: Enable automatic discovery from scope
+            parse_cache_size: Parsed single SELECTs kept for reuse, keyed by SQL text; 0 disables
             _from_impl: Internal parameter for creating cursor with shared database
         """
         super().__init__(
@@ -48,6 +51,7 @@ class Connection(ConnectionAPI):
             udtf_functions=udtf_functions,
             output_type=output_type,
             enable_replacement_scan=enable_replacement_scan,
+            parse_cache_size=parse_cache_size,
             _from_impl=_from_impl,
         )
 
@@ -147,6 +151,7 @@ class Connection(ConnectionAPI):
         cursor_conn = Connection(
             _from_impl=cursor_impl,
             output_type=self._default_output_type,
+            parse_cache_size=self._parse_cache_size,
         )
         return cursor_conn
 
@@ -270,8 +275,8 @@ class Connection(ConnectionAPI):
     def to_arrow_table(self):
         return self.arrow_table()
 
-    def fetch_record_batch(self):
-        return self.arrow_reader()
+    def fetch_record_batch(self, rows_per_batch: int | None = None):
+        return self.arrow_reader(batch_size=rows_per_batch)
 
     def to_pandas(self):
         return self.df()

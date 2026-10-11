@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
     from . import PyArrowCapsule
 
+from ..capi.parse_cache import DEFAULT_PARSE_CACHE_SIZE
 from ..compat.result_compat import Result
 from .connection_base import ConnectionBase, _Deferred
 from .sql_statement import Statement, build_statement
@@ -33,6 +34,7 @@ class ConnectionAPI(ConnectionBase):
         udtf_functions: Optional[dict[str, Callable]] = None,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_capsule",
         enable_replacement_scan: bool = False,
+        parse_cache_size: int = DEFAULT_PARSE_CACHE_SIZE,
         _from_impl: Any = None,
     ) -> None:
         """
@@ -43,6 +45,7 @@ class ConnectionAPI(ConnectionBase):
             arrow_table_collector: Arrow collection mode
             udtf_functions: Dict of UDTF name -> function
             output_type: Default output format for queries
+            parse_cache_size: Parsed single SELECTs kept for reuse, keyed by SQL text; 0 disables
             _from_impl: Internal parameter for creating cursor with shared database
         """
         super().__init__(
@@ -50,6 +53,7 @@ class ConnectionAPI(ConnectionBase):
             config=config,
             read_only=read_only,
             arrow_table_collector=arrow_table_collector,
+            parse_cache_size=parse_cache_size,
             _from_impl=_from_impl,
         )
 
@@ -300,8 +304,8 @@ class ConnectionAPI(ConnectionBase):
     def arrow_table(self, timetz_utc: bool = False):
         return self._last_result_get().arrow_table(timetz_utc=timetz_utc)
 
-    def arrow_reader(self):
-        return self._last_result_get().arrow_reader()
+    def arrow_reader(self, batch_size: int | None = None):
+        return self._last_result_get().arrow_reader(batch_size=batch_size)
 
     def df(self):
         return self._last_result_get().df()

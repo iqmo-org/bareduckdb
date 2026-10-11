@@ -152,6 +152,7 @@ class Result:
     _table: pa.Table | None  # cached materialized table: None until needed
     _reader: PyArrowCapsule | pa.RecordBatchReader | None
     _rows_iter: Any | None
+    _row_chunks: Any | None
     _offset: int  # fetch offset
     _read: bool
     _consumed_by: str | None
@@ -185,6 +186,7 @@ class Result:
 
         self._deferred = deferred
         self._rows_iter = None
+        self._row_chunks = None
         self._stream_batch_rows = None
         self._was_deferred = self._capi is not None
         self._schema: tuple[tuple[str, ...], tuple[str, ...]] | None = None
@@ -307,7 +309,12 @@ class Result:
         return self._table  # type: ignore
 
     def arrow_reader(self, batch_size: int | None = None) -> pa.RecordBatchReader:
-        """Return the streaming reader, or raise if the result was materialized"""
+        """Return the streaming reader, or raise if the result was materialized.
+
+        batch_size is a maximum on the rows in one batch. An explicit execute(batch_size=...)
+        outranks it, and with neither DuckDB's own DEFAULT_STREAM_BATCH_ROWS applies. A reader
+        made by execute(output_type='arrow_reader') already has its batch size fixed.
+        """
         with self._result_lock:
             self._raise_if_cancelled()
             if self._capi is not None:
@@ -315,12 +322,14 @@ class Result:
 
                 self._take_for_arrow("arrow_reader()")
                 self._bound_schema()
-                capsule = self._engine_capsule(0)
+                capsule = self._engine_capsule(batch_size or 0)
                 self._read = True
                 reader = pa.RecordBatchReader._import_from_c_capsule(capsule)  # type: ignore
                 return cancel_translating_reader(reader, self._set_cancelled)
 
             if self._reader is not None:
+                if batch_size:
+                    logger.debug("arrow_reader(batch_size=%d) ignored: the reader was made at execute()", batch_size)
                 self._read = True
                 _reader = self._reader
                 self._reader = None
@@ -404,7 +413,7 @@ class Result:
         Return a Polars LazyFrame that iterates over record batches lazily.
 
         Args:
-            batch_size: Batch size for streaming (only used if Result has a table)
+            batch_size: Maximum rows per streamed batch, as arrow_reader() takes it
 
         Returns:
             pl.LazyFrame that streams batches when collected
@@ -543,7 +552,10 @@ class Result:
                     self._claim("a row fetch")
                     self._submit_rows(capi)
                     self._deferred_schema()
-                    self._rows_iter = capi.rows()
+                    # Flattened by chunk in C; islice still takes rows one at a time, so fetchmany never over-reads.
+                    row_chunks = capi.row_chunks()
+                    self._row_chunks = row_chunks
+                    self._rows_iter = itertools.chain.from_iterable(row_chunks)
                     self._capi = None
 
                 rows_iter = self._rows_iter
@@ -628,10 +640,11 @@ class Result:
         """Drop the engine result and its registry borrow now"""
         with self._result_lock:
             self._released = True
-            rows_iter, self._rows_iter = self._rows_iter, None
+            row_chunks, self._row_chunks = self._row_chunks, None
+            self._rows_iter = None
             capi, self._capi = self._capi, None
-        if rows_iter is not None:
-            rows_iter.close()
+        if row_chunks is not None:
+            row_chunks.close()
         if capi is not None:
             capi.close()
         self._release_data()

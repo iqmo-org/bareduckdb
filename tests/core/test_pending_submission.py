@@ -357,12 +357,69 @@ def test_an_empty_select_yields_no_rows():
         assert list(execute(conn._impl, "select i from range(100000) t(i) where i < 0").rows()) == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="an ALTER that expands into a statement group parses as MULTI, which stays pending like a dynamic PIVOT, so it never runs unless consumed; pre-existing, see plans/TODO.md",
-)
 def test_an_expanding_ddl_runs_at_execute():
     with bareduckdb.connect() as conn:
         conn.execute("create table t(a int)")
         conn.execute("alter table t add column c double default random()")
         assert [row[0] for row in conn.execute("select column_name from (describe t)").fetchall()] == ["a", "c"]
+
+
+def test_an_expanding_ddl_runs_exactly_once():
+    """The group's UPDATE fills the new column once; a second run would advance the sequence again"""
+    with bareduckdb.connect() as conn:
+        conn.execute("create sequence s")
+        conn.execute("create table t(a int)")
+        conn.execute("insert into t values (1), (2)")
+        conn.execute("alter table t add column c bigint default nextval('s')")
+        values = sorted(row[0] for row in conn.execute("select c from t").fetchall())
+        following = conn.execute("select nextval('s')").fetchall()
+        assert values == [1, 2] and following == [(3,)], f"values={values!r} following={following!r}"
+
+
+@pytest.mark.parametrize(
+    "sql, check, expected",
+    [
+        ("create table p as pivot piv on k using sum(v)", "select * from p", [(1, 2)]),
+        ("insert into p2 pivot piv on k using sum(v)", "select * from p2", [(1, 2)]),
+    ],
+    ids=["ctas", "insert"],
+)
+def test_an_effect_statement_over_a_dynamic_pivot_runs_at_execute(sql, check, expected):
+    """A dynamic PIVOT inside a CREATE or INSERT also parses as a group, and must run at execute()"""
+    with bareduckdb.connect() as conn:
+        conn.execute("create table piv(k varchar, v int)")
+        conn.execute("insert into piv values ('a', 1), ('b', 2)")
+        conn.execute("create table p2(a hugeint, b hugeint)")
+        conn.execute(sql)
+        rows = conn.execute(check).fetchall()
+        assert rows == expected, f"rows={rows!r}"
+
+
+def test_an_expanding_ddl_runs_on_the_arrow_path_unconsumed():
+    with bareduckdb.connect() as conn:
+        conn.execute("create table t(a int)")
+        conn._call("alter table t add column c double default random()", output_type="arrow_capsule")
+        assert [row[0] for row in conn.execute("select column_name from (describe t)").fetchall()] == ["a", "c"]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "pivot piv on k using sum(v)",
+        "select * from (pivot piv on k using sum(v))",
+        "with x as (pivot piv on k using sum(v)) select * from x",
+        "from (pivot piv on k using sum(v))",
+    ],
+)
+def test_a_query_led_group_stays_pending_and_reaches_arrow(sql):
+    """A dynamic PIVOT that returns rows is not run at execute(), so its first consumer may pick Arrow"""
+    pa = pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        conn.execute("create table piv(k varchar, v int)")
+        conn.execute("insert into piv values ('a', 1), ('b', 2)")
+        conn.execute(sql)
+        result = conn._last_result_get()
+        assert result._capi.pending, f"{sql!r} was submitted at execute()"
+        table = result.arrow_table()
+        assert isinstance(table, pa.Table)
+        assert {name: [int(v) for v in table.column(name).to_pylist()] for name in table.column_names} == {"a": [1], "b": [2]}

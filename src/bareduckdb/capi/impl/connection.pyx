@@ -1606,6 +1606,7 @@ cdef class CApiConnectionImpl:
         self._database_path = "" if database is None else str(database)
         self._closed = False
         self._close_claimed = 0
+        self.parse_cache = None
 
     def __init__(self, database=None, config=None, read_only=False):
         """Open a database under the shared environment and connect to it"""
@@ -1739,8 +1740,16 @@ cdef class CApiConnectionImpl:
             return None
         return (percentage, rows_processed, total_rows)
 
+    def install_parse_cache(self, cache):
+        """Attach a ParseCache once, before the connection is shared"""
+        if self.parse_cache is not None:
+            raise RuntimeError("a parse cache is already installed on this connection")
+        self.parse_cache = cache
+
     def close(self):
         """Disconnect and drop this connection's reference to the database"""
+        if self.parse_cache is not None:
+            self.parse_cache.clear()
         self._do_close()
 
     def __dealloc__(self):

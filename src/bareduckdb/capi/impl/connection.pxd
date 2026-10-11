@@ -119,6 +119,8 @@ cdef class CApiConnectionImpl:
     cdef str _database_path
     cdef bint _closed
     cdef long _close_claimed
+    # A ParseCache or None, installed once before the connection is shared and never replaced.
+    cdef readonly object parse_cache
     cdef void _do_close(self) noexcept
     cdef bd_registry *_registry(self) except NULL
     cdef bd_registry *_registry_or_null(self) noexcept

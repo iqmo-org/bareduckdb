@@ -89,6 +89,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_bignum_decode,
     duckdb_v2_bool_t,
     duckdb_v2_connection_create_type_from_id,
+    duckdb_v2_connection_create_type_from_text,
     duckdb_v2_connection_handle,
     duckdb_v2_data_chunk_destroy,
     duckdb_v2_data_chunk_get_size,
@@ -124,6 +125,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_schema_get_field,
     duckdb_v2_schema_handle,
     duckdb_v2_sql_statement_destroy,
+    duckdb_v2_sql_statement_get_text,
     duckdb_v2_sql_statement_get_type,
     duckdb_v2_sql_statement_handle,
     duckdb_v2_statement_bind,
@@ -191,6 +193,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_vector_type_t,
 )
 from bareduckdb.capi.impl.atomics cimport (
+    bdv2_add,
     bdv2_cas,
     bdv2_load_acquire,
     bdv2_lock,
@@ -222,6 +225,9 @@ cdef long _PENDING = 1
 cdef long _SUBMITTING = 2
 
 
+# The SQL spelling of the SQLNULL type, as typeof(NULL) reports it.
+cdef const char *_SQLNULL_TYPE_TEXT = b'"NULL"'
+
 _EPOCH_DATE = datetime.date(1970, 1, 1)
 _EPOCH_DATETIME = datetime.datetime(1970, 1, 1)
 _EPOCH_DATETIME_UTC = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
@@ -230,6 +236,48 @@ _EPOCH_DATETIME_UTC = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc
 _TIME_TZ_OFFSET_BITS = 24
 _TIME_TZ_OFFSET_MASK = 0xFFFFFF
 _TIME_TZ_OFFSET_BIAS = 57599
+
+
+# The parse cache. Bind and execute copy the statement (capi_v2_statement.cpp:211,
+# capi_v2_result.cpp:463), so a cached handle is only ever read. Any statement other than a lone
+# SELECT, on any connection, bumps the epoch after it runs, which empties every cache on its next use.
+cdef long _parse_epoch = 0
+cdef long _shared_live = 0
+
+
+cdef bd_shared_statement *_shared_adopt(duckdb_v2_sql_statement_handle *slot) except NULL:
+    """Move a parsed statement into a shared holder with one reference"""
+    cdef bd_shared_statement *shared = <bd_shared_statement *>malloc(sizeof(bd_shared_statement))
+    if shared == NULL:
+        raise MemoryError("failed to allocate a shared statement")
+    shared.handle = slot[0]
+    shared.refs = 1
+    slot[0] = NULL
+    bdv2_add(&_shared_live, 1)
+    return shared
+
+
+cdef void _shared_release(bd_shared_statement *shared) noexcept nogil:
+    """Drop one reference, destroying the statement with the last"""
+    if shared != NULL and bdv2_add(&shared.refs, -1) == 0:
+        duckdb_v2_sql_statement_destroy(&shared.handle)
+        free(shared)
+        bdv2_add(&_shared_live, -1)
+
+
+def _live_shared_statements():
+    """Count parsed statements held by a parse cache or a pending result, for leak tests"""
+    return bdv2_add(&_shared_live, 0)
+
+
+cdef class _CachedStatement:
+    """A parse cache entry: one reference on a shared parsed SELECT"""
+    cdef bd_shared_statement *shared
+
+    def __dealloc__(self):
+        with nogil:
+            _shared_release(self.shared)
+        self.shared = NULL
 
 
 # execute(): parse -> bind -> execute, iterating the whole statement iterator
@@ -249,21 +297,53 @@ def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_ro
     # unregister in between could free the chunks the scan references.
     cdef bd_registry *reg = conn._registry_or_null()
     cdef bint transferred = False
+    cdef long epoch = bdv2_add(&_parse_epoch, 0)
+    cdef _CachedStatement cached = None
+    cache = conn.parse_cache
+
+    if cache is not None:
+        cached = cache.get(query, epoch)
 
     with nogil:
         bd_registry_acquire(reg)
     try:
-        return _execute_bound(conn, c_conn, c_query, parameters, batch_rows, arrow, reg, &transferred)
+        if cached is not None:
+            return _execute_cached(conn, cached, parameters, batch_rows, arrow, reg, &transferred)
+        return _execute_bound(conn, c_conn, c_query, query, cache, epoch, parameters, batch_rows, arrow, reg, &transferred)
     finally:
         if not transferred:
             with nogil:
                 bd_registry_release(reg)
 
 
+cdef object _execute_cached(
+    CApiConnectionImpl conn,
+    _CachedStatement cached,
+    object parameters,
+    object batch_rows,
+    bint arrow,
+    bd_registry *reg,
+    bint *transferred,
+):
+    """Run a cached SELECT as _execute_bound runs a freshly parsed one, borrowing the statement"""
+    cdef duckdb_v2_sql_statement_handle statement = cached.shared.handle
+    cdef duckdb_v2_sql_statement_handle slot = statement
+
+    if arrow:
+        return _execute_arrow_last(conn, statement, _build_params(conn._conn, statement, parameters), batch_rows, reg, transferred)
+    py_result = _defer_bound(conn, &slot, parameters, batch_rows, reg, transferred, cached.shared)
+    if py_result is not None:
+        return py_result
+    return _execute_last(conn, statement, _build_params(conn._conn, statement, parameters), batch_rows, reg, transferred)
+
+
 cdef object _execute_bound(
     CApiConnectionImpl conn,
     duckdb_v2_connection_handle c_conn,
     const char *c_query,
+    str query,
+    object cache,
+    long epoch,
     object parameters,
     object batch_rows,
     bint arrow,
@@ -279,6 +359,10 @@ cdef object _execute_bound(
     cdef duckdb_v2_error_t rc
     cdef idx_t rows_changed = 0
     cdef duckdb_v2_statement_type_t statement_type
+    cdef _CachedStatement cached
+    # Set once anything but a lone SELECT may run; the epoch moves after it has.
+    cdef bint ran_earlier = False
+    cdef bint invalidates = False
 
     with nogil:
         rc = duckdb_v2_parse_sql(c_conn, c_query, &iterator, &err)
@@ -302,6 +386,7 @@ cdef object _execute_bound(
                 if upcoming == NULL:
                     break
 
+                ran_earlier = True
                 current_result = _execute_one(c_conn, current, _build_params(c_conn, current, parameters))
                 # Destroy before check_v2: a raise leaves this C local unreachable.
                 with nogil:
@@ -319,18 +404,29 @@ cdef object _execute_bound(
     finally:
         with nogil:
             duckdb_v2_statement_iterator_destroy(&iterator)
+        if ran_earlier:
+            bdv2_add(&_parse_epoch, 1)
 
     try:
-        if arrow:
-            return _execute_arrow_last(conn, current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred)
         with nogil:
             rc = duckdb_v2_sql_statement_get_type(current, &statement_type, &err)
         check_v2(rc, err, "duckdb_v2_sql_statement_get_type")
+        invalidates = ran_earlier or statement_type != DUCKDB_V2_STATEMENT_TYPE_SELECT
+        if cache is not None and not invalidates:
+            cached = _CachedStatement.__new__(_CachedStatement)
+            cached.shared = _shared_adopt(&current)
+            py_result = _execute_cached(conn, cached, parameters, batch_rows, arrow, reg, transferred)
+            cache.put(query, cached, epoch)
+            return py_result
+        # A group led by ALTER, CREATE, INSERT or COPY runs here as rows for its effect, on either path.
+        effect_group = statement_type == DUCKDB_V2_STATEMENT_TYPE_MULTI and not _group_is_query(current)
+        if arrow and not effect_group:
+            return _execute_arrow_last(conn, current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred)
         if statement_type == DUCKDB_V2_STATEMENT_TYPE_SELECT or statement_type == DUCKDB_V2_STATEMENT_TYPE_EXPLAIN:
             py_result = _defer_bound(conn, &current, parameters, batch_rows, reg, transferred)
             if py_result is not None:
                 return py_result
-        elif statement_type == DUCKDB_V2_STATEMENT_TYPE_MULTI:
+        elif statement_type == DUCKDB_V2_STATEMENT_TYPE_MULTI and not effect_group:
             # Bind rejects a group, so its schema resolves once the first consumer submits it.
             return _pending_result(conn, &current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred)
         return _execute_last(conn, current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred)
@@ -338,6 +434,25 @@ cdef object _execute_bound(
         # A pending result took ownership of the statement and set this to NULL.
         with nogil:
             duckdb_v2_sql_statement_destroy(&current)
+        if invalidates:
+            bdv2_add(&_parse_epoch, 1)
+
+
+cdef bint _group_is_query(duckdb_v2_sql_statement_handle statement) except -1:
+    """Report whether a statement group leads with a row-returning keyword, as a dynamic PIVOT does"""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_str_t text
+
+    from bareduckdb.capi.statement_kind import group_is_query
+
+    with nogil:
+        rc = duckdb_v2_sql_statement_get_text(statement, &text, &err)
+    check_v2(rc, err, "duckdb_v2_sql_statement_get_text")
+    sql = str_view_to_str(text)
+    is_query = group_is_query(sql)
+    _logger.debug("statement group %s: %.60r", "left pending" if is_query else "runs at execute()", sql)
+    return is_query
 
 
 cdef object _execute_arrow_last(
@@ -384,6 +499,7 @@ cdef object _defer_bound(
     object batch_rows,
     bd_registry *reg,
     bint *transferred,
+    bd_shared_statement *shared=NULL,
 ):
     """Bind a last SELECT or EXPLAIN into a pending result, or return None to have it executed now.
 
@@ -421,7 +537,7 @@ cdef object _defer_bound(
         schema_known = not (_schema_has_unknown(out_parameters) or _schema_has_unknown(out_schema))
         if parameters is not None:
             params = _params_from_bind(conn._conn, out_parameters, parameters)
-        py_result = _pending_result(conn, statement_slot, params, batch_rows, reg, transferred)
+        py_result = _pending_result(conn, statement_slot, params, batch_rows, reg, transferred, shared)
         if schema_known:
             py_result._schema = out_schema
             out_schema = NULL
@@ -467,9 +583,17 @@ cdef CApiResult _pending_result(
     object batch_rows,
     bd_registry *reg,
     bint *transferred,
+    bd_shared_statement *shared=NULL,
 ):
-    """Wrap a bound but unsubmitted statement, taking the statement and the registry borrow"""
+    """Wrap a bound but unsubmitted statement, taking the statement and the registry borrow.
+
+    With shared, the statement is borrowed from it and the result takes a reference instead.
+    """
     cdef CApiResult py_result = CApiResult.__new__(CApiResult)
+
+    if shared != NULL:
+        bdv2_add(&shared.refs, 1)
+        py_result._shared = shared
 
     if batch_rows is not None:
         py_result._batch_rows = <unsigned long long>batch_rows
@@ -508,9 +632,28 @@ cdef object _execute_last(
     with nogil:
         rc = duckdb_v2_result_get_result_type(current_result, &result_type, &err)
     if rc != DUCKDB_V2_ERROR_NONE:
-        # A statement expanding into a group (PIVOT) has no metadata until the caller steps it.
+        # A group has no metadata until stepped; stepping it to its last fragment runs the ones before.
         if err != NULL:
             duckdb_v2_error_info_destroy(&err)
+        py_result = CApiResult.__new__(CApiResult)
+        py_result._bind_owned(conn, current_result)
+        py_result._reg = reg
+        py_result._borrow = 1
+        transferred[0] = True
+        py_result._ensure_schema()
+        with nogil:
+            rc = duckdb_v2_result_get_result_type(current_result, &result_type, &err)
+        check_v2(rc, err, "duckdb_v2_result_get_result_type")
+        if result_type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT:
+            if py_result._pending_chunk != NULL:
+                with nogil:
+                    duckdb_v2_data_chunk_destroy(&py_result._pending_chunk)
+            with nogil:
+                rc = duckdb_v2_result_drain(current_result, &rows_changed, &err)
+            check_v2(rc, err, "duckdb_v2_result_drain")
+            py_result._drained = True
+        _logger.debug("statement group stepped %d times for its metadata; drained: %s", py_result._schema_steps, py_result._drained)
+        return py_result
     elif result_type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT:
         with nogil:
             rc = duckdb_v2_result_drain(current_result, &rows_changed, &err)
@@ -834,6 +977,21 @@ cdef duckdb_v2_logical_type_handle _primitive_type(
     return out_type
 
 
+cdef duckdb_v2_logical_type_handle _sqlnull_type(duckdb_v2_connection_handle conn) except NULL:
+    """Build an owned SQLNULL type, duckdb-python's type for None; create_type_from_id refuses that id"""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_logical_type_handle out_type = NULL
+    cdef duckdb_v2_str_t text
+
+    text.ptr = _SQLNULL_TYPE_TEXT
+    text.len = len(_SQLNULL_TYPE_TEXT)
+    with nogil:
+        rc = duckdb_v2_connection_create_type_from_text(conn, &text, &out_type, &err)
+    check_v2(rc, err, "duckdb_v2_connection_create_type_from_text(SQLNULL)")
+    return out_type
+
+
 cdef void _int_to_hugeint(object value, duckdb_v2_hugeint_t *out) except *:
     """Split a Python int into v2's signed 128-bit (upper, lower) pair"""
     if not (-(2 ** 127) <= value < 2 ** 127):
@@ -930,6 +1088,7 @@ cdef duckdb_v2_value_handle _list_to_value(
     cdef duckdb_v2_value_handle out_value = NULL
     cdef duckdb_v2_value_handle *children = NULL
     cdef duckdb_v2_logical_type_handle child_type = NULL
+    cdef duckdb_v2_logical_type_handle null_type = NULL
     cdef idx_t count = <idx_t>len(val)
     cdef idx_t i
 
@@ -944,8 +1103,11 @@ cdef duckdb_v2_value_handle _list_to_value(
                 raise MemoryError("failed to allocate the v2 LIST element array")
             for i in range(count):
                 children[i] = NULL
+            # One SQLNULL type for every untyped None, since building it costs a transaction.
+            if child_type == NULL and any(item is None for item in val):
+                null_type = _sqlnull_type(conn)
             for i in range(count):
-                children[i] = _python_to_value(conn, val[i], child_type)
+                children[i] = _python_to_value(conn, val[i], null_type if val[i] is None and child_type == NULL else child_type)
         with nogil:
             rc = duckdb_v2_value_create_list_with_connection(
                 conn, child_type, children, count, &out_value, &err
@@ -961,6 +1123,9 @@ cdef duckdb_v2_value_handle _list_to_value(
         if child_type != NULL:
             with nogil:
                 duckdb_v2_logical_type_destroy(&child_type)
+        if null_type != NULL:
+            with nogil:
+                duckdb_v2_logical_type_destroy(&null_type)
     return out_value
 
 
@@ -975,6 +1140,7 @@ cdef duckdb_v2_value_handle _dict_to_value(
     cdef duckdb_v2_value_handle *values = NULL
     cdef duckdb_v2_logical_type_handle key_type = NULL
     cdef duckdb_v2_logical_type_handle value_type = NULL
+    cdef duckdb_v2_logical_type_handle null_type = NULL
     cdef idx_t count = <idx_t>len(val)
     cdef idx_t i
 
@@ -996,11 +1162,15 @@ cdef duckdb_v2_value_handle _dict_to_value(
             for i in range(count):
                 keys[i] = NULL
                 values[i] = NULL
+            if value_type == NULL and any(item[1] is None for item in items):
+                null_type = _sqlnull_type(conn)
             for i in range(count):
                 if items[i][0] is None:
                     raise ValueError("cannot bind a dict with a None key as a DuckDB MAP: MAP keys must be non-NULL")
                 keys[i] = _python_to_value(conn, items[i][0], key_type)
-                values[i] = _python_to_value(conn, items[i][1], value_type)
+                values[i] = _python_to_value(
+                    conn, items[i][1], null_type if items[i][1] is None and value_type == NULL else value_type
+                )
         with nogil:
             rc = duckdb_v2_value_create_map_with_connection(
                 conn, key_type, value_type, keys, values, count, &out_value, &err
@@ -1025,6 +1195,9 @@ cdef duckdb_v2_value_handle _dict_to_value(
         if value_type != NULL:
             with nogil:
                 duckdb_v2_logical_type_destroy(&value_type)
+        if null_type != NULL:
+            with nogil:
+                duckdb_v2_logical_type_destroy(&null_type)
     return out_value
 
 
@@ -1048,14 +1221,10 @@ cdef duckdb_v2_value_handle _python_to_value(
     cdef double double_val
 
     if val is None:
-        if target_type != NULL:
+        if target_type != NULL and _logical_type_id(target_type) != DUCKDB_V2_LOGICAL_TYPE_ID_UNKNOWN:
             null_type = target_type
         else:
-            with nogil:
-                rc = duckdb_v2_connection_create_type_from_id(
-                    conn, DUCKDB_V2_LOGICAL_TYPE_ID_SQLNULL, NULL, NULL, 0, &null_type, &err
-                )
-            check_v2(rc, err, "duckdb_v2_connection_create_type_from_id(SQLNULL)")
+            null_type = _sqlnull_type(conn)
             own_null_type = True
         try:
             with nogil:
@@ -1201,6 +1370,7 @@ cdef class CApiResult:
         self._conn_obj = None
         self._result = NULL
         self._statement = NULL
+        self._shared = NULL
         self._params = None
         self._pending = 0
         self._drained = False
@@ -1356,9 +1526,15 @@ cdef class CApiResult:
 
     def rows(self):
         """Yield each result row as a tuple of Python scalars, consuming the stream"""
+        for chunk_rows in self.row_chunks():
+            yield from chunk_rows
+
+    def row_chunks(self):
+        """Yield each chunk's rows as a list of tuples, consuming the stream"""
         cdef duckdb_v2_data_chunk_handle chunk
+        cdef list rows
         self._ensure_schema()
-        # Marks the rows as started, which an Arrow swap refuses; a second rows() call reads on.
+        # Marks the rows as started, which an Arrow swap refuses; a second call reads on.
         bdv2_cas(&self._consumed, 0, 1)
         try:
             while True:
@@ -1366,10 +1542,10 @@ cdef class CApiResult:
                 if chunk == NULL:
                     return
                 try:
-                    for row in _decode_chunk(chunk, self._column_decoders, self._conn_obj._conn):
-                        yield row
+                    rows = _decode_chunk(chunk, self._column_decoders, self._conn_obj._conn)
                 finally:
                     _destroy_chunk(chunk)
+                yield rows
         finally:
             self._destroy()
 
@@ -1456,12 +1632,23 @@ cdef class CApiResult:
             bdv2_store_release(&self._pending, _NOT_PENDING)
             raise
         finally:
-            with nogil:
-                duckdb_v2_sql_statement_destroy(&self._statement)
+            self._drop_statement()
             self._params = None
         self._result = result
         # Released last: a waiting caller that sees this must also see the result.
         bdv2_store_release(&self._pending, _NOT_PENDING)
+
+    cdef void _drop_statement(self) noexcept:
+        """Destroy the pending statement, or drop the reference when it is borrowed from the parse cache"""
+        cdef bd_shared_statement *shared = self._shared
+        if shared != NULL:
+            self._shared = NULL
+            self._statement = NULL
+            with nogil:
+                _shared_release(shared)
+        elif self._statement != NULL:
+            with nogil:
+                duckdb_v2_sql_statement_destroy(&self._statement)
 
     cdef void _check_connection_open(self) except *:
         if self._conn_obj is None or self._conn_obj._closed:
@@ -1501,8 +1688,7 @@ cdef class CApiResult:
             bdv2_store_release(&self._pending, _NOT_PENDING)
             raise
         finally:
-            with nogil:
-                duckdb_v2_sql_statement_destroy(&self._statement)
+            self._drop_statement()
             self._params = None
         bdv2_store_release(&self._pending, _NOT_PENDING)
 
@@ -1594,9 +1780,7 @@ cdef class CApiResult:
         if self._result != NULL:
             with nogil:
                 duckdb_v2_result_destroy(&self._result)
-        if self._statement != NULL:
-            with nogil:
-                duckdb_v2_sql_statement_destroy(&self._statement)
+        self._drop_statement()
         self._params = None
         # After the result, so nothing can still be scanning a registered source's chunks.
         if bdv2_cas(&self._borrow, 1, 0):
@@ -1666,16 +1850,17 @@ cdef void _destroy_chunk(duckdb_v2_data_chunk_handle chunk) noexcept:
 cdef list _decode_chunk(
     duckdb_v2_data_chunk_handle chunk, list decoders, duckdb_v2_connection_handle conn
 ):
+    """Decode a chunk into row tuples, one column at a time"""
     cdef idx_t size = 0
     cdef idx_t vec_count = 0
     cdef idx_t col
     cdef idx_t row
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
-    cdef duckdb_v2_vector_handle *vectors = NULL
+    cdef duckdb_v2_vector_handle vector = NULL
     cdef duckdb_v2_logical_type_handle varchar_type = NULL
-    cdef list out = []
-    cdef list row_values
+    cdef list columns = []
+    cdef tuple decoder
 
     with nogil:
         rc = duckdb_v2_data_chunk_get_size(chunk, &size, &err)
@@ -1687,28 +1872,74 @@ cdef list _decode_chunk(
     if vec_count == 0:
         return [tuple() for _ in range(size)]
 
-    vectors = <duckdb_v2_vector_handle *>malloc(vec_count * sizeof(duckdb_v2_vector_handle))
-    if vectors == NULL:
-        raise MemoryError("failed to allocate the vector pointer array")
     try:
         for col in range(vec_count):
             with nogil:
-                rc = duckdb_v2_data_chunk_get_vector(chunk, col, &vectors[col], &err)
+                rc = duckdb_v2_data_chunk_get_vector(chunk, col, &vector, &err)
             check_v2(rc, err, "duckdb_v2_data_chunk_get_vector")
-
-        for row in range(size):
-            row_values = []
-            for col in range(vec_count):
-                row_values.append(
-                    _decode_cell(vectors[col], row, decoders[col], conn, &varchar_type)
-                )
-            out.append(tuple(row_values))
+            decoder = decoders[col]
+            if decoder[0] == "scalar" and _scalar_supported(decoder[1]):
+                columns.append(_decode_scalar_column(vector, size, decoder[1], decoder[2], col))
+            else:
+                columns.append([_decode_cell(vector, row, decoder, conn, &varchar_type) for row in range(size)])
     finally:
-        free(vectors)
         if varchar_type != NULL:
             with nogil:
                 duckdb_v2_logical_type_destroy(&varchar_type)
-    return out
+    return list(zip(*columns))
+
+
+cdef list _decode_scalar_column(
+    duckdb_v2_vector_handle vector, idx_t size, duckdb_v2_logical_type_id_t type_id, str type_name, idx_t col
+):
+    """Decode one scalar column: a single nogil pass reads every cell, then the Python values are built"""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc = DUCKDB_V2_ERROR_NONE
+    cdef duckdb_v2_value_handle *values = NULL
+    cdef bd_scalar *cells = NULL
+    cdef idx_t row = 0
+    cdef idx_t taken = 0
+    # A string view borrows from its value, so those values live until the Python object is built.
+    cdef bint borrows = _scalar_borrows(type_id)
+    cdef list out
+
+    cells = <bd_scalar *>malloc(size * sizeof(bd_scalar) + 1)
+    values = <duckdb_v2_value_handle *>malloc(size * sizeof(duckdb_v2_value_handle) + 1)
+    if cells == NULL or values == NULL:
+        free(cells)
+        free(values)
+        raise MemoryError("failed to allocate the column decode buffers")
+    try:
+        with nogil:
+            while row < size:
+                values[row] = NULL
+                taken = row + 1
+                rc = duckdb_v2_vector_get_value(vector, row, &values[row], &err)
+                if rc != DUCKDB_V2_ERROR_NONE:
+                    break
+                cells[row].is_null = False
+                rc = duckdb_v2_value_is_null(values[row], &cells[row].is_null, &err)
+                if rc == DUCKDB_V2_ERROR_NONE and not cells[row].is_null:
+                    rc = _extract_scalar(values[row], type_id, &cells[row], &err)
+                if not borrows:
+                    duckdb_v2_value_destroy(&values[row])
+                if rc != DUCKDB_V2_ERROR_NONE:
+                    break
+                row += 1
+        check_v2(rc, err, f"reading column {col} ({type_name}) at row {row}")
+        out = [None] * size
+        for row in range(size):
+            if not cells[row].is_null:
+                out[row] = _convert_scalar(&cells[row], type_id)
+        return out
+    finally:
+        if borrows:
+            with nogil:
+                for row in range(taken):
+                    if values[row] != NULL:
+                        duckdb_v2_value_destroy(&values[row])
+        free(values)
+        free(cells)
 
 
 cdef object _decode_cell(
@@ -1861,187 +2092,222 @@ cdef object _decode_value(
     raise NotImplementedError(f"rows(): no v2 decode route implemented for decoder kind {kind!r}")
 
 
-cdef object _decode_scalar(duckdb_v2_value_handle value, duckdb_v2_logical_type_id_t type_id, str type_name):
-    cdef duckdb_v2_error_info_handle err = NULL
-    cdef duckdb_v2_error_t rc
+cdef struct bd_scalar:
+    int64_t i64
+    uint64_t u64
+    double dv
+    duckdb_v2_hugeint_t hv
+    duckdb_v2_uhugeint_t uhv
+    duckdb_v2_interval_t iv
+    duckdb_v2_str_t sv
+    uint8_t width
+    uint8_t scale
+    duckdb_v2_bool_t is_null
+
+
+cdef bint _scalar_supported(duckdb_v2_logical_type_id_t t) noexcept:
+    """Report whether _extract_scalar and _convert_scalar handle a type"""
+    return (
+        t == DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TINYINT
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_SMALLINT
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_UTINYINT
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_USMALLINT
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_UINTEGER
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_UBIGINT
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_HUGEINT
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_UHUGEINT
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_FLOAT
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_DECIMAL
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_BLOB
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_DATE
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TIME
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TIME_NS
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_SEC
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_MS
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_NS
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ_NS
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_INTERVAL
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_UUID
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TIME_TZ
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_BIT
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_BIGNUM
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_SQLNULL
+    )
+
+
+cdef bint _scalar_borrows(duckdb_v2_logical_type_id_t t) noexcept nogil:
+    """Report whether a type is read as a view that borrows from its value"""
+    return (
+        t == DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_BLOB
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_BIT
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_BIGNUM
+    )
+
+
+cdef duckdb_v2_error_t _extract_scalar(
+    duckdb_v2_value_handle value, duckdb_v2_logical_type_id_t t, bd_scalar *o, duckdb_v2_error_info_handle *err
+) noexcept nogil:
+    """Read one non-null scalar into o with the typed getter its type selects; touches no Python"""
     cdef duckdb_v2_bool_t bv = False
-    cdef uint8_t u8
-    cdef uint16_t u16
-    cdef uint32_t u32
-    cdef uint64_t u64
     cdef int8_t i8
     cdef int16_t i16
     cdef int32_t i32
-    cdef int64_t i64
+    cdef uint8_t u8
+    cdef uint16_t u16
+    cdef uint32_t u32
     cdef float fv
-    cdef double dv
-    cdef duckdb_v2_str_t sv
-    cdef duckdb_v2_hugeint_t hv
-    cdef duckdb_v2_uhugeint_t uhv
-    cdef duckdb_v2_interval_t iv
-    cdef uint8_t width
-    cdef uint8_t scale
+    cdef duckdb_v2_error_t rc = DUCKDB_V2_ERROR_NONE
 
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN:
-        with nogil:
-            rc = duckdb_v2_value_get_bool(value, &bv, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_bool")
-        return bool(bv)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_TINYINT:
-        with nogil:
-            rc = duckdb_v2_value_get_tinyint(value, &i8, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_tinyint")
-        return int(i8)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_SMALLINT:
-        with nogil:
-            rc = duckdb_v2_value_get_smallint(value, &i16, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_smallint")
-        return int(i16)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER:
-        with nogil:
-            rc = duckdb_v2_value_get_int(value, &i32, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_int")
-        return int(i32)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT:
-        with nogil:
-            rc = duckdb_v2_value_get_bigint(value, &i64, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_bigint")
-        return int(i64)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_UTINYINT:
-        with nogil:
-            rc = duckdb_v2_value_get_utinyint(value, &u8, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_utinyint")
-        return int(u8)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_USMALLINT:
-        with nogil:
-            rc = duckdb_v2_value_get_usmallint(value, &u16, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_usmallint")
-        return int(u16)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_UINTEGER:
-        with nogil:
-            rc = duckdb_v2_value_get_uint(value, &u32, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_uint")
-        return int(u32)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_UBIGINT:
-        with nogil:
-            rc = duckdb_v2_value_get_ubigint(value, &u64, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_ubigint")
-        return int(u64)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_HUGEINT:
-        with nogil:
-            rc = duckdb_v2_value_get_hugeint(value, &hv, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_hugeint")
-        return (int(hv.upper) << 64) + int(hv.lower)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_UHUGEINT:
-        with nogil:
-            rc = duckdb_v2_value_get_uhugeint(value, &uhv, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_uhugeint")
-        return (int(uhv.upper) << 64) + int(uhv.lower)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_FLOAT:
-        with nogil:
-            rc = duckdb_v2_value_get_float(value, &fv, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_float")
-        return float(fv)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE:
-        with nogil:
-            rc = duckdb_v2_value_get_double(value, &dv, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_double")
-        return float(dv)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_DECIMAL:
-        with nogil:
-            rc = duckdb_v2_value_get_decimal(value, &hv, &width, &scale, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_decimal")
-        return _decimal_from_coefficient((int(hv.upper) << 64) + int(hv.lower), scale)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR:
-        with nogil:
-            rc = duckdb_v2_value_get_varchar(value, &sv, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_varchar")
-        return str_view_to_str(sv)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_BLOB:
-        with nogil:
-            rc = duckdb_v2_value_get_blob(value, &sv, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_blob")
-        return str_view_to_bytes(sv)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_DATE:
-        with nogil:
-            rc = duckdb_v2_value_get_date(value, &i32, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_date")
-        return _EPOCH_DATE + datetime.timedelta(days=i32)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_TIME:
-        with nogil:
-            rc = duckdb_v2_value_get_time(value, &i64, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_time")
-        return _micros_to_time(i64)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_TIME_NS:
-        with nogil:
-            rc = duckdb_v2_value_get_time_ns(value, &i64, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_time_ns")
-        return _micros_to_time(i64 // 1000)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP:
-        with nogil:
-            rc = duckdb_v2_value_get_timestamp(value, &i64, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_timestamp")
-        return _EPOCH_DATETIME + datetime.timedelta(microseconds=i64)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_SEC:
-        with nogil:
-            rc = duckdb_v2_value_get_timestamp_sec(value, &i64, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_timestamp_sec")
-        return _EPOCH_DATETIME + datetime.timedelta(seconds=i64)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_MS:
-        with nogil:
-            rc = duckdb_v2_value_get_timestamp_ms(value, &i64, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_timestamp_ms")
-        return _EPOCH_DATETIME + datetime.timedelta(milliseconds=i64)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_NS:
-        with nogil:
-            rc = duckdb_v2_value_get_timestamp_ns(value, &i64, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_timestamp_ns")
-        return _EPOCH_DATETIME + datetime.timedelta(microseconds=i64 // 1000)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ:
-        with nogil:
-            rc = duckdb_v2_value_get_timestamp_tz(value, &i64, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_timestamp_tz")
-        return _EPOCH_DATETIME_UTC + datetime.timedelta(microseconds=i64)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ_NS:
-        with nogil:
-            rc = duckdb_v2_value_get_timestamp_tz_ns(value, &i64, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_timestamp_tz_ns")
-        return _EPOCH_DATETIME_UTC + datetime.timedelta(microseconds=i64 // 1000)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_INTERVAL:
-        with nogil:
-            rc = duckdb_v2_value_get_interval(value, &iv, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_interval")
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN:
+        rc = duckdb_v2_value_get_bool(value, &bv, err)
+        o.i64 = bv
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_TINYINT:
+        rc = duckdb_v2_value_get_tinyint(value, &i8, err)
+        o.i64 = i8
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_SMALLINT:
+        rc = duckdb_v2_value_get_smallint(value, &i16, err)
+        o.i64 = i16
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER:
+        rc = duckdb_v2_value_get_int(value, &i32, err)
+        o.i64 = i32
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT:
+        rc = duckdb_v2_value_get_bigint(value, &o.i64, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_UTINYINT:
+        rc = duckdb_v2_value_get_utinyint(value, &u8, err)
+        o.u64 = u8
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_USMALLINT:
+        rc = duckdb_v2_value_get_usmallint(value, &u16, err)
+        o.u64 = u16
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_UINTEGER:
+        rc = duckdb_v2_value_get_uint(value, &u32, err)
+        o.u64 = u32
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_UBIGINT:
+        rc = duckdb_v2_value_get_ubigint(value, &o.u64, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_HUGEINT:
+        rc = duckdb_v2_value_get_hugeint(value, &o.hv, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_UHUGEINT:
+        rc = duckdb_v2_value_get_uhugeint(value, &o.uhv, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_FLOAT:
+        rc = duckdb_v2_value_get_float(value, &fv, err)
+        o.dv = fv
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE:
+        rc = duckdb_v2_value_get_double(value, &o.dv, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_DECIMAL:
+        rc = duckdb_v2_value_get_decimal(value, &o.hv, &o.width, &o.scale, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR:
+        rc = duckdb_v2_value_get_varchar(value, &o.sv, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_BLOB or t == DUCKDB_V2_LOGICAL_TYPE_ID_BIT or t == DUCKDB_V2_LOGICAL_TYPE_ID_BIGNUM:
+        rc = duckdb_v2_value_get_blob(value, &o.sv, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_DATE:
+        rc = duckdb_v2_value_get_date(value, &i32, err)
+        o.i64 = i32
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_TIME:
+        rc = duckdb_v2_value_get_time(value, &o.i64, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_TIME_NS:
+        rc = duckdb_v2_value_get_time_ns(value, &o.i64, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP:
+        rc = duckdb_v2_value_get_timestamp(value, &o.i64, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_SEC:
+        rc = duckdb_v2_value_get_timestamp_sec(value, &o.i64, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_MS:
+        rc = duckdb_v2_value_get_timestamp_ms(value, &o.i64, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_NS:
+        rc = duckdb_v2_value_get_timestamp_ns(value, &o.i64, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ:
+        rc = duckdb_v2_value_get_timestamp_tz(value, &o.i64, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ_NS:
+        rc = duckdb_v2_value_get_timestamp_tz_ns(value, &o.i64, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_INTERVAL:
+        rc = duckdb_v2_value_get_interval(value, &o.iv, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_UUID:
+        rc = duckdb_v2_value_get_uuid(value, &o.hv, err)
+    elif t == DUCKDB_V2_LOGICAL_TYPE_ID_TIME_TZ:
+        rc = duckdb_v2_value_get_time_tz(value, &o.u64, err)
+    return rc
+
+
+cdef object _convert_scalar(bd_scalar *o, duckdb_v2_logical_type_id_t t):
+    """Build the Python value for a scalar _extract_scalar read"""
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT or t == DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER:
+        return int(o.i64)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE or t == DUCKDB_V2_LOGICAL_TYPE_ID_FLOAT:
+        return float(o.dv)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR:
+        return str_view_to_str(o.sv)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN:
+        return bool(o.i64)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_TINYINT or t == DUCKDB_V2_LOGICAL_TYPE_ID_SMALLINT:
+        return int(o.i64)
+    if (
+        t == DUCKDB_V2_LOGICAL_TYPE_ID_UTINYINT
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_USMALLINT
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_UINTEGER
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_UBIGINT
+    ):
+        return int(o.u64)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_HUGEINT:
+        return (int(o.hv.upper) << 64) + int(o.hv.lower)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_UHUGEINT:
+        return (int(o.uhv.upper) << 64) + int(o.uhv.lower)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_DECIMAL:
+        return _decimal_from_coefficient((int(o.hv.upper) << 64) + int(o.hv.lower), o.scale)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_BLOB:
+        return str_view_to_bytes(o.sv)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_DATE:
+        return _EPOCH_DATE + datetime.timedelta(days=o.i64)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_TIME:
+        return _micros_to_time(o.i64)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_TIME_NS:
+        return _micros_to_time(o.i64 // 1000)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP:
+        return _EPOCH_DATETIME + datetime.timedelta(microseconds=o.i64)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_SEC:
+        return _EPOCH_DATETIME + datetime.timedelta(seconds=o.i64)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_MS:
+        return _EPOCH_DATETIME + datetime.timedelta(milliseconds=o.i64)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_NS:
+        return _EPOCH_DATETIME + datetime.timedelta(microseconds=o.i64 // 1000)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ:
+        return _EPOCH_DATETIME_UTC + datetime.timedelta(microseconds=o.i64)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ_NS:
+        return _EPOCH_DATETIME_UTC + datetime.timedelta(microseconds=o.i64 // 1000)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_INTERVAL:
         # duckdb-python's own answer: months fold in at 30 days, which is lossy but faithful.
-        return datetime.timedelta(
-            days=int(iv.months) * 30 + int(iv.days), microseconds=int(iv.micros)
-        )
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_UUID:
-        with nogil:
-            rc = duckdb_v2_value_get_uuid(value, &hv, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_uuid")
-        return _hugeint_to_uuid(hv)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_TIME_TZ:
-        with nogil:
-            rc = duckdb_v2_value_get_time_tz(value, &u64, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_time_tz")
-        return _timetz_from_packed(u64)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_BIT:
-        with nogil:
-            rc = duckdb_v2_value_get_blob(value, &sv, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_blob(bit)")
-        return _bits_from_storage(str_view_to_bytes(sv))
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_BIGNUM:
-        with nogil:
-            rc = duckdb_v2_value_get_blob(value, &sv, &err)
-        check_v2(rc, err, "duckdb_v2_value_get_blob(bignum)")
-        return _bignum_from_storage(sv)
-    if type_id == DUCKDB_V2_LOGICAL_TYPE_ID_SQLNULL:
-        return None
+        return datetime.timedelta(days=int(o.iv.months) * 30 + int(o.iv.days), microseconds=int(o.iv.micros))
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_UUID:
+        return _hugeint_to_uuid(o.hv)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_TIME_TZ:
+        return _timetz_from_packed(o.u64)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_BIT:
+        return _bits_from_storage(str_view_to_bytes(o.sv))
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_BIGNUM:
+        return _bignum_from_storage(o.sv)
+    return None
 
-    raise NotImplementedError(
-        f"rows(): no v2 scalar route implemented for DuckDB type {type_name} "
-        f"(logical type id {<int>type_id})"
-    )
+
+cdef object _decode_scalar(duckdb_v2_value_handle value, duckdb_v2_logical_type_id_t type_id, str type_name):
+    """Decode one non-null scalar value, as a whole column of them is decoded"""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef bd_scalar cell
+
+    if not _scalar_supported(type_id):
+        raise NotImplementedError(
+            f"rows(): no v2 scalar route implemented for DuckDB type {type_name} "
+            f"(logical type id {<int>type_id})"
+        )
+    with nogil:
+        rc = _extract_scalar(value, type_id, &cell, &err)
+    check_v2(rc, err, f"reading a {type_name} value")
+    return _convert_scalar(&cell, type_id)
 
 
 cdef object _decimal_from_coefficient(object coeff, int scale):

@@ -51,7 +51,7 @@ def cancelled_from(exc: BaseException) -> BaseException | None:
 
     if isinstance(exc, QueryCancelled):
         return exc
-    # pyarrow raises the stream's error text as an OSError; polars wraps it in a ComputeError.
+    # pyarrow raises the stream's error text as an OSError; polars 1.x wraps it in a ComputeError, polars 2.0 does not.
     text = str(exc)
     at = text.find(_INTERRUPT_MARK)
     if at < 0:

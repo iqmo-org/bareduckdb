@@ -115,7 +115,8 @@ def test_a_superseded_pl_lazy_raises_on_collect():
     with bareduckdb.connect() as conn:
         lazy = conn.execute(_QUERY).pl_lazy(batch_size=1000)
         assert conn.execute("select 42").fetchall() == [(42,)]
-        with pytest.raises(pl.exceptions.ComputeError, match=_SUPERSEDED):
+        # polars 1.x wraps a Python IO source's error in ComputeError; polars 2.0 raises it unwrapped (ArrowInvalid).
+        with pytest.raises(Exception, match=_SUPERSEDED):
             lazy.collect()
 
 

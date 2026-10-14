@@ -307,8 +307,19 @@ def test_rows_over_a_registration_survive_close():
     connection = bareduckdb.connect()
     connection.register("t", big_table())
     result = connection._impl.call_impl(query="SELECT i FROM t", mode="", batch_size=0)
+    # A SELECT runs at its first consumer, so submit it while the connection is open.
+    result.submit()
     connection.close()
     assert sum(1 for _ in result.rows()) == BIG_ROWS
+
+
+def test_a_pending_select_after_close_names_the_closed_connection():
+    connection = bareduckdb.connect()
+    connection.register("t", big_table())
+    result = connection._impl.call_impl(query="SELECT i FROM t", mode="", batch_size=0)
+    connection.close()
+    with pytest.raises(RuntimeError, match="closed before this result was consumed"):
+        list(result.rows())
 
 
 @pytest.mark.parallel_threads(1)
@@ -339,3 +350,51 @@ def test_concurrent_registration_without_replace_admits_exactly_one():
         assert connection._impl._registry_stats()["live"] == 1
     finally:
         connection.close()
+
+
+def _retired(conn) -> int:
+    return conn._impl._registry_stats()["retired"]
+
+
+def test_a_pending_result_moved_to_arrow_keeps_the_entry_until_its_stream_goes(conn):
+    from bareduckdb.capi.impl.result import execute
+
+    conn.register("t", table())
+    pending = execute(conn._impl, "SELECT a FROM t ORDER BY a")
+    arrow = pending.to_arrow_result()
+    conn.unregister("t")
+    stats = conn._impl._registry_stats()
+    assert stats["retired"] == 1, stats
+    reader = pa.RecordBatchReader._import_from_c_capsule(arrow.__arrow_c_stream__())
+    assert reader.read_all().column(0).to_pylist() == [0, 1, 2]
+    reader.close()
+    stats = conn._impl._registry_stats()
+    assert stats["retired"] == 0, stats
+
+
+def test_an_unread_arrow_result_closed_releases_the_entry(conn):
+    from bareduckdb.capi.impl.result import execute
+
+    conn.register("t", table())
+    arrow = execute(conn._impl, "SELECT a FROM t").to_arrow_result()
+    conn.unregister("t")
+    stats = conn._impl._registry_stats()
+    assert stats["retired"] == 1, stats
+    arrow.close()
+    stats = conn._impl._registry_stats()
+    assert stats["retired"] == 0, stats
+
+
+def test_a_dropped_pending_result_releases_the_entry(conn):
+    from bareduckdb.capi.impl.result import execute
+
+    conn.register("t", table())
+    pending = execute(conn._impl, "SELECT a FROM t")
+    assert pending.pending
+    conn.unregister("t")
+    stats = conn._impl._registry_stats()
+    assert stats["retired"] == 1, stats
+    del pending
+    gc.collect()
+    stats = conn._impl._registry_stats()
+    assert stats["retired"] == 0, stats

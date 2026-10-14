@@ -9,7 +9,7 @@ Only top-level columns are converted; TIMETZ nested in a STRUCT, LIST or MAP is 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, overload
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -92,6 +92,10 @@ def _converted_column(column):
     return _converted_array(column)
 
 
+@overload
+def timetz_to_utc(data: pa.Table) -> pa.Table: ...
+@overload
+def timetz_to_utc(data: pa.RecordBatch) -> pa.RecordBatch: ...
 def timetz_to_utc(data):
     """Normalize every tagged TIMETZ column of a Table or RecordBatch to UTC time64[us]"""
     import pyarrow as pa_
@@ -100,7 +104,9 @@ def timetz_to_utc(data):
     if not has_lossless_timetz(schema):
         return data
 
-    columns = [_converted_column(data.column(index)) if _is_lossless_timetz(field.type) else data.column(index) for index, field in enumerate(schema)]
+    columns: list[Any] = [
+        _converted_column(data.column(index)) if _is_lossless_timetz(field.type) else data.column(index) for index, field in enumerate(schema)
+    ]
     target = timetz_schema(schema)
     if isinstance(data, pa_.RecordBatch):
         return pa_.RecordBatch.from_arrays(columns, schema=target)

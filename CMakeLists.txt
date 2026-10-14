@@ -216,6 +216,10 @@ foreach(_pyx IN LISTS BAREDUCKDB_PYX)
 
   target_link_libraries(${_name} PRIVATE duckdb::duckdb)
 
+  target_compile_definitions(${_name} PRIVATE
+    DUCKDB_V2_API_ALLOW_UNSTABLE=0
+    DUCKDB_V2_API_ALLOW_DEPRECATED=0)
+
   # Windows free-threaded pyconfig.h does not define Py_GIL_DISABLED; it is
   # shared with the GIL build. setuptools supplied it
   # (_distutils/command/build_ext.py:357). Some newer FindPython versions add it

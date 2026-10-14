@@ -26,7 +26,7 @@ class V2Error(RuntimeError):
 
 
 class QueryCancelled(V2Error):
-    """A query stopped because its connection was interrupted, rather than because it failed"""
+    """A query stopped by an interrupt or by max_execution_time, rather than because it failed"""
 
 
 cdef str str_view_to_str(duckdb_v2_str_t view):
@@ -89,9 +89,10 @@ cdef void check_v2(duckdb_v2_error_t rc, duckdb_v2_error_info_handle err, str co
         return
     if rc == DUCKDB_V2_ERROR_RUNTIME_INTERRUPT:
         # An interrupt can land in any call, not only in result_step's CANCELLED status.
-        message = last_error_text(err) if err != NULL else "interrupted"
+        # The engine's text as is, with no call-site prefix, matching duckdb-python.
+        message = last_error_text(err) if err != NULL else "INTERRUPT Error: Interrupted!"
         _logger.debug("v2 interrupt in %s: %s", context, message)
-        raise QueryCancelled(f"{context}: {message}")
+        raise QueryCancelled(message)
     if err != NULL:
         v2_raise(err, context)
     raise V2Error(f"{context}: v2 error code {<int>rc} with no error info attached")

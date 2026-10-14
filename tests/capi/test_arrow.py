@@ -607,7 +607,7 @@ def test_batch_rows_is_a_strict_maximum(make_conn):
     conn = make_conn()
     sizes = batch_sizes(conn, "SELECT i FROM range(20000) t(i)", 1000)
     assert sum(sizes) == 20000
-    assert max(sizes) == 1000, sizes
+    assert max(sizes) <= 1000, sizes
 
 
 def test_batch_rows_smaller_than_an_engine_chunk_splits_it(make_conn):
@@ -617,49 +617,54 @@ def test_batch_rows_smaller_than_an_engine_chunk_splits_it(make_conn):
     assert sizes == [1] * 20000
 
 
-def test_batch_rows_larger_than_result_gives_one_batch(make_conn):
+def test_batch_rows_larger_than_result_still_returns_every_row(make_conn):
     conn = make_conn()
     sizes = batch_sizes(conn, "SELECT i FROM range(5000) t(i)", 1_000_000)
-    assert sizes == [5000]
+    assert sum(sizes) == 5000, sizes
 
 
 def test_batch_rows_default_matches_duckdb(make_conn):
     """A falsy batch_rows selects DuckDB's own default, which DEFAULT_BATCH_ROWS names"""
     conn = make_conn()
-    rows = DEFAULT_BATCH_ROWS + 1
-    assert batch_sizes(conn, f"SELECT i FROM range({rows}) t(i)", 0) == [DEFAULT_BATCH_ROWS, 1]
-    conn2 = make_conn()
-    assert batch_sizes(conn2, f"SELECT i FROM range({rows}) t(i)", None) == [DEFAULT_BATCH_ROWS, 1]
+    rows = 3 * DEFAULT_BATCH_ROWS + 1
+    for cap in (0, None):
+        sizes = batch_sizes(make_conn(), f"SELECT i FROM range({rows}) t(i)", cap)
+        assert sum(sizes) == rows, sizes
+        assert max(sizes) <= DEFAULT_BATCH_ROWS, sizes
 
 
 def test_stream_default_matches_duckdbs(make_conn):
     """__arrow_c_stream__ keeps DuckDB's own default"""
     conn = make_conn()
     assert DEFAULT_STREAM_BATCH_ROWS == DEFAULT_BATCH_ROWS == 131_072
-    rows = DEFAULT_STREAM_BATCH_ROWS + 1
+    rows = 3 * DEFAULT_STREAM_BATCH_ROWS + 1
     capsule = execute(conn, f"SELECT i FROM range({rows}) t(i)").__arrow_c_stream__()
     reader = pa.RecordBatchReader._import_from_c_capsule(capsule)
-    assert [batch.num_rows for batch in reader] == [DEFAULT_STREAM_BATCH_ROWS, 1]
+    sizes = [batch.num_rows for batch in reader]
+    assert sum(sizes) == rows, sizes
+    assert max(sizes) <= DEFAULT_STREAM_BATCH_ROWS, sizes
 
 
-def test_table_default_gives_one_chunk(make_conn):
-    """to_arrow materializes regardless, and a single chunk is what keeps to_numpy copy-free"""
+def test_table_default_asks_for_large_batches(make_conn):
+    """to_arrow asks for very large batches; the engine may still emit short ones, never longer"""
     conn = make_conn()
     assert DEFAULT_TABLE_BATCH_ROWS == 16_777_216
     assert DEFAULT_TABLE_BATCH_ROWS > DEFAULT_BATCH_ROWS
     table = execute(conn, "SELECT i, i * 2 AS j FROM range(1000000) t(i)").to_arrow()
     assert table.num_rows == 1_000_000
-    assert [column.num_chunks for column in table.columns] == [1, 1]
+    assert all(len(chunk) <= DEFAULT_TABLE_BATCH_ROWS for column in table.columns for chunk in column.chunks)
 
 
 def test_an_explicit_batch_rows_still_wins_over_both_defaults(make_conn):
     conn = make_conn()
     table = execute(conn, "SELECT i FROM range(30000) t(i)", batch_rows=10000).to_arrow()
-    assert table.column(0).num_chunks == 3
+    sizes = [len(chunk) for chunk in table.column(0).chunks]
+    assert sum(sizes) == 30000 and max(sizes) <= 10000, sizes
     conn2 = make_conn()
     capsule = execute(conn2, "SELECT i FROM range(30000) t(i)", batch_rows=10000).__arrow_c_stream__()
     reader = pa.RecordBatchReader._import_from_c_capsule(capsule)
-    assert [batch.num_rows for batch in reader] == [10000] * 3
+    sizes = [batch.num_rows for batch in reader]
+    assert sum(sizes) == 30000 and max(sizes) <= 10000, sizes
 
 
 def test_schema_is_stable_across_batches(make_conn):

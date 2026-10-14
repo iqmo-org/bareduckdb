@@ -30,7 +30,7 @@ from bareduckdb.capi.impl.connection cimport (
 )
 from bareduckdb.capi.impl.duckdb_v2 cimport (
     ArrowArray,
-    DUCKDB_V2_ERROR_INPUT_INVALID,
+    DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED,
     DUCKDB_V2_ERROR_NONE,
     DUCKDB_V2_LOGICAL_TYPE_ID_ARRAY,
     DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT,
@@ -494,10 +494,12 @@ cdef object _execute_arrow_last(
         rc = duckdb_v2_arrow_result_get_result_type(out._handle, &result_type, &err)
     if effect_group:
         rc = _arrow_step_for_metadata(out, rc, &result_type, &err)
-    if rc != DUCKDB_V2_ERROR_NONE:
+    if rc == DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED:
         # A statement expanding into a group (PIVOT) has no metadata until the stream steps it.
         if err != NULL:
             duckdb_v2_error_info_destroy(&err)
+    elif rc != DUCKDB_V2_ERROR_NONE:
+        check_v2(rc, err, "duckdb_v2_arrow_result_get_result_type")
     elif result_type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT:
         # Run it here for its effect, as the row path does; the export then carries the schema only.
         if out._first.release != NULL:
@@ -526,8 +528,7 @@ cdef duckdb_v2_error_t _arrow_step_for_metadata(
     cdef duckdb_v2_result_step_status_t status = DUCKDB_V2_RESULT_STEP_STATUS_WAITING
     cdef idx_t steps = 0
 
-    # INPUT_INVALID is RequireMetadata, as in CApiResult._ensure_schema.
-    while rc == DUCKDB_V2_ERROR_INPUT_INVALID and out._first.release == NULL:
+    while rc == DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED and out._first.release == NULL:
         if err[0] != NULL:
             with nogil:
                 duckdb_v2_error_info_destroy(err)
@@ -713,8 +714,11 @@ cdef object _execute_last(
 
     with nogil:
         rc = duckdb_v2_result_get_result_type(current_result, &result_type, &err)
+    if rc != DUCKDB_V2_ERROR_NONE and rc != DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED:
+        _destroy_result(current_result)
+        check_v2(rc, err, "duckdb_v2_result_get_result_type")
     if rc != DUCKDB_V2_ERROR_NONE:
-        # A group has no metadata until stepped; stepping it to its last fragment runs the ones before.
+        # A group has no metadata until stepped to the statement whose rows it surfaces.
         if err != NULL:
             duckdb_v2_error_info_destroy(&err)
         py_result = CApiResult.__new__(CApiResult)
@@ -734,6 +738,9 @@ cdef object _execute_last(
                 rc = duckdb_v2_result_drain(current_result, &rows_changed, &err)
             check_v2(rc, err, "duckdb_v2_result_drain")
             py_result._drained = True
+        else:
+            # A group runs as one query, so its row-returning write is retained like any other (#26314).
+            py_result._run_to_first_chunk()
         _logger.debug("statement group stepped %d times for its metadata; drained: %s", py_result._schema_steps, py_result._drained)
         return py_result
     elif result_type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT:
@@ -1511,13 +1518,12 @@ cdef class CApiResult:
             # Bind could not supply the schema, so asking for it fixes the format as rows.
             self.submit()
         if self._result == NULL:
-            # get_schema on NULL reports INPUT_INVALID, which the loop below would misread.
             raise RuntimeError("this result's schema was already handed to an Arrow export")
 
         with nogil:
             rc = duckdb_v2_result_get_schema(self._result, &self._schema, &err)
-        # INPUT_INVALID here means RequireMetadata; any other code falls through to check_v2.
-        while rc == DUCKDB_V2_ERROR_INPUT_INVALID:
+        # Any code other than METADATA_DEFERRED falls through to check_v2.
+        while rc == DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED:
             if err != NULL:
                 with nogil:
                     duckdb_v2_error_info_destroy(&err)

@@ -165,12 +165,6 @@ def test_a_partly_read_select_with_a_writing_cte_keeps_its_write():
         assert got == [(100000,)], got
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="""A dynamic PIVOT inside a row-returning INSERT expands into a group wrapped in BEGIN ... COMMIT.
-    The COMMIT runs only after the last row is fetched, so an unfetched result rolls the group back.
-    Draining it at execute() while keeping the rows would hold them twice.""",
-)
 def test_an_unfetched_returning_over_a_dynamic_pivot_keeps_its_write():
     with bareduckdb.connect() as conn:
         conn.execute("create table src as select * from (values ('a', 1), ('b', 2)) v(k, v)")
@@ -189,7 +183,7 @@ def _pivot_tables(conn):
 
 
 def test_an_arrow_table_returning_over_a_dynamic_pivot_is_exported_and_kept():
-    """Asked for up front, the group is submitted as Arrow; read to its end, the group's COMMIT runs"""
+    """Asked for up front, the group is submitted as Arrow and its write is kept"""
     pytest.importorskip("pyarrow")
     with bareduckdb.connect() as conn:
         _pivot_tables(conn)
@@ -240,11 +234,6 @@ def test_a_returning_over_a_dynamic_pivot_cannot_become_arrow_after_a_plain_exec
         assert conn.execute("select count(*) from dst").fetchall() == [(1,)]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="""As on the row path: the group's COMMIT runs only after the last array is read, so an unread
-    reader is rolled back by the next statement. Running it to its end at execute() would hold every array.""",
-)
 def test_an_unread_arrow_reader_returning_over_a_dynamic_pivot_keeps_its_write():
     pytest.importorskip("pyarrow")
     with bareduckdb.connect() as conn:

@@ -40,6 +40,21 @@ def test_registered_projection(conn):
     assert got["c"].to_list() == [5, 6]
 
 
+@pytest.mark.parametrize("threads", [1, 4])
+def test_register_a_frame_larger_than_one_slice(threads):
+    """A frame over _SCAN_SLICE_ROWS is streamed in slices through polars, still without pyarrow"""
+    from bareduckdb.core.connection_base import _SCAN_SLICE_ROWS
+
+    rows = 3 * _SCAN_SLICE_ROWS + 17
+    frame = pl.DataFrame({"a": pl.int_range(0, rows, dtype=pl.Int64, eager=True)})
+    with bareduckdb.connect(config={"threads": str(threads)}) as c:
+        c.register("t", frame)
+        got = c.execute("select count(*) as n, sum(a) as s from t").pl()
+        assert got.row(0) == (rows, rows * (rows - 1) // 2), f"threads={threads}: {got.row(0)}"
+        ordered = c.execute("select a from t where a % 1000 = 3").pl()["a"].to_list()
+        assert ordered == list(range(3, rows, 1000)), f"threads={threads}: {len(ordered)} rows, first {ordered[:3]}"
+
+
 def test_register_then_unregister(conn):
     conn.register("t", pl.DataFrame({"a": [1, 2]}))
     assert conn.execute("select count(*) as n from t").pl()["n"][0] == 2

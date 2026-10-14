@@ -297,3 +297,47 @@ async def test_aclose_stops_a_query_that_has_not_started_executing():
             assert closed.is_set(), f"aclose did not drain in {elapsed:.1f}s: delay={delay} rep={rep}"
             # QueryCancelled, the Arrow path's OSError, or the pool refusing it; it cannot have completed.
             assert len(outcome) == 1 and isinstance(outcome[0], (RuntimeError, OSError)), f"delay={delay} rep={rep} outcome={outcome!r}"
+
+
+async def _cancel_while_running(pool, error):
+    """Cancels a pool call while its worker runs a function that then raises error; returns what the caller saw."""
+    started = threading.Event()
+
+    def fn():
+        started.set()
+        time.sleep(0.2)
+        raise error
+
+    caught = []
+
+    async def run():
+        try:
+            await pool._in_thread(fn)
+        except BaseException as exc:
+            caught.append(exc)
+            raise
+
+    with anyio.fail_after(10.0):
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(run)
+            await wait_until(started.is_set, "the worker to start")
+            tg.cancel_scope.cancel()
+    return caught
+
+
+async def test_a_real_oserror_during_a_cancel_is_raised():
+    """An I/O error that coincides with a cancel is not hidden behind the cancellation."""
+    async with AsyncConnectionPool(pool_size=1) as pool:
+        error = OSError("No space left on device")
+        with pytest.RaisesGroup(OSError) as group:
+            await _cancel_while_running(pool, error)
+        raised = group.value.exceptions
+        assert len(raised) == 1 and raised[0] is error, f"raised={raised!r}"
+
+
+async def test_an_interrupted_raw_stream_read_cancels_cleanly():
+    """An OSError carrying DuckDB's interrupt text counts as the cancellation, not as a failure."""
+    async with AsyncConnectionPool(pool_size=1) as pool:
+        caught = await _cancel_while_running(pool, OSError("INTERRUPT Error: Interrupted!"))
+        cancelled = anyio.get_cancelled_exc_class()
+        assert len(caught) == 1 and type(caught[0]) is cancelled, f"caught={caught!r}"

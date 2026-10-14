@@ -112,10 +112,10 @@ def test_an_explicit_output_type_stays_eager():
 
 
 def test_metadata_on_a_schema_that_needs_stepping_leaves_the_result_whole():
-    """A PIVOT cannot report its schema without stepping, so metadata is not free here.
+    """A PIVOT cannot report its schema without stepping, so reading it submits the statement as rows.
 
-    It still costs no rows: arrow.pyx refuses an export only when a step stashed a chunk
-    (`_pending_chunk`), and resolving a PIVOT's schema does not. Both surfaces stay correct.
+    Rows still come back whole after the schema. An Arrow consumer must come first, since DuckDB
+    fixes the format at submission and cannot convert rows to Arrow; asking afterwards names that.
     """
     pytest.importorskip("pyarrow")
 
@@ -124,9 +124,8 @@ def test_metadata_on_a_schema_that_needs_stepping_leaves_the_result_whole():
         conn.execute("INSERT INTO piv VALUES ('a', 1), ('b', 2)")
         conn.execute("PIVOT piv ON k USING sum(v)")
         result = conn._last_result_get()
-        assert result.columns == ["a", "b"]
-        assert result._capi.schema_steps > 0
         assert result.arrow_table().num_rows == 1
+        assert result.columns == ["a", "b"]
 
     with bareduckdb.connect() as conn:
         conn.execute("CREATE TABLE piv(k VARCHAR, v INTEGER)")
@@ -134,18 +133,30 @@ def test_metadata_on_a_schema_that_needs_stepping_leaves_the_result_whole():
         conn.execute("PIVOT piv ON k USING sum(v)")
         result = conn._last_result_get()
         assert result.columns == ["a", "b"]
+        assert result._capi.schema_steps > 0
         assert result.fetchall() == [(1, 2)]
+
+    with bareduckdb.connect() as conn:
+        conn.execute("CREATE TABLE piv(k VARCHAR, v INTEGER)")
+        conn.execute("INSERT INTO piv VALUES ('a', 1), ('b', 2)")
+        conn.execute("PIVOT piv ON k USING sum(v)")
+        result = conn._last_result_get()
+        assert result.columns == ["a", "b"]
+        with pytest.raises(RuntimeError, match="already ran as a row result"):
+            result.arrow_table()
 
 
 def test_execute_batch_size_reaches_the_polars_stream():
-    """batch_size caps the Arrow batch - how many chunks polars gets"""
+    """batch_size is a maximum on each Arrow batch, so it bounds every chunk polars gets"""
     pytest.importorskip("polars")
 
     query = "SELECT i, i::varchar AS s FROM range(1000000) t(i)"
     with bareduckdb.connect() as conn:
-        # pl() materializes, so it asks for one batch unless the caller caps it smaller.
-        assert conn.execute(query).pl().n_chunks() == 1
-        assert conn.execute(query, batch_size=100_000).pl().n_chunks() == 10
+        frame = conn.execute(query, batch_size=100_000).pl()
+        sizes = [len(chunk) for chunk in frame.get_column("i").get_chunks()]
+        assert sum(sizes) == 1_000_000, sizes
+        assert max(sizes) <= 100_000, sizes
+        assert conn.execute(query).pl().height == 1_000_000
 
 
 def test_execute_batch_size_reaches_the_arrow_table():
@@ -153,8 +164,10 @@ def test_execute_batch_size_reaches_the_arrow_table():
 
     query = "SELECT i FROM range(1000000) t(i)"
     with bareduckdb.connect() as conn:
-        assert conn.execute(query).arrow_table().column(0).num_chunks == 1
-        assert conn.execute(query, batch_size=100_000).arrow_table().column(0).num_chunks == 10
+        assert conn.execute(query).arrow_table().num_rows == 1_000_000
+        sizes = [len(chunk) for chunk in conn.execute(query, batch_size=100_000).arrow_table().column(0).chunks]
+        assert sum(sizes) == 1_000_000, sizes
+        assert max(sizes) <= 100_000, sizes
 
 
 def test_streaming_surfaces_keep_duckdbs_own_batch_size():
@@ -197,3 +210,47 @@ def test_concurrent_fetchmany_on_one_result_is_serialized():
         assert errors == []
         assert len(seen) == 200000
         assert len(set(seen)) == 200000
+
+
+@pytest.mark.parallel_threads(1)
+def test_concurrent_mixed_consumers_never_return_empty():
+    """Each consumer gets every row or raises naming the first consumer; none silently gets nothing"""
+    import threading
+
+    pytest.importorskip("pyarrow")
+    rows = 50_000
+    outcomes: list[tuple] = []
+    for _ in range(50):
+        with bareduckdb.connect() as conn:
+            result = conn.execute(f"SELECT * FROM range({rows})")._last_result_get()
+            barrier = threading.Barrier(3)
+            got: dict[str, object] = {}
+
+            def run(name, fn):
+                barrier.wait()
+                try:
+                    got[name] = fn()
+                except RuntimeError as exc:
+                    got[name] = exc
+
+            consumers = {
+                "fetchall": lambda: len(result.fetchall()),
+                "arrow_table": lambda: result.arrow_table().num_rows,
+                "description": lambda: [d[0] for d in result.description],
+            }
+            threads = [threading.Thread(target=run, args=item) for item in consumers.items()]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            outcome = tuple(sorted((name, repr(value)[:90]) for name, value in got.items()))
+            outcomes.append(outcome)
+
+            assert got["description"] == ["range"], f"outcome: {outcome}"
+            for name, other in (("fetchall", "arrow_table()"), ("arrow_table", "a row fetch")):
+                value = got[name]
+                if isinstance(value, RuntimeError):
+                    assert f"consumed by {other}" in str(value), f"{name} raised without naming {other}: {outcome}"
+                else:
+                    assert value == rows, f"{name} returned {value!r} rows: {outcome}"
+    print(f"mixed consumer outcomes: {sorted(set(outcomes))}")

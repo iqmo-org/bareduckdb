@@ -66,3 +66,41 @@ def test_read_only_nonexistent_file(tmp_path: Path):
     with pytest.raises(RuntimeError):
         conn = ConnectionBase(database=tmp_path / "nonexistent_db_12345.db", read_only=True)
 
+
+
+# Observed from duckdb-python 1.5.5: a non-str value is stringified, then cast by DuckDB to the setting's type.
+_NON_STR_ACCEPTED = [
+    ("threads", 4, 4),
+    ("threads", 4.0, 4),
+    ("threads", 2.5, 3),
+    ("enable_external_access", False, False),
+    ("enable_external_access", True, True),
+    ("enable_external_access", 0, False),
+    ("enable_external_access", 1, True),
+    ("preserve_insertion_order", False, False),
+    ("errors_as_json", True, True),
+    ("custom_user_agent", 5, "5"),
+]
+
+_NON_STR_REFUSED = [
+    ("threads", True, "Could not convert string 'True' to INT64"),
+    ("threads", None, "Could not convert string 'None' to INT64"),
+    ("enable_external_access", None, "Could not convert string 'None' to BOOL"),
+    ("memory_limit", 1000000000, "Unknown unit for memory"),
+    ("memory_limit", 1.5, "Unknown unit for memory"),
+    ("default_order", 3, 'Unrecognized parameter for option DEFAULT_ORDER "3"'),
+]
+
+
+@pytest.mark.parametrize(("name", "value", "expected"), _NON_STR_ACCEPTED)
+def test_config_non_str_value_is_stringified_like_duckdb_python(name, value, expected):
+    with Connection(config={name: value}) as conn:
+        got = conn.execute(f"select current_setting('{name}')").fetchall()
+    assert got == [(expected,)], f"config={{{name!r}: {value!r}}} gave {got}"
+
+
+@pytest.mark.parametrize(("name", "value", "text"), _NON_STR_REFUSED)
+def test_config_non_str_value_refused_with_duckdb_text(name, value, text):
+    with pytest.raises(Exception, match=text) as info:
+        Connection(config={name: value})
+    assert not isinstance(info.value, TypeError), f"{type(info.value).__name__}: {info.value}"

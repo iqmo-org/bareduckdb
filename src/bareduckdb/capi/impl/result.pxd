@@ -3,6 +3,7 @@
 
 from bareduckdb.capi.impl.connection cimport CApiConnectionImpl, bd_registry
 from bareduckdb.capi.impl.duckdb_v2 cimport (
+    ArrowArray,
     duckdb_v2_arrow_result_handle,
     duckdb_v2_data_chunk_handle,
     duckdb_v2_error_info_handle,
@@ -87,5 +88,7 @@ cdef class ArrowResult:
     cdef long _borrow
     # 0 until exported or closed; whichever CAS wins owns the handle.
     cdef long _consumed
+    # The array a row-returning write was stepped to at execute(); release is NULL when none.
+    cdef ArrowArray _first
 
     cdef void _destroy(self) noexcept

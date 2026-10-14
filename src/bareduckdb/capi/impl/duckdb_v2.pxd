@@ -847,6 +847,21 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_result_type_t *out_type,
         duckdb_v2_error_info_handle *err
     )
+    duckdb_v2_error_t duckdb_v2_arrow_result_step(
+        duckdb_v2_arrow_result_handle result,
+        ArrowArray *out_array,
+        duckdb_v2_result_step_status_t *out_status,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_arrow_result_wait(
+        duckdb_v2_arrow_result_handle result,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_arrow_result_get_statement_type(
+        duckdb_v2_arrow_result_handle result,
+        duckdb_v2_statement_type_t *out_type,
+        duckdb_v2_error_info_handle *err
+    )
     duckdb_v2_error_t duckdb_v2_arrow_result_to_arrow_c_stream(
         duckdb_v2_arrow_result_handle *result,
         ArrowArrayStream *out_stream,

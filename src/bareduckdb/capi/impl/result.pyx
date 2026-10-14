@@ -19,6 +19,7 @@ from libc.stdint cimport (
     uint64_t,
 )
 from libc.stdlib cimport free, malloc
+from libc.string cimport memset
 
 from bareduckdb.capi.impl.arrow cimport export_arrow_result
 from bareduckdb.capi.impl.connection cimport (
@@ -28,6 +29,7 @@ from bareduckdb.capi.impl.connection cimport (
     bd_registry_release,
 )
 from bareduckdb.capi.impl.duckdb_v2 cimport (
+    ArrowArray,
     DUCKDB_V2_ERROR_INPUT_INVALID,
     DUCKDB_V2_ERROR_NONE,
     DUCKDB_V2_LOGICAL_TYPE_ID_ARRAY,
@@ -73,7 +75,6 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_RESULT_STEP_STATUS_FINISHED,
     DUCKDB_V2_RESULT_STEP_STATUS_WAITING,
     DUCKDB_V2_RESULT_TYPE_QUERY_RESULT,
-    DUCKDB_V2_STATEMENT_TYPE_CREATE,
     DUCKDB_V2_STATEMENT_TYPE_EXPLAIN,
     DUCKDB_V2_STATEMENT_TYPE_MULTI,
     DUCKDB_V2_STATEMENT_TYPE_SELECT,
@@ -85,7 +86,10 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_arrow_result_destroy,
     duckdb_v2_arrow_result_drain,
     duckdb_v2_arrow_result_get_result_type,
+    duckdb_v2_arrow_result_get_statement_type,
     duckdb_v2_arrow_result_handle,
+    duckdb_v2_arrow_result_step,
+    duckdb_v2_arrow_result_wait,
     duckdb_v2_bignum_decode,
     duckdb_v2_bool_t,
     duckdb_v2_connection_get_factory,
@@ -470,6 +474,7 @@ cdef object _execute_arrow_last(
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_result_type_t result_type
+    cdef duckdb_v2_statement_type_t statement_type
     cdef idx_t rows_changed = 0
     cdef ArrowResult out
 
@@ -491,7 +496,33 @@ cdef object _execute_arrow_last(
         with nogil:
             rc = duckdb_v2_arrow_result_drain(out._handle, &rows_changed, &err)
         check_v2(rc, err, "duckdb_v2_arrow_result_drain")
+    else:
+        # As on the row path: a row-returning write is retained, so its first step runs and ends it.
+        with nogil:
+            rc = duckdb_v2_arrow_result_get_statement_type(out._handle, &statement_type, &err)
+        check_v2(rc, err, "duckdb_v2_arrow_result_get_statement_type")
+        if statement_type != DUCKDB_V2_STATEMENT_TYPE_SELECT:
+            _logger.debug("arrow result of statement type %d runs at execute()", <int>statement_type)
+            _arrow_run_to_first_array(out)
     return out
+
+
+cdef void _arrow_run_to_first_array(ArrowResult out) except *:
+    """Step an Arrow result until its first array exists or it finishes, keeping the array"""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_result_step_status_t status = DUCKDB_V2_RESULT_STEP_STATUS_WAITING
+
+    while status == DUCKDB_V2_RESULT_STEP_STATUS_WAITING:
+        with nogil:
+            rc = duckdb_v2_arrow_result_step(out._handle, &out._first, &status, &err)
+        check_v2(rc, err, "duckdb_v2_arrow_result_step")
+        if status == DUCKDB_V2_RESULT_STEP_STATUS_WAITING:
+            with nogil:
+                rc = duckdb_v2_arrow_result_wait(out._handle, &err)
+            check_v2(rc, err, "duckdb_v2_arrow_result_wait")
+    if status == DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED:
+        raise QueryCancelled("INTERRUPT Error: Interrupted!")
 
 
 cdef object _defer_bound(
@@ -664,17 +695,17 @@ cdef object _execute_last(
             check_v2(rc, err, "duckdb_v2_result_drain")
         drained = True
     else:
-        # CREATE SECRET is the one CREATE that returns rows, and it applies its effect from
-        # the source operator, so an unstepped result never creates the secret. Every other
-        # CREATE reports NOTHING or CHANGED_ROWS (CTAS) and is drained above, so nothing
-        # large is forced here. The rows are kept, matching duckdb-python's [(True,)].
+        # A row-returning statement other than a SELECT (RETURNING, CALL, CREATE SECRET, an exec
+        # PRAGMA) is retained, not streamed, so its first step runs it to completion and ends it.
+        # Left unstepped, destroying it would roll the write back (#26314). The engine keeps the
+        # rows once; we hold one chunk of them, so nothing is copied twice.
         with nogil:
             rc = duckdb_v2_result_get_statement_type(current_result, &statement_type, &err)
         if rc != DUCKDB_V2_ERROR_NONE:
-            if err != NULL:
-                duckdb_v2_error_info_destroy(&err)
-        elif statement_type == DUCKDB_V2_STATEMENT_TYPE_CREATE:
-            materialize = True
+            _destroy_result(current_result)
+            check_v2(rc, err, "duckdb_v2_result_get_statement_type")
+        materialize = statement_type != DUCKDB_V2_STATEMENT_TYPE_SELECT
+        _logger.debug("row result of statement type %d; run at execute(): %s", <int>statement_type, materialize)
 
     py_result = CApiResult.__new__(CApiResult)
     if batch_rows is not None:
@@ -1807,6 +1838,7 @@ cdef class ArrowResult:
         self._reg = NULL
         self._borrow = 0
         self._consumed = 0
+        memset(&self._first, 0, sizeof(ArrowArray))
 
     def __arrow_c_stream__(self, requested_schema=None):
         """Export this result as an Arrow C Stream capsule, consuming it.
@@ -1823,9 +1855,11 @@ cdef class ArrowResult:
         if bdv2_cas(&self._borrow, 1, 0):
             reg = self._reg
         try:
-            return export_arrow_result(&handle, &reg)
+            return export_arrow_result(&handle, &reg, &self._first)
         finally:
-            # Set only when the export failed: the stream did not take the borrow.
+            # Set only when the export failed: the stream took neither the borrow nor the array.
+            if self._first.release != NULL:
+                self._first.release(&self._first)
             if reg != NULL:
                 with nogil:
                     bd_registry_release(reg)
@@ -1841,6 +1875,8 @@ cdef class ArrowResult:
         """Destroy the handle and drop the borrow, unless an export already took both"""
         if not bdv2_cas(&self._consumed, 0, 1):
             return
+        if self._first.release != NULL:
+            self._first.release(&self._first)
         if self._handle != NULL:
             with nogil:
                 duckdb_v2_arrow_result_destroy(&self._handle)

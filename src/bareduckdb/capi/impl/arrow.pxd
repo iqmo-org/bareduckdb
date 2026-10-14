@@ -2,7 +2,7 @@
 """C-level surface of the Arrow export, for the result layer to cimport"""
 
 from bareduckdb.capi.impl.connection cimport bd_registry
-from bareduckdb.capi.impl.duckdb_v2 cimport duckdb_v2_arrow_result_handle
+from bareduckdb.capi.impl.duckdb_v2 cimport ArrowArray, duckdb_v2_arrow_result_handle
 
 
-cdef object export_arrow_result(duckdb_v2_arrow_result_handle *handle, bd_registry **reg)
+cdef object export_arrow_result(duckdb_v2_arrow_result_handle *handle, bd_registry **reg, ArrowArray *first=*)

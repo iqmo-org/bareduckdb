@@ -39,6 +39,8 @@ cdef struct bd_stream_owner:
     # DuckDB's stream, which every callback below forwards to unchanged.
     ArrowArrayStream inner
     bd_registry *reg
+    # An array stepped before the export, handed out ahead of DuckDB's; release is NULL when none.
+    ArrowArray first
 
 
 cdef int _owned_get_schema(ArrowArrayStream *stream, ArrowSchema *out) noexcept nogil:
@@ -52,6 +54,10 @@ cdef int _owned_get_next(ArrowArrayStream *stream, ArrowArray *out) noexcept nog
     cdef bd_stream_owner *owner = <bd_stream_owner *>stream.private_data
     if owner == NULL or owner.inner.get_next == NULL:
         return EINVAL
+    if owner.first.release != NULL:
+        out[0] = owner.first
+        owner.first.release = NULL
+        return 0
     return owner.inner.get_next(&owner.inner, out)
 
 
@@ -69,6 +75,8 @@ cdef void _owned_release(ArrowArrayStream *stream) noexcept nogil:
     stream.private_data = NULL
     if owner == NULL:
         return
+    if owner.first.release != NULL:
+        owner.first.release(&owner.first)
     if owner.inner.release != NULL:
         owner.inner.release(&owner.inner)
     if owner.reg != NULL:
@@ -88,11 +96,12 @@ cdef void capsule_destructor(object capsule) noexcept:
     free(stream)
 
 
-cdef object export_arrow_result(duckdb_v2_arrow_result_handle *handle, bd_registry **reg):
+cdef object export_arrow_result(duckdb_v2_arrow_result_handle *handle, bd_registry **reg, ArrowArray *first=NULL):
     """Hand an Arrow result to DuckDB's stream and wrap it in a capsule.
 
     The handle is consumed either way: DuckDB takes it on success and it is destroyed here on
-    failure. On success the stream also takes the registry borrow and *reg is set to NULL.
+    failure. On success the stream also takes the registry borrow and *reg is set to NULL, and
+    an already stepped *first moves into the stream, to be returned by the first get_next.
     """
     cdef ArrowArrayStream *stream = NULL
     cdef bd_stream_owner *owner = NULL
@@ -123,6 +132,9 @@ cdef object export_arrow_result(duckdb_v2_arrow_result_handle *handle, bd_regist
     # pyarrow moves the struct out of the capsule, so the stream holds the borrow, not the capsule.
     owner.reg = reg[0]
     reg[0] = NULL
+    if first != NULL and first.release != NULL:
+        owner.first = first[0]
+        first.release = NULL
     stream.private_data = <void *>owner
     stream.get_schema = _owned_get_schema
     stream.get_next = _owned_get_next

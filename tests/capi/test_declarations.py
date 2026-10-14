@@ -22,8 +22,8 @@ VSWHERE = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswher
 VC_TOOLS_REQUIREMENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
 
 # Manifest of the pin; a partial re-pin fails here instead of at link time or runtime.
-EXPECTED_HEADER_SHA = "32414d25269cd0d135e0d3691d6e5e8e96613ef2"
-EXPECTED_HEADER_FUNCTION_COUNT = 552
+EXPECTED_HEADER_SHA = "ef437b6ae7f246156e4751436678f5d01048432f"
+EXPECTED_HEADER_FUNCTION_COUNT = 609
 
 # Overrides the library the link test links against, for checking a freshly built libduckdb before it is installed.
 LINK_LIB_ENV = "BAREDUCKDB_DUCKDB_LINK_LIB"

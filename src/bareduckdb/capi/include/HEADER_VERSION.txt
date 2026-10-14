@@ -1,3 +1,3 @@
 # Source commit of external/duckdb from which duckdb_v2.h was vendored.
 
-32414d25269cd0d135e0d3691d6e5e8e96613ef2
+ef437b6ae7f246156e4751436678f5d01048432f

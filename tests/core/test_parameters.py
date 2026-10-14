@@ -21,17 +21,12 @@ def test_core_named_parameters():
         assert(len(result) == 2)
         assert(result.to_pylist()[-1]["i"] == 6)
 
-_XF_UNTYPED_NULL = pytest.mark.xfail(
-    reason="an untyped NULL parameter builds a SQLNULL logical type, which duckdb_v2.h:7583 says create_type_from_id rejects; execute then reports 'Not all parameters were bound'",
-    strict=True,
-)
 _XF_TZ_AWARE_PARAM = pytest.mark.xfail(
     reason="result.pyx:830 subtracts the naive epoch from a tz-aware datetime; _EPOCH_DATETIME_UTC exists and is used on the read path but not the write path",
     strict=True,
 )
 
 
-@_XF_UNTYPED_NULL
 def test_untyped_none_parameter_binds():
     """A bare `?` bound to None works, as it does in duckdb-python."""
     with ConnectionBase(database=":memory:") as conn:
@@ -39,7 +34,6 @@ def test_untyped_none_parameter_binds():
         assert result.to_pylist() == [{"c": None}]
 
 
-@_XF_UNTYPED_NULL
 def test_none_among_typed_parameters_binds():
     """None binds in any position, not only where the parameter's type is already known."""
     with ConnectionBase(database=":memory:") as conn:
@@ -47,7 +41,6 @@ def test_none_among_typed_parameters_binds():
         assert result.to_pylist() == [{"a": 1, "b": None}]
 
 
-@_XF_UNTYPED_NULL
 def test_none_named_parameter_binds():
     """A named parameter bound to None works."""
     with ConnectionBase(database=":memory:") as conn:
@@ -55,7 +48,6 @@ def test_none_named_parameter_binds():
         assert result.to_pylist() == [{"c": None}]
 
 
-@_XF_UNTYPED_NULL
 def test_none_inside_a_list_parameter_binds():
     """A list parameter containing None works; the element type is not knowable from the statement."""
     with ConnectionBase(database=":memory:") as conn:
@@ -72,3 +64,23 @@ def test_timezone_aware_datetime_parameter_binds():
     with ConnectionBase(database=":memory:") as conn:
         result = conn._call(query="select ?::TIMESTAMPTZ as c", output_type="arrow_table", parameters=[aware])
         assert result.to_pylist()[0]["c"] == aware
+
+
+@pytest.mark.parametrize(
+    "parameters, expected",
+    [
+        ([None], [(None,)]),
+        ([[1, None]], [([1, None],)]),
+        ([[None]], [([None],)]),
+        ([{"a": None}], [({"a": None},)]),
+        ([{"a": 1, "b": None}], [({"a": 1, "b": None},)]),
+    ],
+    ids=["none", "list_with_none", "list_of_none", "dict_of_none", "dict_with_none"],
+)
+def test_untyped_none_fetches_like_duckdb_python(parameters, expected):
+    """An untyped None, bare or nested, fetches as duckdb-python 1.5.5 and 1.6.0.dev379 return it."""
+    import bareduckdb
+
+    with bareduckdb.connect() as conn:
+        rows = conn.execute("select ?", parameters).fetchall()
+    assert rows == expected, f"parameters={parameters!r} rows={rows!r}"

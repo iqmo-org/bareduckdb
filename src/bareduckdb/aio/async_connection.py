@@ -15,7 +15,7 @@ try:
 except ModuleNotFoundError as exc:
     raise ImportError("bareduckdb.aio requires anyio: pip install bareduckdb[aio]") from exc
 
-from bareduckdb import QueryCancelled
+from bareduckdb.capi.arrow_export import cancelled_from
 
 if TYPE_CHECKING:
     from bareduckdb.core.connection_base import ConnectionBase
@@ -28,8 +28,6 @@ T = TypeVar("T")
 _REINTERRUPT_INTERVAL = 0.01
 _POLL_INTERVAL = 0.001
 _SLOW_INTERRUPT_WARNING = 5.0
-# What an interrupted query raises: QueryCancelled from execute, OSError from the Arrow stream.
-_INTERRUPT_ERRORS: tuple[type[BaseException], ...] = (QueryCancelled, OSError)  # pyright: ignore[reportAssignmentType]
 _NOT_INITIALIZED = "Connection pool not initialized. Call 'await pool.connect()' or use 'async with AsyncConnectionPool()'."
 
 
@@ -204,7 +202,8 @@ class AsyncConnectionPool:
             if started:
                 await self._interrupt_until(finished.is_set, [conn] if conn is not None else [], query or repr(fn))
                 error = state.get("error")
-                if error is not None and not isinstance(error, _INTERRUPT_ERRORS):
+                # An Arrow stream read outside the translating consumers raises the interrupt as an OSError carrying DuckDB's text.
+                if error is not None and cancelled_from(error) is None:
                     logger.debug("query failed while being cancelled; raising its error: %.200s", query)
                     raise error from None
             raise

@@ -11,8 +11,9 @@ if TYPE_CHECKING:
 
     from . import PyArrowCapsule
 
+from ..capi.parse_cache import DEFAULT_PARSE_CACHE_SIZE
 from ..compat.result_compat import Result
-from .connection_base import ConnectionBase
+from .connection_base import ConnectionBase, _Deferred
 from .sql_statement import Statement, build_statement
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ class ConnectionAPI(ConnectionBase):
         udtf_functions: Optional[dict[str, Callable]] = None,
         output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"] = "arrow_capsule",
         enable_replacement_scan: bool = False,
+        parse_cache_size: int = DEFAULT_PARSE_CACHE_SIZE,
         _from_impl: Any = None,
     ) -> None:
         """
@@ -43,6 +45,7 @@ class ConnectionAPI(ConnectionBase):
             arrow_table_collector: Arrow collection mode
             udtf_functions: Dict of UDTF name -> function
             output_type: Default output format for queries
+            parse_cache_size: Parsed single SELECTs kept for reuse, keyed by SQL text; 0 disables
             _from_impl: Internal parameter for creating cursor with shared database
         """
         super().__init__(
@@ -50,6 +53,7 @@ class ConnectionAPI(ConnectionBase):
             config=config,
             read_only=read_only,
             arrow_table_collector=arrow_table_collector,
+            parse_cache_size=parse_cache_size,
             _from_impl=_from_impl,
         )
 
@@ -138,17 +142,26 @@ class ConnectionAPI(ConnectionBase):
         data: Mapping[str, Any] | None = None,
         batch_size: int = 0,
     ):
-        """Run query. batch_size is a strict maximum on the rows in one Arrow batch - 0 selects DuckDB's default"""
-        self._last_result = None
+        """Run query. batch_size is a maximum on the rows in one Arrow batch - 0 selects DuckDB's default"""
+        last, self._last_result = self._last_result, None
+        if last is not None:
+            # Closed here, as duckdb-python closes its previous result: a live one would refuse the next statement.
+            last._release()
+        del last
         if output_type is None and self._default_output_type == "arrow_capsule":
             call_output_type = None
         else:
             call_output_type = output_type if output_type is not None else self._default_output_type
 
-        query, data = self._preprocess(query, data)
+        from .. import features
 
-        result = self._call(query=query, output_type=call_output_type, parameters=parameters, data=data, batch_size=batch_size)
-        result = Result(result)
+        # Without table-reference extraction _preprocess finds nothing, so skip its parse and SHOW TABLES.
+        if features["sql_parsing"]:
+            query, data = self._preprocess(query, data)
+
+        deferred = _Deferred(self) if call_output_type is None else None
+        result = self._call(query=query, output_type=call_output_type, parameters=parameters, data=data, batch_size=batch_size, deferred=deferred)
+        result = Result(result, deferred=deferred)
         self._last_result = result
 
         return self
@@ -291,14 +304,15 @@ class ConnectionAPI(ConnectionBase):
     def arrow_table(self, timetz_utc: bool = False):
         return self._last_result_get().arrow_table(timetz_utc=timetz_utc)
 
-    def arrow_reader(self):
-        return self._last_result_get().arrow_reader()
+    def arrow_reader(self, batch_size: int | None = None):
+        return self._last_result_get().arrow_reader(batch_size=batch_size)
 
     def df(self):
         return self._last_result_get().df()
 
-    def pl(self, lazy: bool = False, rechunk: bool = False):
-        return self._last_result_get().pl(lazy=lazy, rechunk=rechunk)
+    def pl(self, rows_per_batch: int | None = None, *, lazy: bool = False, rechunk: bool = False):
+        """Fetch as a polars DataFrame, matching duckdb-python's pl(rows_per_batch, *, lazy)."""
+        return self._last_result_get().pl(rows_per_batch, lazy=lazy, rechunk=rechunk)
 
     def pl_lazy(self, batch_size: int | None = None):
         return self._last_result_get().pl_lazy(batch_size=batch_size)

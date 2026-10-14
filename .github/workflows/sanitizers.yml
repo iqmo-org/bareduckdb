@@ -161,7 +161,7 @@ jobs:
 
               echo 'Installing build dependencies (including pyarrow for the test run)'
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --upgrade pip
-              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages \"scikit-build-core>=1.0\" \"cython-cmake>=0.3\" \"Cython>=3.1\" \"setuptools-scm>=8\" pyarrow
+              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages \"scikit-build-core>=1.0\" \"cython-cmake>=0.3\" \"Cython>=3.1\" \"setuptools-scm>=8\" pyarrow==26.0.0
 
               echo 'Installing bareduckdb'
               echo 'Current directory:'
@@ -195,8 +195,8 @@ jobs:
                 pytest-randomly pytest-run-parallel pytest-timeout pytest-xdist \
                 filelock psutil
 
-              echo 'Installing nightly pandas and latest pyarrow'
-              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --pre --upgrade --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple --no-build pandas>=3.0 pyarrow
+              echo 'Installing nightly pandas and pyarrow 26.0.0'
+              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --pre --upgrade --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple --no-build pandas>=3.0 pyarrow==26.0.0
               # uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages pyarrow
 
               # Re-enable sanitizer checks before running tests

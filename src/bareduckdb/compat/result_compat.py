@@ -1,4 +1,4 @@
-"""Wraps an already-produced result; the fetch mode was fixed by output_type at execute(), so consumption methods convert what is there rather than select a mode"""
+"""Wraps a produced or pending result; a pending one is submitted by its first consumer, as rows or as Arrow"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
+from ..capi.arrow_export import cancel_translating_reader, cancelled_from, refuse_rows_as_arrow
 from ..capi.impl.errors import QueryCancelled  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:
@@ -151,18 +152,22 @@ class Result:
     _table: pa.Table | None  # cached materialized table: None until needed
     _reader: PyArrowCapsule | pa.RecordBatchReader | None
     _rows_iter: Any | None
+    _row_chunks: Any | None
     _offset: int  # fetch offset
     _read: bool
     _consumed_by: str | None
-    _cancelled: BaseException | None  # the QueryCancelled a row fetch raised, re-raised on every later fetch
+    _cancelled: BaseException | None  # the QueryCancelled a fetch or Arrow read raised, re-raised on every later fetch
+    _failed: BaseException | None  # the error a submission raised, re-raised on every later access
+    _released: bool
     _result_lock: threading.Lock
 
-    def __init__(self, result_obj: Any):
+    def __init__(self, result_obj: Any, deferred: Any = None):
         """
         Wrap an already-produced result, or an engine result whose conversion was deferred.
 
         Args:
             result_obj: A CApiResult, PyArrow Table, RecordBatchReader, or Arrow C stream capsule.
+            deferred: The connection-side state a deferred CApiResult needs at its first consumer.
         """
         from ..capi.impl.result import CApiResult  # type: ignore[import-untyped]  # pyarrow-free
 
@@ -179,12 +184,16 @@ class Result:
         else:
             self._reader = result_obj
 
+        self._deferred = deferred
         self._rows_iter = None
+        self._row_chunks = None
         self._stream_batch_rows = None
         self._was_deferred = self._capi is not None
         self._schema: tuple[tuple[str, ...], tuple[str, ...]] | None = None
         self._consumed_by = None
         self._cancelled = None
+        self._failed = None
+        self._released = False
         self._read = False
         self._offset = 0  # Current row offset for fetchone/fetchmany
         self._result_lock = threading.Lock()
@@ -198,19 +207,99 @@ class Result:
             )
         self._consumed_by = consumer
 
+    def _release_data(self) -> None:
+        """Unregister the data= names this result kept resolvable for an Arrow re-execution"""
+        if self._deferred is not None:
+            self._deferred.release_data()
+
+    def _engine_capsule(self, batch_rows: int, requested_schema: object = None) -> PyArrowCapsule:
+        """Submit the pending engine result as Arrow and export it; call under _result_lock"""
+        capi, self._capi = self._capi, None
+        if capi is None:
+            raise RuntimeError("this result was already consumed")
+        batch_rows = capi.batch_rows or batch_rows or 0
+        try:
+            if self._deferred is not None:
+                arrow = self._deferred.arrow_result(capi, batch_rows)
+            else:
+                from ..capi.arrow_export import arrow_result_of  # type: ignore[import-untyped]
+
+                arrow = arrow_result_of(capi, batch_rows)
+        except QueryCancelled as exc:
+            logger.debug("Arrow consumer cancelled before submission: %s", exc)
+            self._cancelled = exc
+            raise
+        except Exception as exc:
+            logger.debug("Arrow submission failed: %s", exc)
+            self._failed = exc
+            raise
+        finally:
+            # The Arrow result is bound by now, so the names it read may go.
+            self._release_data()
+        capsule = arrow.__arrow_c_stream__(requested_schema)
+        if self._deferred is not None:
+            self._deferred.track(arrow)
+        return capsule
+
+    def _submit_rows(self, capi: Any) -> None:
+        """Submit a pending engine result as rows, recording a cancel or failure it reports; call under _result_lock"""
+        if self._deferred is None or not capi.pending:
+            return
+        try:
+            self._deferred.submit_rows(capi)
+        except QueryCancelled as exc:
+            logger.debug("row consumer cancelled before submission: %s", exc)
+            self._cancelled = exc
+            self._capi = None
+            raise
+        except Exception as exc:
+            # The engine result is gone, so nothing later may read it.
+            logger.debug("row submission failed: %s", exc)
+            self._failed = exc
+            self._capi = None
+            raise
+
+    def _take_for_arrow(self, consumer: str) -> None:
+        """Refuse a result that already ran as rows, consuming nothing, then claim it; call under _result_lock"""
+        self._raise_if_cancelled()
+        if self._capi is not None:
+            refuse_rows_as_arrow(self._capi)
+        self._claim(consumer)
+
+    def _record_read_cancel(self, exc: BaseException) -> None:
+        """Make a cancel seen while reading the Arrow stream sticky, then raise it as QueryCancelled"""
+        cancelled = cancelled_from(exc)
+        if cancelled is None:
+            return
+        self._cancelled = cancelled
+        if cancelled is exc:
+            raise exc
+        raise cancelled from exc
+
     def _result_table(self) -> pa.Table:
         import pyarrow as pa
 
         if self._table is not None:
             return self._table
-        if self._capi is not None:
-            self._claim("arrow_table()")
-            self._deferred_schema()
-
-            capi, self._capi = self._capi, None
-            table = capi.to_arrow()
-            self._table = table
-            return table
+        with self._result_lock:
+            self._raise_if_cancelled()
+            if self._capi is not None:
+                self._take_for_arrow("arrow_table()")
+                self._bound_schema()
+                capsule = self._engine_capsule(_MATERIALIZING_BATCH_ROWS)
+                reader = pa.RecordBatchReader._import_from_c_capsule(capsule)  # type: ignore
+                try:
+                    table = reader.read_all()
+                except Exception as exc:
+                    self._record_read_cancel(exc)
+                    raise
+                finally:
+                    # Releases the stream, and with it the registry borrow, without waiting for the GC.
+                    reader.close()
+                self._table = table
+                return table
+        if self._table is not None:
+            return self._table
         if self._consumed_by is not None:
             raise RuntimeError(
                 f"this result was consumed by {self._consumed_by}; re-execute query to call "
@@ -223,19 +312,27 @@ class Result:
         return self._table  # type: ignore
 
     def arrow_reader(self, batch_size: int | None = None) -> pa.RecordBatchReader:
-        """Return the streaming reader, or raise if the result was materialized"""
+        """Return the streaming reader, or raise if the result was materialized.
+
+        batch_size is a maximum on the rows in one batch. An explicit execute(batch_size=...)
+        outranks it, and with neither DuckDB's own DEFAULT_STREAM_BATCH_ROWS applies. A reader
+        made by execute(output_type='arrow_reader') already has its batch size fixed.
+        """
         with self._result_lock:
+            self._raise_if_cancelled()
             if self._capi is not None:
                 import pyarrow as pa
 
-                self._claim("arrow_reader()")
-                self._deferred_schema()
-                capsule = self._capi.__arrow_c_stream__(None)
-                self._capi = None
+                self._take_for_arrow("arrow_reader()")
+                self._bound_schema()
+                capsule = self._engine_capsule(batch_size or 0)
                 self._read = True
-                return pa.RecordBatchReader._import_from_c_capsule(capsule)  # type: ignore
+                reader = pa.RecordBatchReader._import_from_c_capsule(capsule)  # type: ignore
+                return cancel_translating_reader(reader, self._set_cancelled)
 
             if self._reader is not None:
+                if batch_size:
+                    logger.debug("arrow_reader(batch_size=%d) ignored: the reader was made at execute()", batch_size)
                 self._read = True
                 _reader = self._reader
                 self._reader = None
@@ -251,15 +348,15 @@ class Result:
 
     def __arrow_c_stream__(self, requested_schema=None):  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
         with self._result_lock:
+            self._raise_if_cancelled()
             if self._capi is not None:
                 # The engine's own stream; this is where the result handle is surrendered.
                 # The caller may have claimed already (arrow_table, pl); if not, name the export.
                 if self._consumed_by is None:
-                    self._consumed_by = "an Arrow export"
-                self._deferred_schema()
-                capi, self._capi = self._capi, None
+                    self._take_for_arrow("an Arrow export")
+                self._bound_schema()
                 self._read = True
-                return capi.__arrow_c_stream__(requested_schema, batch_rows=self._stream_batch_rows)
+                return self._engine_capsule(self._stream_batch_rows or 0, requested_schema)
 
             self._read = True
             if self._reader is not None:
@@ -296,16 +393,22 @@ class Result:
         else:
             return self.arrow_table().to_pandas()
 
-    def pl(self, rechunk: bool = False, lazy: bool = False) -> pl.DataFrame:
+    def pl(self, rows_per_batch: int | None = None, *, lazy: bool = False, rechunk: bool = False) -> pl.DataFrame:
+        """Fetch as a polars DataFrame; None for rows_per_batch keeps one chunk, unlike duckdb-python's 1M."""
         if lazy:  # pl_lazy makes more sense from a typing perspective
-            return self.pl_lazy()  # type: ignore
+            return self.pl_lazy(batch_size=rows_per_batch)  # type: ignore
 
         import polars as pl
 
-        self._claim("pl()")
-        self._stream_batch_rows = _MATERIALIZING_BATCH_ROWS
-        # Passing self uses the __arrow_c_stream__ protocol, so pyarrow is never imported
-        frame = pl.DataFrame(self)
+        with self._result_lock:
+            self._take_for_arrow("pl()")
+        self._stream_batch_rows = rows_per_batch or _MATERIALIZING_BATCH_ROWS
+        try:
+            # Passing self uses the __arrow_c_stream__ protocol, so pyarrow is never imported
+            frame = pl.DataFrame(self)
+        except Exception as exc:
+            self._record_read_cancel(exc)
+            raise
         return frame.rechunk() if rechunk else frame
 
     def pl_lazy(self, batch_size: int | None = None) -> pl.LazyFrame:
@@ -313,7 +416,7 @@ class Result:
         Return a Polars LazyFrame that iterates over record batches lazily.
 
         Args:
-            batch_size: Batch size for streaming (only used if Result has a table)
+            batch_size: Maximum rows per streamed batch, as arrow_reader() takes it
 
         Returns:
             pl.LazyFrame that streams batches when collected
@@ -397,9 +500,12 @@ class Result:
 
         return register_io_source(source_generator, schema=polars_schema)  # type: ignore
 
+    def _set_cancelled(self, exc: BaseException) -> None:
+        self._cancelled = exc
+
     def _raise_if_cancelled(self) -> None:
-        """Re-raise a cancellation this result already reported, as duckdb 2.0 does"""
-        exc = self._cancelled
+        """Re-raise a cancellation or failed submission this result already reported, as duckdb 2.0 does"""
+        exc = self._cancelled or self._failed
         if exc is not None:
             # A fresh instance, so concurrent callers never share one traceback.
             raise type(exc)(*exc.args)
@@ -408,7 +514,9 @@ class Result:
         """Fetch up to `size` rows from the current offset, or all remaining rows if size is None"""
         self._raise_if_cancelled()
         if self._capi is not None or self._rows_iter is not None:
-            return self._fetch_rows_streaming(size)
+            rows = self._fetch_rows_streaming(size)
+            if rows is not None:
+                return rows
 
         table = self.arrow_table()
 
@@ -437,22 +545,28 @@ class Result:
         self._offset = end_idx
         return rows
 
-    def _fetch_rows_streaming(self, size: int | None) -> list[tuple[Any, ...]]:
-        """Step the engine's own row generator, so fetchmany never materializes the result"""
+    def _fetch_rows_streaming(self, size: int | None) -> list[tuple[Any, ...]] | None:
+        """Step the engine's own row generator, so fetchmany never materializes the result; None when an Arrow consumer took it"""
         with self._result_lock:
             self._raise_if_cancelled()
             capi = self._capi
             try:
                 if self._rows_iter is None and capi is not None:
                     self._claim("a row fetch")
+                    self._submit_rows(capi)
                     self._deferred_schema()
-                    self._rows_iter = capi.rows()
+                    # Flattened by chunk in C; islice still takes rows one at a time, so fetchmany never over-reads.
+                    row_chunks = capi.row_chunks()
+                    self._row_chunks = row_chunks
+                    self._rows_iter = itertools.chain.from_iterable(row_chunks)
                     self._capi = None
 
                 rows_iter = self._rows_iter
                 if rows_iter is None:
-                    # close() ran between _fetch_rows' check and taking the lock
-                    return []
+                    if self._released:
+                        return []
+                    # An Arrow consumer took the result between _fetch_rows' check and the lock.
+                    return None
                 if size is None:
                     return list(rows_iter)
                 return list(itertools.islice(rows_iter, size))
@@ -461,6 +575,10 @@ class Result:
                 logger.debug("row fetch cancelled: %s", exc)
                 self._cancelled = exc
                 raise
+            finally:
+                if self._rows_iter is not None:
+                    # Submitted, so the scan holds the slot and the data= names are no longer needed.
+                    self._release_data()
 
     def fetchall(self) -> list[tuple[Any, ...]]:
         """Fetch all remaining rows from current cursor position"""
@@ -476,15 +594,31 @@ class Result:
         return self._fetch_rows(size)
 
     def _deferred_schema(self) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
-        """Column names and DuckDB type names while the conversion is deferred, else None"""
-        if self._capi is not None:
-            self._schema = (tuple(self._capi.columns), tuple(self._capi.column_types))
+        """Column names and DuckDB type names while the result is unconsumed, else None; call under _result_lock"""
+        capi = self._capi
+        if capi is not None:
+            if not capi.schema_known:
+                # Bind could not supply the schema, so reading it submits the statement as rows.
+                self._submit_rows(capi)
+            self._schema = (tuple(capi.columns), tuple(capi.column_types))
         return self._schema
+
+    def _bound_schema(self) -> None:
+        """Keep the schema an Arrow consumer can read without submitting as rows; call under _result_lock"""
+        capi = self._capi
+        if capi is not None and capi.schema_known:
+            self._schema = (tuple(capi.columns), tuple(capi.column_types))
+
+    def _locked_schema(self) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+        with self._result_lock:
+            if self._failed is not None:
+                self._raise_if_cancelled()
+            return self._deferred_schema()
 
     @property
     def description(self) -> list[tuple[Any, ...]]:
         """DB-API 2.0 column description: 7-item tuples (name, type_code, display_size, internal_size, precision, scale, null_ok)"""
-        names_types = self._deferred_schema()
+        names_types = self._locked_schema()
         if names_types is not None:
             return [(name, type_name, None, None, None, None, None) for name, type_name in zip(*names_types, strict=True)]
         return [(field.name, field.type, None, None, None, None, None) for field in self.arrow_table().schema]
@@ -499,7 +633,7 @@ class Result:
     @property
     def columns(self) -> list[str]:
         """Return column names"""
-        names_types = self._deferred_schema()
+        names_types = self._locked_schema()
         if names_types is not None:
             return list(names_types[0])
 
@@ -508,12 +642,15 @@ class Result:
     def _release(self) -> None:
         """Drop the engine result and its registry borrow now"""
         with self._result_lock:
-            rows_iter, self._rows_iter = self._rows_iter, None
+            self._released = True
+            row_chunks, self._row_chunks = self._row_chunks, None
+            self._rows_iter = None
             capi, self._capi = self._capi, None
-        if rows_iter is not None:
-            rows_iter.close()
+        if row_chunks is not None:
+            row_chunks.close()
         if capi is not None:
             capi.close()
+        self._release_data()
 
     # Aliases for compatibility w/ duckdb API
     arrow = arrow_reader

@@ -149,3 +149,56 @@ def test_concurrent_fetchmany_on_a_cancelled_result_all_raise():
         assert _interrupt_until_stopped(conn, threads), "interrupt did not stop every fetchmany caller"
         outcomes = [out[0] for _, out in started]
         assert all(isinstance(o, QueryCancelled) for o in outcomes), f"outcomes: {outcomes!r}"
+
+
+def _wait_until_running(conn, thread, deadline=10.0):
+    """Wait until the consumer has submitted and the engine reports progress, so the interrupt lands mid-read"""
+    end = time.monotonic() + deadline
+    while thread.is_alive() and time.monotonic() < end:
+        if conn.query_progress() is not None:
+            return True
+        time.sleep(0.01)
+    return False
+
+
+ARROW_CONSUMERS = {
+    "arrow_table": lambda r: r.arrow_table(),
+    "arrow_reader": lambda r: r.arrow_reader().read_all(),
+}
+
+
+@pytest.mark.parametrize("threads", [1, 4])
+@pytest.mark.parametrize("consumer", list(ARROW_CONSUMERS))
+def test_an_interrupt_during_an_arrow_read_raises_query_cancelled_and_sticks(consumer, threads):
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect(config={"threads": str(threads)}) as conn:
+        result = conn.execute(STREAM)._last_result_get()
+        thread, out = _in_thread(lambda: ARROW_CONSUMERS[consumer](result))
+        running = _wait_until_running(conn, thread)
+        assert _interrupt_until_stopped(conn, [thread]), "interrupt did not stop the Arrow read"
+        first = out[0]
+        assert isinstance(first, QueryCancelled), f"{consumer} gave {first!r} (progress seen: {running})"
+        assert str(first) == INTERRUPTED, f"got {str(first)!r}"
+        _assert_raises_again(REPEATS["fetchall"], result, first)
+        _assert_raises_again(ARROW_CONSUMERS[consumer], result, first)
+        assert conn.execute("select 42").fetchall() == [(42,)]
+
+
+@pytest.mark.parametrize("consumer", list(ARROW_CONSUMERS))
+def test_a_timeout_during_an_arrow_read_raises_query_cancelled_and_sticks(consumer):
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect(config={"threads": "1"}) as conn:
+        result, exc = _timed_out_result(conn, ARROW_CONSUMERS[consumer])
+        assert str(exc) == TIMED_OUT, f"got {str(exc)!r}"
+        _assert_raises_again(REPEATS["fetchall"], result, exc)
+        _assert_raises_again(ARROW_CONSUMERS[consumer], result, exc)
+
+
+def test_a_timeout_during_pl_raises_query_cancelled_and_sticks():
+    """pl() cannot be interrupted from Python on a GIL build, because polars holds the GIL while reading; a timeout can"""
+    pytest.importorskip("polars")
+    with bareduckdb.connect(config={"threads": "1"}) as conn:
+        result, exc = _timed_out_result(conn, lambda r: r.pl())
+        assert str(exc) == TIMED_OUT, f"got {str(exc)!r}"
+        _assert_raises_again(REPEATS["fetchall"], result, exc)
+        _assert_raises_again(lambda r: r.pl(), result, exc)

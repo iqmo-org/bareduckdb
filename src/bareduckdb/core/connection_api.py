@@ -145,8 +145,8 @@ class ConnectionAPI(ConnectionBase):
         """Run query. batch_size is a maximum on the rows in one Arrow batch - 0 selects DuckDB's default"""
         last, self._last_result = self._last_result, None
         if last is not None:
-            last._release_data()
-        # Dropped here, not at return: a live engine result would refuse the next statement.
+            # Closed here, as duckdb-python closes its previous result: a live one would refuse the next statement.
+            last._release()
         del last
         if output_type is None and self._default_output_type == "arrow_capsule":
             call_output_type = None

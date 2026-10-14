@@ -11,7 +11,7 @@ import time
 import weakref
 from typing import TYPE_CHECKING
 
-from ..capi.arrow_export import cancel_translating_reader, cancelled_from
+from ..capi.arrow_export import arrow_result_of, cancel_translating_reader, cancelled_from
 from ..capi.impl.connection import CApiConnectionImpl as ConnectionImpl  # type: ignore[import-untyped]
 from ..capi.parse_cache import DEFAULT_PARSE_CACHE_SIZE, ParseCache
 
@@ -65,10 +65,14 @@ class _Deferred:
         """Submit the pending result as Arrow and return the ArrowResult"""
         conn = self._conn_ref()
         if conn is None:
-            from ..capi.arrow_export import arrow_result_of
-
             return arrow_result_of(capi, batch_rows)
         return conn._submit_deferred(capi, self.interrupts, arrow=True, batch_rows=batch_rows)
+
+    def track(self, arrow_result: Any) -> None:
+        """Hand an exported stream to the connection, so its next statement closes it"""
+        conn = self._conn_ref()
+        if conn is not None:
+            conn._track_stream(arrow_result)
 
     def submit_rows(self, capi: Any) -> None:
         """Submit the pending result as rows; a no-op for one already submitted"""
@@ -180,7 +184,7 @@ class ConnectionBase:
 
         Args:
             database: Path to database file, or None for in-memory
-            config: Dictionary of configuration options (e.g., {'threads': '4', 'memory_limit': '1GB'})
+            config: Configuration options; values are stringified as duckdb-python does (e.g., {'threads': 4})
             read_only: Whether to open database in read-only mode
             arrow_table_collector: Arrow collection mode ("arrow" or "stream")
             init_sql: SQL to run when creating the connection
@@ -204,6 +208,7 @@ class ConnectionBase:
             self.arrow_table_collector = arrow_table_collector
             self._interrupts = 0
             self._interrupts_lock = threading.Lock()
+            self._live_streams: list[Any] = []
             if parse_cache_size:
                 self._impl.install_parse_cache(ParseCache(parse_cache_size))
 
@@ -212,10 +217,12 @@ class ConnectionBase:
             logger.debug("Created cursor connection sharing database: %s", self._database_path)
         else:
             # Normal connection creation
+            # duckdb-python stringifies every value and lets DuckDB cast it: 4 -> '4', False -> 'False'
+            options = {str(key): str(value) for key, value in config.items()} if config else None
             with ConnectionBase._DUCKDB_INIT_LOCK:  # duckdb connection init is not thread-safe
                 self._impl: Any = ConnectionImpl(
                     database,
-                    config=config,
+                    config=options,
                     read_only=read_only,
                 )  # type: ignore[assignment]  # Cython module
 
@@ -228,6 +235,7 @@ class ConnectionBase:
             self.arrow_table_collector = arrow_table_collector
             self._interrupts = 0
             self._interrupts_lock = threading.Lock()
+            self._live_streams: list[Any] = []
             if parse_cache_size:
                 self._impl.install_parse_cache(ParseCache(parse_cache_size))
 
@@ -409,6 +417,8 @@ class ConnectionBase:
                         self._register_arrow(name, data_obj)
                         _data_to_unregister.append(name)
 
+                # After data=, which may drain a reader this connection produced, and before the statement.
+                self._close_live_streams()
                 t_exec_start = time.perf_counter()
                 # Read before execution: an interrupt from here on is one the deferred result must honour.
                 interrupts = self._interrupts
@@ -424,7 +434,9 @@ class ConnectionBase:
                     return base_result
 
                 t_convert_start = time.perf_counter()
-                capsule = base_result.__arrow_c_stream__()
+                arrow_result = arrow_result_of(base_result, getattr(base_result, "batch_rows", 0) or 0)
+                capsule = arrow_result.__arrow_c_stream__()
+                self._track_stream(arrow_result)
                 if output_type == "arrow_table":
                     try:
                         import pyarrow as pa  # type: ignore[import]
@@ -456,7 +468,6 @@ class ConnectionBase:
 
     def _submit_deferred(self, capi: Any, interrupts: int, arrow: bool, batch_rows: int = 0) -> Any:
         """Submit a pending result as rows or as Arrow, as its first consumer; return what to read"""
-        from ..capi.arrow_export import arrow_result_of
         from ..capi.impl.errors import QueryCancelled  # type: ignore[import-untyped]
 
         with self._lock:
@@ -471,10 +482,27 @@ class ConnectionBase:
                 # Submission binds again, so a registration another query spent must be live.
                 if self._uncached_sources:
                     self._rearm_uncached()
+                self._close_live_streams()
             if arrow:
                 return arrow_result_of(capi, batch_rows)
             capi.submit()
             return capi
+
+    def _track_stream(self, arrow_result: Any) -> None:
+        """Keep an exported Arrow stream's lease, so this connection's next statement closes it"""
+        lease = getattr(arrow_result, "lease", None)
+        if lease is None:
+            return
+        with self._lock:
+            self._live_streams.append(lease)
+
+    def _close_live_streams(self) -> None:
+        """Close every Arrow stream this connection exported, as duckdb-python closes its previous result; call under self._lock"""
+        leases, self._live_streams = self._live_streams, []
+        if leases:
+            logger.debug("closing %d Arrow stream(s) before the next statement", len(leases))
+        for lease in leases:
+            lease.revoke()
 
     def _run_to_end(self, query: str) -> None:
         """Run a query for its effect, including a SELECT, which would otherwise stay pending"""

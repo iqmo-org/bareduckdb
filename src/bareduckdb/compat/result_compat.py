@@ -236,7 +236,10 @@ class Result:
         finally:
             # The Arrow result is bound by now, so the names it read may go.
             self._release_data()
-        return arrow.__arrow_c_stream__(requested_schema)
+        capsule = arrow.__arrow_c_stream__(requested_schema)
+        if self._deferred is not None:
+            self._deferred.track(arrow)
+        return capsule
 
     def _submit_rows(self, capi: Any) -> None:
         """Submit a pending engine result as rows, recording a cancel or failure it reports; call under _result_lock"""

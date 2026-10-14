@@ -424,10 +424,10 @@ cdef object _execute_bound(
             py_result = _execute_cached(conn, cached, parameters, batch_rows, arrow, reg, transferred)
             cache.put(query, cached, epoch)
             return py_result
-        # A group led by ALTER, CREATE, INSERT or COPY runs here as rows for its effect, on either path.
+        # A group led by ALTER, CREATE, INSERT or COPY runs here for its effect, as Arrow when asked for.
         effect_group = statement_type == DUCKDB_V2_STATEMENT_TYPE_MULTI and not _group_is_query(current)
-        if arrow and not effect_group:
-            return _execute_arrow_last(conn, current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred)
+        if arrow:
+            return _execute_arrow_last(conn, current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred, effect_group)
         if statement_type == DUCKDB_V2_STATEMENT_TYPE_SELECT or statement_type == DUCKDB_V2_STATEMENT_TYPE_EXPLAIN:
             py_result = _defer_bound(conn, &current, parameters, batch_rows, reg, transferred)
             if py_result is not None:
@@ -468,8 +468,13 @@ cdef object _execute_arrow_last(
     object batch_rows,
     bd_registry *reg,
     bint *transferred,
+    bint effect_group=False,
 ):
-    """Execute the last statement as an Arrow result, moving the registry borrow onto it"""
+    """Execute the last statement as an Arrow result, moving the registry borrow onto it.
+
+    An effect group is stepped here until its metadata exists, as the row path does, so its
+    fragments run at execute() and the checks below apply to its last statement.
+    """
     cdef duckdb_v2_arrow_result_handle handle = NULL
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
@@ -487,12 +492,16 @@ cdef object _execute_arrow_last(
 
     with nogil:
         rc = duckdb_v2_arrow_result_get_result_type(out._handle, &result_type, &err)
+    if effect_group:
+        rc = _arrow_step_for_metadata(out, rc, &result_type, &err)
     if rc != DUCKDB_V2_ERROR_NONE:
         # A statement expanding into a group (PIVOT) has no metadata until the stream steps it.
         if err != NULL:
             duckdb_v2_error_info_destroy(&err)
     elif result_type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT:
         # Run it here for its effect, as the row path does; the export then carries the schema only.
+        if out._first.release != NULL:
+            out._first.release(&out._first)
         with nogil:
             rc = duckdb_v2_arrow_result_drain(out._handle, &rows_changed, &err)
         check_v2(rc, err, "duckdb_v2_arrow_result_drain")
@@ -507,12 +516,52 @@ cdef object _execute_arrow_last(
     return out
 
 
+cdef duckdb_v2_error_t _arrow_step_for_metadata(
+    ArrowResult out,
+    duckdb_v2_error_t rc,
+    duckdb_v2_result_type_t *result_type,
+    duckdb_v2_error_info_handle *err,
+) except *:
+    """Step a group's Arrow result while it reports no metadata, keeping the first array; return the last rc"""
+    cdef duckdb_v2_result_step_status_t status = DUCKDB_V2_RESULT_STEP_STATUS_WAITING
+    cdef idx_t steps = 0
+
+    # INPUT_INVALID is RequireMetadata, as in CApiResult._ensure_schema.
+    while rc == DUCKDB_V2_ERROR_INPUT_INVALID and out._first.release == NULL:
+        if err[0] != NULL:
+            with nogil:
+                duckdb_v2_error_info_destroy(err)
+            err[0] = NULL
+        if status != DUCKDB_V2_RESULT_STEP_STATUS_WAITING:
+            raise RuntimeError("the Arrow result reports no metadata and has no further fragment to step for it")
+        steps += 1
+        with nogil:
+            rc = duckdb_v2_arrow_result_step(out._handle, &out._first, &status, err)
+        check_v2(rc, err[0], "duckdb_v2_arrow_result_step")
+        if status == DUCKDB_V2_RESULT_STEP_STATUS_CANCELLED:
+            raise QueryCancelled("INTERRUPT Error: Interrupted!")
+        if status == DUCKDB_V2_RESULT_STEP_STATUS_WAITING:
+            with nogil:
+                rc = duckdb_v2_arrow_result_wait(out._handle, err)
+            check_v2(rc, err[0], "duckdb_v2_arrow_result_wait")
+            status = DUCKDB_V2_RESULT_STEP_STATUS_WAITING
+        elif status == DUCKDB_V2_RESULT_STEP_STATUS_CHUNK:
+            # Another step could overwrite the kept array; the metadata exists once rows do.
+            status = DUCKDB_V2_RESULT_STEP_STATUS_WAITING
+        with nogil:
+            rc = duckdb_v2_arrow_result_get_result_type(out._handle, result_type, err)
+    _logger.debug("effect group stepped %d times for its Arrow metadata", steps)
+    return rc
+
+
 cdef void _arrow_run_to_first_array(ArrowResult out) except *:
     """Step an Arrow result until its first array exists or it finishes, keeping the array"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_result_step_status_t status = DUCKDB_V2_RESULT_STEP_STATUS_WAITING
 
+    if out._first.release != NULL:
+        return
     while status == DUCKDB_V2_RESULT_STEP_STATUS_WAITING:
         with nogil:
             rc = duckdb_v2_arrow_result_step(out._handle, &out._first, &status, &err)
@@ -1838,7 +1887,13 @@ cdef class ArrowResult:
         self._reg = NULL
         self._borrow = 0
         self._consumed = 0
+        self._lease = None
         memset(&self._first, 0, sizeof(ArrowArray))
+
+    @property
+    def lease(self):
+        """The exported stream's StreamLease, which can close it early; None until exported"""
+        return self._lease
 
     def __arrow_c_stream__(self, requested_schema=None):
         """Export this result as an Arrow C Stream capsule, consuming it.
@@ -1855,7 +1910,8 @@ cdef class ArrowResult:
         if bdv2_cas(&self._borrow, 1, 0):
             reg = self._reg
         try:
-            return export_arrow_result(&handle, &reg, &self._first)
+            capsule, self._lease = export_arrow_result(&handle, &reg, &self._first)
+            return capsule
         finally:
             # Set only when the export failed: the stream took neither the borrow nor the array.
             if self._first.release != NULL:

@@ -178,3 +178,77 @@ def test_an_unfetched_returning_over_a_dynamic_pivot_keeps_its_write():
         conn.execute("insert into dst select * from (pivot src on k using sum(v)) returning *")
         got = conn.execute("select count(*) from dst").fetchall()
         assert got == [(1,)], got
+
+
+_PIVOT_RETURNING = "insert into dst select * from (pivot src on k using sum(v)) returning *"
+
+
+def _pivot_tables(conn):
+    conn.execute("create table src as select * from (values ('a', 1), ('b', 2)) v(k, v)")
+    conn.execute("create table dst(a int128, b int128)")
+
+
+def test_an_arrow_table_returning_over_a_dynamic_pivot_is_exported_and_kept():
+    """Asked for up front, the group is submitted as Arrow; read to its end, the group's COMMIT runs"""
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        _pivot_tables(conn)
+        table = conn.execute(_PIVOT_RETURNING, output_type="arrow_table").arrow_table()
+        assert table.to_pylist() == [{"a": 1, "b": 2}], table
+        assert conn.execute("select count(*) from dst").fetchall() == [(1,)]
+
+
+def test_an_arrow_reader_returning_over_a_dynamic_pivot_read_to_its_end_is_kept():
+    pa = pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        _pivot_tables(conn)
+        reader = conn.execute(_PIVOT_RETURNING, output_type="arrow_reader").arrow_reader()
+        table = pa.RecordBatchReader.from_stream(reader).read_all()
+        assert table.to_pylist() == [{"a": 1, "b": 2}], table
+        assert conn.execute("select count(*) from dst").fetchall() == [(1,)]
+
+
+def test_an_arrow_returning_over_a_dynamic_pivot_with_no_rows_exports_its_schema():
+    pa = pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        _pivot_tables(conn)
+        sql = "insert into dst select * from (pivot src on k using sum(v)) where a > 100 returning *"
+        table = conn.execute(sql, output_type="arrow_table").arrow_table()
+        assert table.num_rows == 0 and table.column_names == ["a", "b"], table
+        assert conn.execute("select count(*) from dst").fetchall() == [(0,)]
+
+
+def test_an_effect_group_asked_for_as_arrow_runs_at_execute():
+    """A group with no rows (an expanding ALTER) still runs at execute() on the Arrow path"""
+    pa = pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        conn.execute("create table t(i int)")
+        conn.execute("insert into t values (1)")
+        conn.execute("alter table t add column j int default (random() * 0)", output_type="arrow_reader")
+        assert conn.execute("select * from t").fetchall() == [(1, 0)]
+
+
+def test_a_returning_over_a_dynamic_pivot_cannot_become_arrow_after_a_plain_execute():
+    """It ran as rows at execute(), and DuckDB has no row-to-Arrow conversion"""
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        _pivot_tables(conn)
+        conn.execute(_PIVOT_RETURNING)
+        with pytest.raises(RuntimeError, match="already ran as a row result"):
+            conn.arrow_table()
+        assert conn.fetchall() == [(1, 2)]
+        assert conn.execute("select count(*) from dst").fetchall() == [(1,)]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="""As on the row path: the group's COMMIT runs only after the last array is read, so an unread
+    reader is rolled back by the next statement. Running it to its end at execute() would hold every array.""",
+)
+def test_an_unread_arrow_reader_returning_over_a_dynamic_pivot_keeps_its_write():
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        _pivot_tables(conn)
+        conn.execute(_PIVOT_RETURNING, output_type="arrow_reader")
+        got = conn.execute("select count(*) from dst").fetchall()
+        assert got == [(1,)], got

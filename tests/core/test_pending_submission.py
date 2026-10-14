@@ -65,14 +65,19 @@ def test_a_failed_submission_raises_again_on_every_later_access():
 
 @pytest.mark.parallel_threads(1)
 def test_a_submission_refused_for_a_live_result_raises_again_on_every_later_access():
-    """A partially read result holds the connection, so the next query's submission is refused"""
+    """A partially read raw engine result holds the connection, so the next query's submission is refused.
+
+    execute() closes the previous compat result, as duckdb-python does, so the live result here is one
+    the raw layer handed out, which no connection-level call closes.
+    """
     proc = _run_isolated(
         """
         import bareduckdb
 
         conn = bareduckdb.connect()
-        held = conn.execute("select * from range(100000)")._last_result_get()
-        held.fetchone()
+        held = conn._call("select * from range(100000)", output_type=None)
+        rows = held.rows()
+        next(rows)
         result = conn.execute("select 2 as x")._last_result_get()
         try:
             result.fetchall()

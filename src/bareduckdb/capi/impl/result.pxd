@@ -90,5 +90,7 @@ cdef class ArrowResult:
     cdef long _consumed
     # The array a row-returning write was stepped to at execute(); release is NULL when none.
     cdef ArrowArray _first
+    # Set by the export: closes the stream when the connection runs its next statement.
+    cdef object _lease
 
     cdef void _destroy(self) noexcept

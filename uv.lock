@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15' and platform_machine == 'arm64' and sys_platform == 'darwin'",
@@ -1514,7 +1514,7 @@ wheels = [
 
 [[package]]
 name = "vortex-data"
-version = "0.86.1"
+version = "0.88.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyarrow" },
@@ -1522,8 +1522,8 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/84/5d/ea8f1c8f0808c4e649a0c1947f2441e0adfb58f34eba018305f274a1cf5a/vortex_data-0.86.1-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:d4ef1801a1985dad7279b69d529257b441110cd3dd99f158385842b9fc71b799", size = 43546582, upload-time = "2026-09-11T13:40:41.889Z" },
-    { url = "https://files.pythonhosted.org/packages/41/76/6d6f428284f6d2d80b3a3344896b088576c6d71e8e3f6eeb240f4e965211/vortex_data-0.86.1-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:abe0a8f84e74988c390505af8bc05da94dc5e8235d8155e4ca4ef7b48038784b", size = 43708712, upload-time = "2026-09-11T13:40:49.052Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/86/ff23a7720b9d58637048e94f8111c6235462c273734de36f2a7970300cb8/vortex_data-0.88.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:1fad02e0d1d77d5b46a8d113540188001628af05183cac730896ea4e982b70e4", size = 44001355, upload-time = "2026-10-08T15:52:05.57Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/39/45ecd24ad6489cf7ca27af9731dae995a36f6d45a200415ab59d1103aa6a/vortex_data-0.88.0-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e00b80d2365d6a97049cb77a8a8bb37bfe10bdb2f81aeb8e793573fec79b5994", size = 44263572, upload-time = "2026-10-08T15:52:12.812Z" },
 ]
 
 [[package]]

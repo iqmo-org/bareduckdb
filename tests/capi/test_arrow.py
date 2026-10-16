@@ -2,6 +2,7 @@
 
 import gc
 import os
+import sys
 import threading
 import time
 
@@ -524,6 +525,10 @@ def test_capsule_is_a_pycapsule(make_conn):
 
 
 @pytest.mark.iterations(1)
+@pytest.mark.skipif(
+    sys.implementation.name == "graalpy",
+    reason="relies on refcounting: GraalPy finalizes the dropped capsule later, so the next query sees an open result",
+)
 def test_capsule_dropped_unconsumed_does_not_crash(make_conn):
     conn = make_conn()
     for _ in range(200):

@@ -91,8 +91,8 @@ def test_a_submission_refused_for_a_live_result_raises_again_on_every_later_acce
     _assert_clean_exit(proc)
 
 
-def test_description_does_not_submit_a_bound_select():
-    """Bind supplies a SELECT's schema, so reading it leaves the result free to become Arrow"""
+def test_description_first_then_arrow_table_returns_the_rows():
+    """Reading description submits a SELECT as rows, and arrow_table() then converts those rows"""
     pytest.importorskip("pyarrow")
     with bareduckdb.connect() as conn:
         result = conn.execute("select 1 as a, 'x' as b")._last_result_get()

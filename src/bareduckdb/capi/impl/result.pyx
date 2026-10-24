@@ -222,8 +222,8 @@ _logger = logging.getLogger("bareduckdb.capi.result")
 ROWS_NOT_ARROW = " ".join("""
     arrow export: this statement already ran as a row result, and DuckDB cannot convert a row
     result to Arrow. A statement other than SELECT runs at execute() for its effect, and reading
-    the columns of a statement whose types bind cannot resolve submits it as rows. Fetch its
-    rows, or pass output_type='arrow_table' to execute()
+    the columns of a SELECT before its rows submits it as rows. Fetch its rows, or pass
+    output_type='arrow_table' to execute()
 """.split())
 
 # CApiResult._pending: parsed and unsubmitted, being submitted by one consumer, or neither.

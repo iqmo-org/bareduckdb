@@ -321,10 +321,19 @@ Defaults follow DuckDB, with these differences.
 
 - `execute()` does not run a SELECT. The first `fetchall()`, `df()`, `pl()` or similar runs
   it. A SELECT you never read never runs.
-- An error in a SELECT, such as an unknown column, appears when you read the result, not at
-  `execute()`. A wrong number of parameters still fails at `execute()`.
-- A result can be read once, by one method. Calling `pl()` and then `fetchall()` raises.
-  `arrow_table()` is the exception: you can still fetch rows after it.
+- A SELECT is checked when you read it, not at `execute()`. An error such as an unknown column
+  appears at the first read. A wrong number of parameters still fails at `execute()`.
+- Reading `description` before any other read runs a SELECT as rows. A later `pl()` or
+  `arrow_table()` then builds the table from those rows.
+- A result can be read once, by one method. Calling `pl()` and then `fetchall()` raises, and
+  the error names the first method. `arrow_table()` and `df()` are the exceptions: you can still
+  fetch rows after them.
+- After an Arrow read, `description` derives the types from the Arrow schema. Eight types get a
+  different name: HUGEINT, UHUGEINT, TIMETZ, UUID, BIT, JSON, ENUM and TUPLE. With
+  `SET arrow_lossless_conversion = true`, only ENUM and TUPLE differ.
+- Parameters are typed from the Python value. An int that fits in 32 bits is BIGINT, not INTEGER. An int of
+  2^63 or more is HUGEINT, not UBIGINT. A dict is a MAP, not a STRUCT, so it cannot be inserted
+  into a STRUCT column. A nested list that mixes types, such as `[[1], ['a']]`, raises.
 - A registered name can appear once per query. A self-join, or a `UNION ALL` of the name with
   itself, raises. See "Use a registration twice in one query".
 - Registered names do not appear in `SHOW TABLES`. A real table with the same name wins.
@@ -337,9 +346,9 @@ Defaults follow DuckDB, with these differences.
   C API 2.0 limitations".
 - PRAGMA, CALL and `RETURNING` statements run at `execute()`. Reading them as Arrow (`df()`,
   `pl()`, `arrow_table()`) builds the table from the fetched rows, which needs pyarrow and is
-  slower. Some values cannot be rebuilt exactly, such as INTERVAL, BIT, nanosecond timestamps
-  and infinite dates. Those raise, and `fetchall()` still works. To get Arrow for them, pass
-  `output_type="arrow_table"` to `execute()`.
+  slower. Some values cannot be rebuilt exactly, such as INTERVAL, BIT, nanosecond timestamps,
+  infinite dates and the time 24:00:00. Those raise, and `fetchall()` still works. To get Arrow
+  for them, pass `output_type="arrow_table"` to `execute()`.
 
 ### Not implemented
 
@@ -352,16 +361,21 @@ Defaults follow DuckDB, with these differences.
   [narwhals](https://github.com/narwhals-dev/narwhals).
 - Python scalar UDFs and fsspec filesystems.
 - Filter pushdown into registered sources.
+- Some Arrow tables built from rows (see the PRAGMA bullet above). An ENUM column's dictionary
+  holds only the values present. TIMETZ with `arrow_lossless_conversion` and a MAP with a nested
+  key raise. Memory use is about 2.7 times DuckDB's.
 
 ### DuckDB C API 2.0 limitations
 
 - **The v2 C API is unstable in DuckDB 2.0.0.** 
-- **Rows cannot be converted to Arrow.** PRAGMA, CALL and `RETURNING` must go through Python -> Arrow. 
+- **Rows cannot be converted to Arrow.** PRAGMA, CALL and `RETURNING` must go through Python -> Arrow.
   ([#25801](https://github.com/duckdb/duckdb/pull/25801) removed the old one).
-- **VARIANT, UNION and GEOMETRY values cannot be read as rows.** `fetchall()` raises on them, including from `PRAGMA storage_info`. Read them as Arrow. See [#27570](https://github.com/duckdb/duckdb/issues/27570).
+- **An Arrow result has no DuckDB types.** `description` after an Arrow read is derived from
+  the Arrow schema. See "Differences from duckdb-python".
+- **VARIANT, UNION and GEOMETRY values cannot be read as rows.** `fetchall()` raises on them. See [#27570](https://github.com/duckdb/duckdb/issues/27570).
+- **A PRAGMA or CALL that returns VARIANT raises on every read**, including `PRAGMA storage_info`. Use the workarounds below.
 - **Some VARIANT contents cannot be exported to Arrow**: INTERVAL, TIMETZ, BIT, TIMESTAMP_S, TIMESTAMP_MS, and integers larger than int64.
 - **v2 C API does not have support appending** Use `register()` with `INSERT ... SELECT`, or `INSERT` with parameters.
-- **Checking a query can run part of it.** Checking `range(nextval('s'))` advances the sequence. A SELECT will error when it is consumed / read.
 
 Workarounds:
 

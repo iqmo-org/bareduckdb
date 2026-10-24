@@ -14,8 +14,8 @@ from . import _duckdb_fetch as fetch
 logger = logging.getLogger(__name__)
 
 
-DUCKDB_CHANNEL = "preview"
-DUCKDB_VERSION = "latest"
+DUCKDB_CHANNEL = "stable"
+DUCKDB_VERSION = fetch.STABLE_VERSION
 
 ENV_LIB = "BAREDUCKDB_DUCKDB_LIB"
 ENV_NO_DOWNLOAD = "BAREDUCKDB_NO_DOWNLOAD"

@@ -52,6 +52,8 @@ cdef class CApiResult:
     cdef long _pending
     # Drained at execute() because it returns no rows.
     cdef bint _drained
+    # The drain's changed-row count for a CHANGED_ROWS result, else -1.
+    cdef long long _rows_changed
     cdef duckdb_v2_schema_handle _schema
     cdef long _destroyed
     cdef long _consumed

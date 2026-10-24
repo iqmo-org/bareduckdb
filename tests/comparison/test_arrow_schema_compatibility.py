@@ -38,7 +38,7 @@ class TestArrowSchemaCompatibility:
         duck_conn = duckdb.connect(':memory:')
         duck_conn.execute("SET arrow_output_version='1.0'; SET produce_arrow_string_view=False")
         duck_result = duck_conn.execute(sql, params)
-        duck_arrow = duck_result.fetch_arrow_table()
+        duck_arrow = duck_result.to_arrow_table()
 
         assert str(bare_arrow.schema) == str(duck_arrow.schema), (
             f"Arrow schemas don't match!\n"

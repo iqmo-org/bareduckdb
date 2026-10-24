@@ -1,3 +1,4 @@
 # Source commit of external/duckdb from which duckdb_v2.h was vendored.
+# v2.0.0 release tag
 
-f8f3f4dcd954cea2613572e8cc40a8612698d232
+d54cbbe3df17e8e5ce68312f483b4155836112aa

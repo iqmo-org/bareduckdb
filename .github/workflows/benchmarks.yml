@@ -23,12 +23,12 @@ jobs:
           submodules: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7.0.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.12'
 
       - name: Install UV
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           cache-suffix: -benchmarks

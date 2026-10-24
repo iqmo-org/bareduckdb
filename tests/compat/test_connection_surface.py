@@ -91,11 +91,100 @@ def test_rowcount_of_an_empty_result_is_also_unknown():
         assert conn.rowcount == -1
 
 
-def test_rowcount_is_the_row_count_once_materialized():
+def test_rowcount_stays_unknown_once_materialized():
+    """duckdb 2.0 answers -1 for a query even after to_arrow_table()"""
     pytest.importorskip("pyarrow")
     with bareduckdb.connect(output_type="arrow_table") as conn:
         conn.execute("SELECT i FROM range(37) t(i)")
-        assert conn.rowcount == 37
+        assert conn.rowcount == -1
+    with bareduckdb.connect() as conn:
+        conn.execute("SELECT i FROM range(37) t(i)")
+        assert conn._last_result_get().arrow_table().num_rows == 37
+        assert conn.rowcount == -1
+
+
+@pytest.mark.parametrize(
+    ("sql", "changed"),
+    [
+        ("INSERT INTO t VALUES (1), (2), (3)", 3),
+        ("UPDATE t SET i = i + 10 WHERE i < 3", 2),
+        ("DELETE FROM t WHERE i = 3", 1),
+        ("DELETE FROM t WHERE i = 999", 0),
+        ("INSERT INTO t SELECT * FROM range(5)", 5),
+    ],
+)
+def test_rowcount_and_fetchall_report_the_changed_rows(sql, changed):
+    """duckdb 2.0: a plain INSERT, UPDATE or DELETE reports its count as rowcount and as one Count row"""
+    with bareduckdb.connect() as conn:
+        conn.execute("CREATE TABLE t(i INTEGER)")
+        conn.execute("INSERT INTO t VALUES (1), (2), (3)")
+        conn.execute(sql)
+        assert conn.rowcount == changed, conn.rowcount
+        assert conn.description == [("Count", "BIGINT", None, None, None, None, None)], conn.description
+        assert conn.fetchall() == [(changed,)]
+        assert conn.fetchall() == []
+        assert conn.rowcount == changed, conn.rowcount
+
+
+def test_the_count_row_reads_once_through_fetchone_and_fetchmany():
+    with bareduckdb.connect() as conn:
+        conn.execute("CREATE TABLE t(i INTEGER)")
+        conn.execute("INSERT INTO t VALUES (1), (2)")
+        assert conn.fetchone() == (2,)
+        assert conn.fetchone() is None
+        conn.execute("INSERT INTO t VALUES (1), (2)")
+        assert conn.fetchmany(5) == [(2,)]
+        assert conn.fetchmany(5) == []
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "CREATE TABLE u(i INTEGER)",
+        "INSERT INTO t VALUES (7), (8) RETURNING i",
+        "SELECT * FROM t",
+        "SET threads = 2",
+    ],
+)
+def test_rowcount_is_unknown_for_everything_else(sql):
+    """DDL, RETURNING, queries and settings report -1 in duckdb 2.0, and the next statement replaces a count"""
+    with bareduckdb.connect() as conn:
+        conn.execute("CREATE TABLE t(i INTEGER)")
+        conn.execute("INSERT INTO t VALUES (1), (2)")
+        assert conn.rowcount == 2
+        conn.execute(sql)
+        assert conn.rowcount == -1, conn.rowcount
+
+
+def test_returning_fetches_the_returned_rows_not_a_count():
+    with bareduckdb.connect() as conn:
+        conn.execute("CREATE TABLE t(i INTEGER)")
+        conn.execute("INSERT INTO t VALUES (7), (8) RETURNING i")
+        assert conn.fetchall() == [(7,), (8,)]
+        assert conn.rowcount == -1
+
+
+def test_rowcount_inside_a_transaction():
+    with bareduckdb.connect() as conn:
+        conn.execute("CREATE TABLE t(i INTEGER)")
+        conn.execute("BEGIN")
+        assert conn.rowcount == -1
+        conn.execute("INSERT INTO t VALUES (5), (6), (7), (8)")
+        assert conn.rowcount == 4
+        conn.execute("UPDATE t SET i = 0 WHERE i = 5")
+        assert conn.fetchall() == [(1,)]
+        conn.execute("COMMIT")
+        assert conn.rowcount == -1
+
+
+def test_a_cursor_reports_its_own_rowcount():
+    with bareduckdb.connect() as conn:
+        conn.execute("CREATE TABLE t(i INTEGER)")
+        conn.execute("INSERT INTO t VALUES (1)")
+        cur = conn.cursor()
+        cur.execute("INSERT INTO t VALUES (1), (2)")
+        assert cur.rowcount == 2
+        assert conn.rowcount == 1
 
 
 def test_result_columns_lists_the_names():

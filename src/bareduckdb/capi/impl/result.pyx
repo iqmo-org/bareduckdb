@@ -74,6 +74,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_RESULT_STEP_STATUS_CHUNK,
     DUCKDB_V2_RESULT_STEP_STATUS_FINISHED,
     DUCKDB_V2_RESULT_STEP_STATUS_WAITING,
+    DUCKDB_V2_RESULT_TYPE_CHANGED_ROWS,
     DUCKDB_V2_RESULT_TYPE_QUERY_RESULT,
     DUCKDB_V2_STATEMENT_TYPE_EXPLAIN,
     DUCKDB_V2_STATEMENT_TYPE_MULTI,
@@ -738,6 +739,8 @@ cdef object _execute_last(
                 rc = duckdb_v2_result_drain(current_result, &rows_changed, &err)
             check_v2(rc, err, "duckdb_v2_result_drain")
             py_result._drained = True
+            if result_type == DUCKDB_V2_RESULT_TYPE_CHANGED_ROWS:
+                py_result._rows_changed = <long long>rows_changed
         else:
             # A group runs as one query, so its row-returning write is retained like any other (#26314).
             py_result._run_to_first_chunk()
@@ -772,6 +775,9 @@ cdef object _execute_last(
     py_result._borrow = 1
     transferred[0] = True
     py_result._drained = drained
+    if drained and result_type == DUCKDB_V2_RESULT_TYPE_CHANGED_ROWS:
+        py_result._rows_changed = <long long>rows_changed
+    _logger.debug("result type %d drained: %s rows changed: %d", <int>result_type, drained, py_result._rows_changed)
     if materialize:
         py_result._run_to_first_chunk()
     return py_result
@@ -1471,6 +1477,7 @@ cdef class CApiResult:
         self._params = None
         self._pending = 0
         self._drained = False
+        self._rows_changed = -1
         self._schema = NULL
         self._destroyed = 0
         self._consumed = 0
@@ -1686,6 +1693,11 @@ cdef class CApiResult:
     def returns_rows(self):
         """False when the statement returned no rows and was drained at execute()"""
         return not self._drained
+
+    @property
+    def rows_changed(self):
+        """The changed-row count of an INSERT, UPDATE or DELETE without RETURNING, else None"""
+        return None if self._rows_changed < 0 else self._rows_changed
 
     @property
     def pending(self):
@@ -1969,6 +1981,7 @@ cdef list _decode_chunk(
     cdef duckdb_v2_logical_type_handle varchar_type = NULL
     cdef list columns = []
     cdef tuple decoder
+    cdef duckdb_v2_logical_type_id_t type_id
 
     with nogil:
         rc = duckdb_v2_data_chunk_get_size(chunk, &size, &err)
@@ -1986,10 +1999,13 @@ cdef list _decode_chunk(
                 rc = duckdb_v2_data_chunk_get_vector(chunk, col, &vector, &err)
             check_v2(rc, err, "duckdb_v2_data_chunk_get_vector")
             decoder = decoders[col]
-            if decoder[0] == "scalar" and _scalar_supported(decoder[1]):
-                columns.append(_decode_scalar_column(vector, size, decoder[1], decoder[2], col))
-            else:
-                columns.append([_decode_cell(vector, row, decoder, factory, &varchar_type) for row in range(size)])
+            if decoder[0] == "scalar":
+                # Through int: Cython's direct enum conversion leaves an unused variable on the limited API.
+                type_id = <duckdb_v2_logical_type_id_t><int>decoder[1]
+                if _scalar_supported(type_id):
+                    columns.append(_decode_scalar_column(vector, size, type_id, decoder[2], col))
+                    continue
+            columns.append([_decode_cell(vector, row, decoder, factory, &varchar_type) for row in range(size)])
     finally:
         if varchar_type != NULL:
             with nogil:
@@ -2093,7 +2109,7 @@ cdef object _decode_value(
         return None
 
     if kind == "scalar":
-        return _decode_scalar(value, decoder[1], decoder[2])
+        return _decode_scalar(value, <duckdb_v2_logical_type_id_t><int>decoder[1], decoder[2])
 
     if kind == "list" or kind == "array":
         child_decoder = decoder[1]

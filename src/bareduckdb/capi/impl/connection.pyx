@@ -1628,7 +1628,8 @@ cdef class CApiConnectionImpl:
         self.parse_cache = None
 
     def __init__(self, database=None, config=None, read_only=False):
-        """Open a database under the shared environment and connect to it"""
+        # Opens a database under the shared environment and connects to it. A comment, not a
+        # docstring: the limited API cannot attach a docstring to a slot, so Cython leaves it unused.
         cdef duckdb_v2_environment_handle env
         cdef duckdb_v2_instance_handle db = NULL
         cdef duckdb_v2_connection_handle conn = NULL

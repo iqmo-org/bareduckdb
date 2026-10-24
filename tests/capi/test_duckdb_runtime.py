@@ -50,6 +50,14 @@ def test_preview_url_carries_the_branch():
     assert "/latest/" not in url
 
 
+def test_default_is_the_pinned_stable_release():
+    """The runtime fetches the same pinned release the build does, as the release tarball"""
+    assert rt.DUCKDB_CHANNEL == "stable"
+    assert rt.DUCKDB_VERSION == fetch.STABLE_VERSION
+    url = rt.artifact_url(rt.DUCKDB_CHANNEL, rt.DUCKDB_VERSION, "linux-amd64")
+    assert url == f"https://install.duckdb.org/{fetch.STABLE_VERSION}/duckdb-shared-libs-linux-amd64.tar.gz", url
+
+
 def test_env_var_directory_wins_over_cache(tmp_path, monkeypatch):
     env_dir = tmp_path / "env_lib"
     env_lib = _touch_lib(env_dir)

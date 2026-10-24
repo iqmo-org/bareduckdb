@@ -607,9 +607,10 @@ def test_fetch_roundtrip(case):
 
 _ROW_ORACLE_DIVERGENCES = {
     "timestamptz_ns": (
-        "the official client's catalog has no TIMESTAMPTZ_NS type, so it cannot run the query "
-        "at all: 'Catalog Error: Type with name TIMESTAMPTZ_NS does not exist'. Not a value "
-        "disagreement; drop this entry once the oracle wheel carries the type"
+        "the official 2.0 client has the type, but its fetchall() of a TZ-aware timestamp "
+        "imports pytz, which is in no dependency group, so the oracle raises 'Required module "
+        "pytz failed to import'. Not a value disagreement; whether the values agree is "
+        "unverified"
     ),
     "varint_bignum": (
         "sanctioned divergence: rows() returns int(123) where the official client returns "

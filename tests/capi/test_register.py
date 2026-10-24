@@ -385,7 +385,8 @@ def test_an_unread_arrow_result_closed_releases_the_entry(conn):
     assert stats["retired"] == 0, stats
 
 
-def test_a_dropped_pending_result_releases_the_entry(conn):
+def test_a_pending_result_does_not_hold_the_entry(conn):
+    """A pending SELECT is not bound yet, so it has claimed no entry and unregister frees it at once"""
     from bareduckdb.capi.impl.result import execute
 
     conn.register("t", table())
@@ -393,8 +394,10 @@ def test_a_dropped_pending_result_releases_the_entry(conn):
     assert pending.pending
     conn.unregister("t")
     stats = conn._impl._registry_stats()
-    assert stats["retired"] == 1, stats
+    assert stats["retired"] == 0, stats
+    with pytest.raises(RuntimeError, match="does not exist"):
+        list(pending.rows())
     del pending
     gc.collect()
     stats = conn._impl._registry_stats()
-    assert stats["retired"] == 0, stats
+    assert stats["live"] == 0 and stats["retired"] == 0, stats

@@ -57,9 +57,10 @@ def test_unregister_is_idempotent(both_connections):
         conn.unregister("t")
         conn.unregister("t")
 
+    # duckdb raises at execute(); a bareduckdb SELECT binds at its first consumer.
     for conn in (duck_conn, bare_conn):
         with pytest.raises(Exception):  # noqa: B017
-            conn.execute("SELECT * FROM t")
+            conn.execute("SELECT * FROM t").fetchall()
 
 
 @pytest.mark.parametrize("bad", [{"a": 1}, 5, "hello"])

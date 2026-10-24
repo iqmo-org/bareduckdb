@@ -32,6 +32,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     ArrowArray,
     DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED,
     DUCKDB_V2_ERROR_NONE,
+    DUCKDB_V2_ERROR_QUERY_NOT_IMPLEMENTED,
     DUCKDB_V2_LOGICAL_TYPE_ID_ARRAY,
     DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT,
     DUCKDB_V2_LOGICAL_TYPE_ID_BIGNUM,
@@ -65,7 +66,6 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_LOGICAL_TYPE_ID_UBIGINT,
     DUCKDB_V2_LOGICAL_TYPE_ID_UHUGEINT,
     DUCKDB_V2_LOGICAL_TYPE_ID_UINTEGER,
-    DUCKDB_V2_LOGICAL_TYPE_ID_UNKNOWN,
     DUCKDB_V2_LOGICAL_TYPE_ID_USMALLINT,
     DUCKDB_V2_LOGICAL_TYPE_ID_UTINYINT,
     DUCKDB_V2_LOGICAL_TYPE_ID_UUID,
@@ -76,10 +76,8 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_RESULT_STEP_STATUS_WAITING,
     DUCKDB_V2_RESULT_TYPE_CHANGED_ROWS,
     DUCKDB_V2_RESULT_TYPE_QUERY_RESULT,
-    DUCKDB_V2_STATEMENT_TYPE_CALL,
     DUCKDB_V2_STATEMENT_TYPE_EXPLAIN,
     DUCKDB_V2_STATEMENT_TYPE_MULTI,
-    DUCKDB_V2_STATEMENT_TYPE_PRAGMA,
     DUCKDB_V2_STATEMENT_TYPE_SELECT,
     DUCKDB_V2_VECTOR_TYPE_CONSTANT,
     DUCKDB_V2_VECTOR_TYPE_DICTIONARY,
@@ -132,12 +130,11 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_schema_destroy,
     duckdb_v2_schema_get_count,
     duckdb_v2_schema_get_field,
-    duckdb_v2_schema_handle,
     duckdb_v2_sql_statement_destroy,
+    duckdb_v2_sql_statement_get_parameter_count,
     duckdb_v2_sql_statement_get_text,
     duckdb_v2_sql_statement_get_type,
     duckdb_v2_sql_statement_handle,
-    duckdb_v2_statement_bind,
     duckdb_v2_statement_execute,
     duckdb_v2_statement_execute_arrow,
     duckdb_v2_statement_iterator_destroy,
@@ -186,6 +183,7 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_value_get_timestamp_tz,
     duckdb_v2_value_get_timestamp_tz_ns,
     duckdb_v2_value_get_tinyint,
+    duckdb_v2_value_get_logical_type,
     duckdb_v2_value_get_type,
     duckdb_v2_value_get_ubigint,
     duckdb_v2_value_get_uhugeint,
@@ -228,7 +226,7 @@ ROWS_NOT_ARROW = " ".join("""
     rows, or pass output_type='arrow_table' to execute()
 """.split())
 
-# CApiResult._pending: bound and unsubmitted, being submitted by one consumer, or neither.
+# CApiResult._pending: parsed and unsubmitted, being submitted by one consumer, or neither.
 cdef long _NOT_PENDING = 0
 cdef long _PENDING = 1
 cdef long _SUBMITTING = 2
@@ -295,7 +293,7 @@ def execute(CApiConnectionImpl conn, str query, object parameters=None, batch_ro
     """Execute every statement, draining earlier results; return the last one.
 
     With arrow, the last statement runs as an Arrow result and an ArrowResult comes back.
-    Without it, a last SELECT, EXPLAIN or statement group is only bound and comes back as a
+    Without it, a last SELECT, EXPLAIN or statement group is only parsed and comes back as a
     pending CApiResult, submitted once by its first consumer as rows or as Arrow; any other
     last statement runs here, as it must for its side effect.
     """
@@ -339,11 +337,11 @@ cdef object _execute_cached(
     cdef duckdb_v2_sql_statement_handle slot = statement
 
     if arrow:
-        return _execute_arrow_last(conn, statement, _build_params(conn._conn, statement, parameters), batch_rows, reg, transferred)
-    py_result = _defer_bound(conn, &slot, parameters, batch_rows, reg, transferred, cached.shared)
+        return _execute_arrow_last(conn, statement, _build_params(conn._conn, parameters), batch_rows, reg, transferred)
+    py_result = _defer_pending(conn, &slot, parameters, batch_rows, reg, transferred, cached.shared)
     if py_result is not None:
         return py_result
-    return _execute_last(conn, statement, _build_params(conn._conn, statement, parameters), batch_rows, reg, transferred)
+    return _execute_last(conn, statement, _build_params(conn._conn, parameters), batch_rows, reg, transferred)
 
 
 cdef object _execute_bound(
@@ -396,7 +394,7 @@ cdef object _execute_bound(
                     break
 
                 ran_earlier = True
-                current_result = _execute_one(c_conn, current, _build_params(c_conn, current, parameters))
+                current_result = _execute_one(c_conn, current, _build_params(c_conn, parameters))
                 # Destroy before check_v2: a raise leaves this C local unreachable.
                 with nogil:
                     rc = duckdb_v2_result_drain(current_result, &rows_changed, &err)
@@ -430,71 +428,21 @@ cdef object _execute_bound(
         # A group led by ALTER, CREATE, INSERT or COPY runs here for its effect, as Arrow when asked for.
         effect_group = statement_type == DUCKDB_V2_STATEMENT_TYPE_MULTI and not _group_is_query(current)
         if arrow:
-            return _execute_arrow_last(conn, current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred, effect_group)
+            return _execute_arrow_last(conn, current, _build_params(c_conn, parameters), batch_rows, reg, transferred, effect_group)
         if statement_type == DUCKDB_V2_STATEMENT_TYPE_SELECT or statement_type == DUCKDB_V2_STATEMENT_TYPE_EXPLAIN:
-            py_result = _defer_bound(conn, &current, parameters, batch_rows, reg, transferred)
+            py_result = _defer_pending(conn, &current, parameters, batch_rows, reg, transferred)
             if py_result is not None:
                 return py_result
         elif statement_type == DUCKDB_V2_STATEMENT_TYPE_MULTI and not effect_group:
             # Bind rejects a group, so its schema resolves once the first consumer submits it.
-            return _pending_result(conn, &current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred)
-        elif statement_type == DUCKDB_V2_STATEMENT_TYPE_PRAGMA or statement_type == DUCKDB_V2_STATEMENT_TYPE_CALL:
-            from bareduckdb.capi.statement_kind import rows_cannot_read
-
-            shape = _bound_shape(c_conn, current)
-            if shape is not None and rows_cannot_read(shape[1]):
-                # Still run here for its effect, but as Arrow: the row path has no route for these columns.
-                _logger.debug("PRAGMA or CALL with columns the row path cannot read runs as Arrow: %s", shape[1])
-                out = _execute_arrow_last(conn, current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred)
-                out.shape = shape
-                return out
-        return _execute_last(conn, current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred)
+            return _pending_result(conn, &current, _build_params(c_conn, parameters), batch_rows, reg, transferred)
+        return _execute_last(conn, current, _build_params(c_conn, parameters), batch_rows, reg, transferred)
     finally:
         # A pending result took ownership of the statement and set this to NULL.
         with nogil:
             duckdb_v2_sql_statement_destroy(&current)
         if invalidates:
             bdv2_add(&_parse_epoch, 1)
-
-
-cdef object _bound_shape(duckdb_v2_connection_handle c_conn, duckdb_v2_sql_statement_handle statement):
-    """Bind a statement for its column names and type names, or return None when bind refuses it"""
-    cdef duckdb_v2_schema_handle out_schema = NULL
-    cdef duckdb_v2_schema_handle out_parameters = NULL
-    cdef duckdb_v2_error_info_handle err = NULL
-    cdef duckdb_v2_error_t rc
-    cdef idx_t count = 0
-    cdef idx_t i
-    cdef duckdb_v2_identifier_t name
-    cdef duckdb_v2_logical_type_handle col_type
-
-    with nogil:
-        rc = duckdb_v2_statement_bind(c_conn, statement, &out_schema, &out_parameters, &err)
-    if rc != DUCKDB_V2_ERROR_NONE:
-        if err != NULL:
-            with nogil:
-                duckdb_v2_error_info_destroy(&err)
-        _logger.debug("bind refused the statement; it runs as rows")
-        return None
-    try:
-        with nogil:
-            rc = duckdb_v2_schema_get_count(out_schema, &count, &err)
-        check_v2(rc, err, "duckdb_v2_schema_get_count")
-        names = []
-        types = []
-        for i in range(count):
-            with nogil:
-                rc = duckdb_v2_schema_get_field(out_schema, i, &name, &col_type, &err)
-            check_v2(rc, err, "duckdb_v2_schema_get_field")
-            names.append(str_view_to_str(name))
-            types.append(_logical_type_text(col_type))
-        return (tuple(names), tuple(types))
-    finally:
-        with nogil:
-            if out_schema != NULL:
-                duckdb_v2_schema_destroy(&out_schema)
-            if out_parameters != NULL:
-                duckdb_v2_schema_destroy(&out_parameters)
 
 
 cdef bint _group_is_query(duckdb_v2_sql_statement_handle statement) except -1:
@@ -628,7 +576,7 @@ cdef void _arrow_run_to_first_array(ArrowResult out) except *:
         raise QueryCancelled("INTERRUPT Error: Interrupted!")
 
 
-cdef object _defer_bound(
+cdef object _defer_pending(
     CApiConnectionImpl conn,
     duckdb_v2_sql_statement_handle *statement_slot,
     object parameters,
@@ -637,79 +585,23 @@ cdef object _defer_bound(
     bint *transferred,
     bd_shared_statement *shared=NULL,
 ):
-    """Bind a last SELECT or EXPLAIN into a pending result, or return None to have it executed now.
+    """Leave a last SELECT or EXPLAIN unbound in a pending result, or return None to have it executed now.
 
-    None is returned when bind fails, so execution raises the error with its LINE context, when
-    the supplied values do not match the parameters, so execution reports the mismatch, and
-    never otherwise. A parameter whose type bind cannot infer leaves the schema to resolve on
-    submission, since bind then reports a placeholder column.
+    Nothing binds here: every bind evaluates volatile table-function arguments such as nextval, so the
+    statement binds once, at submission. None is returned only when the supplied values do not match
+    the parser's parameter count, so execution reports the mismatch in DuckDB's words.
     """
-    cdef duckdb_v2_schema_handle out_schema = NULL
-    cdef duckdb_v2_schema_handle out_parameters = NULL
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef idx_t declared = 0
-    cdef _Params params = None
-    cdef CApiResult py_result
-    cdef bint schema_known
 
     with nogil:
-        rc = duckdb_v2_statement_bind(conn._conn, statement_slot[0], &out_schema, &out_parameters, &err)
-    if rc != DUCKDB_V2_ERROR_NONE:
-        if err != NULL:
-            with nogil:
-                duckdb_v2_error_info_destroy(&err)
-        _logger.debug("bind failed; executing so the error carries its LINE context")
+        rc = duckdb_v2_sql_statement_get_parameter_count(statement_slot[0], &declared, &err)
+    check_v2(rc, err, "duckdb_v2_sql_statement_get_parameter_count")
+    if declared != <idx_t>(0 if parameters is None else len(parameters)):
+        _logger.debug("the statement declares %d parameters; executing to report the mismatch", declared)
         return None
-
-    try:
-        with nogil:
-            rc = duckdb_v2_schema_get_count(out_parameters, &declared, &err)
-        check_v2(rc, err, "duckdb_v2_schema_get_count")
-        if declared != <idx_t>(0 if parameters is None else len(parameters)):
-            _logger.debug("bind declares %d parameters; executing to report the mismatch", declared)
-            return None
-
-        schema_known = not (_schema_has_unknown(out_parameters) or _schema_has_unknown(out_schema))
-        if parameters is not None:
-            params = _params_from_bind(conn._conn, out_parameters, parameters)
-        py_result = _pending_result(conn, statement_slot, params, batch_rows, reg, transferred, shared)
-        if schema_known:
-            py_result._schema = out_schema
-            out_schema = NULL
-            py_result._build_column_metadata()
-            bdv2_store_release(&py_result._schema_ready, 1)
-        return py_result
-    finally:
-        if out_schema != NULL:
-            with nogil:
-                duckdb_v2_schema_destroy(&out_schema)
-        if out_parameters != NULL:
-            with nogil:
-                duckdb_v2_schema_destroy(&out_parameters)
-
-
-cdef bint _schema_has_unknown(duckdb_v2_schema_handle schema) except -1:
-    """Report whether any field is UNKNOWN, bind's mark for a type it could not infer"""
-    cdef duckdb_v2_error_info_handle err = NULL
-    cdef duckdb_v2_error_t rc
-    cdef idx_t count = 0
-    cdef idx_t i
-    cdef duckdb_v2_identifier_t name
-    cdef duckdb_v2_logical_type_handle field_type
-
-    if schema == NULL:
-        return False
-    with nogil:
-        rc = duckdb_v2_schema_get_count(schema, &count, &err)
-    check_v2(rc, err, "duckdb_v2_schema_get_count")
-    for i in range(count):
-        with nogil:
-            rc = duckdb_v2_schema_get_field(schema, i, &name, &field_type, &err)
-        check_v2(rc, err, "duckdb_v2_schema_get_field")
-        if _logical_type_id(field_type) == DUCKDB_V2_LOGICAL_TYPE_ID_UNKNOWN:
-            return True
-    return False
+    return _pending_result(conn, statement_slot, _build_params(conn._conn, parameters), batch_rows, reg, transferred, shared)
 
 
 cdef CApiResult _pending_result(
@@ -721,7 +613,7 @@ cdef CApiResult _pending_result(
     bint *transferred,
     bd_shared_statement *shared=NULL,
 ):
-    """Wrap a bound but unsubmitted statement, taking the statement and the registry borrow.
+    """Wrap a parsed but unsubmitted statement, taking the statement and the registry borrow.
 
     With shared, the statement is borrowed from it and the result takes a reference instead.
     """
@@ -861,71 +753,23 @@ cdef class _Params:
         free(self.names)
 
 
-cdef _Params _build_params(
-    duckdb_v2_connection_handle conn,
-    duckdb_v2_sql_statement_handle statement,
-    object parameters,
-):
-    """Bind one statement and build its parameter values from `parameters`, or None for none"""
-    cdef duckdb_v2_schema_handle out_schema = NULL
-    cdef duckdb_v2_schema_handle out_parameters = NULL
-    cdef duckdb_v2_error_info_handle err = NULL
-    cdef duckdb_v2_error_t rc
+cdef _Params _build_params(duckdb_v2_connection_handle conn, object parameters):
+    """Build parameter values from each Python value's own type, or None for none.
 
-    if parameters is None:
-        # Skip bind entirely
-        return None
-
-    with nogil:
-        rc = duckdb_v2_statement_bind(conn, statement, &out_schema, &out_parameters, &err)
-    if rc != DUCKDB_V2_ERROR_NONE:
-        return _params_after_failed_bind(conn, rc, err, parameters)
-    if out_schema != NULL:
-        with nogil:
-            duckdb_v2_schema_destroy(&out_schema)
-    try:
-        return _params_from_bind(conn, out_parameters, parameters)
-    finally:
-        if out_parameters != NULL:
-            with nogil:
-                duckdb_v2_schema_destroy(&out_parameters)
-
-
-cdef _Params _params_after_failed_bind(
-    duckdb_v2_connection_handle conn,
-    duckdb_v2_error_t rc,
-    duckdb_v2_error_info_handle err,
-    object parameters,
-):
-    """Build untyped values after a failed bind, so execution raises the error with its LINE context"""
-    try:
-        check_v2(rc, err, "duckdb_v2_statement_bind")
-    except QueryCancelled:
-        raise
-    except RuntimeError as bind_error:
-        _logger.debug("bind failed (%s); executing so the error carries its LINE context", bind_error)
-        try:
-            return _params_from_bind(conn, NULL, parameters)
-        except Exception:
-            _logger.debug("could not build untyped parameter values; raising the bind error", exc_info=True)
-            raise bind_error
-
-
-cdef _Params _params_from_bind(
-    duckdb_v2_connection_handle conn,
-    duckdb_v2_schema_handle out_parameters,
-    object parameters,
-):
-    """Build parameter values from `parameters`, typed by the parameter schema bind reported"""
+    No bind: DuckDB casts the values to the statement's parameter types during its single bind, as
+    duckdb-python's values are.
+    """
     cdef idx_t param_count = 0
     cdef idx_t i
     cdef bint use_names = False
-    cdef duckdb_v2_logical_type_handle target_type = NULL
     cdef duckdb_v2_factory_handle factory = NULL
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
-    cdef _Params out = _Params.__new__(_Params)
+    cdef _Params out
 
+    if parameters is None:
+        return None
+    out = _Params.__new__(_Params)
     use_names = isinstance(parameters, dict)
     items = list(parameters.items()) if use_names else list(parameters)
     param_count = <idx_t>len(items)
@@ -956,11 +800,9 @@ cdef _Params _params_from_bind(
             out.owned.append(key_bytes)
             out.names[i].ptr = <const char *>key_bytes
             out.names[i].len = <idx_t>len(key_bytes)
-            target_type = _named_target_type(out_parameters, <str>key)
         else:
             val = items[i]
-            target_type = _positional_target_type(out_parameters, i)
-        out.values[i] = _python_to_value(factory, val, target_type)
+        out.values[i] = _python_to_value(factory, val)
     return out
 
 
@@ -1012,69 +854,6 @@ cdef duckdb_v2_arrow_result_handle _execute_one_arrow(
     return result
 
 
-cdef duckdb_v2_logical_type_handle _positional_target_type(
-    duckdb_v2_schema_handle out_parameters, idx_t index
-):
-    """Borrow the declared type of parameter `index`, or NULL when it cannot be found"""
-    cdef duckdb_v2_error_info_handle err = NULL
-    cdef duckdb_v2_error_t rc
-    cdef idx_t count = 0
-    cdef duckdb_v2_identifier_t name
-    cdef duckdb_v2_logical_type_handle out_type = NULL
-
-    if out_parameters == NULL:
-        return NULL
-    with nogil:
-        rc = duckdb_v2_schema_get_count(out_parameters, &count, &err)
-    check_v2(rc, err, "duckdb_v2_schema_get_count")
-    if index >= count:
-        return NULL
-    with nogil:
-        rc = duckdb_v2_schema_get_field(out_parameters, index, &name, &out_type, &err)
-    check_v2(rc, err, "duckdb_v2_schema_get_field")
-    return out_type
-
-
-cdef duckdb_v2_logical_type_handle _named_target_type(
-    duckdb_v2_schema_handle out_parameters, str param_name
-):
-    """Borrow the declared type of a named parameter, or NULL when it cannot be found"""
-    cdef duckdb_v2_error_info_handle err = NULL
-    cdef duckdb_v2_error_t rc
-    cdef idx_t count = 0
-    cdef idx_t i
-    cdef duckdb_v2_identifier_t name
-    cdef duckdb_v2_logical_type_handle out_type = NULL
-    cdef str field_name
-    cdef str needle = param_name.lower()
-
-    if out_parameters == NULL:
-        return NULL
-    with nogil:
-        rc = duckdb_v2_schema_get_count(out_parameters, &count, &err)
-    check_v2(rc, err, "duckdb_v2_schema_get_count")
-    for i in range(count):
-        with nogil:
-            rc = duckdb_v2_schema_get_field(out_parameters, i, &name, &out_type, &err)
-        check_v2(rc, err, "duckdb_v2_schema_get_field")
-        field_name = str_view_to_str(name)
-        if field_name.lower() == needle:
-            return out_type
-    return NULL
-
-
-cdef duckdb_v2_logical_type_id_t _logical_type_id(duckdb_v2_logical_type_handle type_handle) except *:
-    """Return the logical type id of a borrowed logical type handle"""
-    cdef duckdb_v2_error_info_handle err = NULL
-    cdef duckdb_v2_error_t rc
-    cdef duckdb_v2_logical_type_id_t type_id
-
-    with nogil:
-        rc = duckdb_v2_logical_type_get_id(type_handle, &type_id, &err)
-    check_v2(rc, err, "duckdb_v2_logical_type_get_id")
-    return type_id
-
-
 cdef duckdb_v2_logical_type_handle _owned_child_type(
     duckdb_v2_logical_type_handle type_handle, idx_t index
 ) except NULL:
@@ -1096,26 +875,6 @@ cdef duckdb_v2_logical_type_handle _owned_child_type(
         with nogil:
             duckdb_v2_value_destroy(&pvalue)
     return child_type
-
-
-cdef duckdb_v2_logical_type_handle _declared_child_type(
-    duckdb_v2_logical_type_handle target_type,
-    duckdb_v2_logical_type_id_t container_id,
-    idx_t index,
-) except? NULL:
-    """Return an owned child type when the bound parameter's declared type is that container"""
-    cdef duckdb_v2_error_info_handle err = NULL
-    cdef duckdb_v2_error_t rc
-    cdef idx_t param_count = 0
-
-    if target_type == NULL or _logical_type_id(target_type) != container_id:
-        return NULL
-    with nogil:
-        rc = duckdb_v2_logical_type_get_param_count(target_type, &param_count, &err)
-    check_v2(rc, err, "duckdb_v2_logical_type_get_param_count")
-    if index >= param_count:
-        return NULL
-    return _owned_child_type(target_type, index)
 
 
 cdef duckdb_v2_logical_type_handle _primitive_type(
@@ -1234,39 +993,110 @@ cdef duckdb_v2_value_handle _timedelta_to_value(
     return out_value
 
 
-cdef duckdb_v2_value_handle _list_to_value(
-    duckdb_v2_factory_handle factory, object val, duckdb_v2_logical_type_handle target_type
-) except? NULL:
-    """Bind a Python list as a LIST, naming the element type only when the parameter declares one"""
+# DuckDB's GetLogicalTypeScore (common/types.cpp) for the types a Python value binds as. When the
+# elements of a list have no common type, duckdb-python's ForceMaxLogicalType keeps the higher score.
+# Unlike it, this does not recurse into nested elements, so [[1], ['a']] raises where it gives VARCHAR[][].
+_FORCE_SCORE = {
+    DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN: 10,
+    DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT: 18,
+    DUCKDB_V2_LOGICAL_TYPE_ID_HUGEINT: 20,
+    DUCKDB_V2_LOGICAL_TYPE_ID_DECIMAL: 21,
+    DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE: 23,
+    DUCKDB_V2_LOGICAL_TYPE_ID_TIME: 50,
+    DUCKDB_V2_LOGICAL_TYPE_ID_DATE: 52,
+    DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP: 55,
+    DUCKDB_V2_LOGICAL_TYPE_ID_INTERVAL: 58,
+    DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR: 77,
+    DUCKDB_V2_LOGICAL_TYPE_ID_BLOB: 101,
+    DUCKDB_V2_LOGICAL_TYPE_ID_UUID: 102,
+    DUCKDB_V2_LOGICAL_TYPE_ID_LIST: 126,
+    DUCKDB_V2_LOGICAL_TYPE_ID_MAP: 127,
+}
+
+
+cdef duckdb_v2_logical_type_handle _forced_type(duckdb_v2_value_handle *items, idx_t count) except NULL:
+    """Return an owned copy of the highest-scoring item type, the first on a tie, as ForceMaxLogicalType picks"""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_logical_type_handle item_type = NULL
+    cdef duckdb_v2_logical_type_handle best = NULL
+    cdef duckdb_v2_logical_type_id_t type_id
+    cdef idx_t i
+    cdef long best_score = -1
+
+    try:
+        for i in range(count):
+            with nogil:
+                rc = duckdb_v2_value_get_logical_type(items[i], &item_type, &err)
+            check_v2(rc, err, "duckdb_v2_value_get_logical_type")
+            with nogil:
+                rc = duckdb_v2_logical_type_get_id(item_type, &type_id, &err)
+            if rc != DUCKDB_V2_ERROR_NONE:
+                with nogil:
+                    duckdb_v2_logical_type_destroy(&item_type)
+                check_v2(rc, err, "duckdb_v2_logical_type_get_id")
+            score = _FORCE_SCORE.get(type_id, 0)
+            if score > best_score:
+                best_score = score
+                if best != NULL:
+                    with nogil:
+                        duckdb_v2_logical_type_destroy(&best)
+                best = item_type
+            else:
+                with nogil:
+                    duckdb_v2_logical_type_destroy(&item_type)
+            item_type = NULL
+    except BaseException:
+        if best != NULL:
+            with nogil:
+                duckdb_v2_logical_type_destroy(&best)
+        raise
+    return best
+
+
+cdef duckdb_v2_value_handle _list_to_value(duckdb_v2_factory_handle factory, object val) except? NULL:
+    """Bind a Python list as a LIST whose element type DuckDB resolves from the elements; an empty one is "NULL"[]"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_value_handle out_value = NULL
     cdef duckdb_v2_value_handle *children = NULL
     cdef duckdb_v2_logical_type_handle child_type = NULL
     cdef duckdb_v2_logical_type_handle null_type = NULL
+    cdef duckdb_v2_logical_type_handle forced = NULL
     cdef idx_t count = <idx_t>len(val)
     cdef idx_t i
 
-    child_type = _declared_child_type(target_type, DUCKDB_V2_LOGICAL_TYPE_ID_LIST, 0)
     try:
-        # An empty list has nothing to resolve a child type from, so it needs one named outright.
-        if count == 0 and child_type == NULL:
-            child_type = _primitive_type(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER)
-        if count > 0:
+        # One SQLNULL type for every None, since building it costs a transaction.
+        if count == 0 or any(item is None for item in val):
+            null_type = _sqlnull_type(factory)
+        if count == 0:
+            # Nothing to resolve an element type from: duckdb-python's "NULL"[].
+            child_type = null_type
+        else:
             children = <duckdb_v2_value_handle *>malloc(count * sizeof(duckdb_v2_value_handle))
             if children == NULL:
                 raise MemoryError("failed to allocate the v2 LIST element array")
             for i in range(count):
                 children[i] = NULL
-            # One SQLNULL type for every untyped None, since building it costs a transaction.
-            if child_type == NULL and any(item is None for item in val):
-                null_type = _sqlnull_type(factory)
             for i in range(count):
-                children[i] = _python_to_value(factory, val[i], null_type if val[i] is None and child_type == NULL else child_type)
+                children[i] = _python_to_value(factory, val[i], null_type)
         with nogil:
             rc = duckdb_v2_value_create_list(
                 factory, child_type, children, count, &out_value, &err
             )
+        if rc == DUCKDB_V2_ERROR_QUERY_NOT_IMPLEMENTED and count > 0:
+            # No common element type: cast to the one duckdb-python's ForceMaxLogicalType prefers.
+            _logger.debug("list elements have no common type; casting to the highest-scoring element type")
+            with nogil:
+                duckdb_v2_error_info_destroy(&err)
+            forced = _forced_type(children, count)
+            try:
+                with nogil:
+                    rc = duckdb_v2_value_create_list(factory, forced, children, count, &out_value, &err)
+            finally:
+                with nogil:
+                    duckdb_v2_logical_type_destroy(&forced)
         check_v2(rc, err, "duckdb_v2_value_create_list")
     finally:
         if children != NULL:
@@ -1275,41 +1105,34 @@ cdef duckdb_v2_value_handle _list_to_value(
                     with nogil:
                         duckdb_v2_value_destroy(&children[i])
             free(children)
-        if child_type != NULL:
-            with nogil:
-                duckdb_v2_logical_type_destroy(&child_type)
         if null_type != NULL:
             with nogil:
                 duckdb_v2_logical_type_destroy(&null_type)
     return out_value
 
 
-cdef duckdb_v2_value_handle _dict_to_value(
-    duckdb_v2_factory_handle factory, object val, duckdb_v2_logical_type_handle target_type
-) except? NULL:
-    """Bind a Python dict as a MAP, naming key and value types only when the parameter declares them"""
+cdef duckdb_v2_value_handle _dict_to_value(duckdb_v2_factory_handle factory, object val) except? NULL:
+    """Bind a Python dict as a MAP whose key and value types DuckDB resolves from the entries"""
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_value_handle out_value = NULL
     cdef duckdb_v2_value_handle *keys = NULL
     cdef duckdb_v2_value_handle *values = NULL
-    cdef duckdb_v2_logical_type_handle key_type = NULL
-    cdef duckdb_v2_logical_type_handle value_type = NULL
     cdef duckdb_v2_logical_type_handle null_type = NULL
+    cdef duckdb_v2_logical_type_handle entry_type = NULL
+    cdef duckdb_v2_logical_type_handle forced_key = NULL
+    cdef duckdb_v2_logical_type_handle forced_value = NULL
     cdef idx_t count = <idx_t>len(val)
     cdef idx_t i
 
     items = list(val.items())
-    key_type = _declared_child_type(target_type, DUCKDB_V2_LOGICAL_TYPE_ID_MAP, 0)
     try:
-        value_type = _declared_child_type(target_type, DUCKDB_V2_LOGICAL_TYPE_ID_MAP, 1)
-        # An empty map has nothing to resolve its two child types from, so both must be named outright.
+        if count == 0 or any(item[1] is None for item in items):
+            null_type = _sqlnull_type(factory)
         if count == 0:
-            if key_type == NULL:
-                key_type = _primitive_type(factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR)
-            if value_type == NULL:
-                value_type = _primitive_type(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER)
-        if count > 0:
+            # Nothing to resolve the entry types from: duckdb-python's MAP("NULL", "NULL").
+            entry_type = null_type
+        else:
             keys = <duckdb_v2_value_handle *>malloc(count * sizeof(duckdb_v2_value_handle))
             values = <duckdb_v2_value_handle *>malloc(count * sizeof(duckdb_v2_value_handle))
             if keys == NULL or values == NULL:
@@ -1317,19 +1140,34 @@ cdef duckdb_v2_value_handle _dict_to_value(
             for i in range(count):
                 keys[i] = NULL
                 values[i] = NULL
-            if value_type == NULL and any(item[1] is None for item in items):
-                null_type = _sqlnull_type(factory)
             for i in range(count):
                 if items[i][0] is None:
                     raise ValueError("cannot bind a dict with a None key as a DuckDB MAP: MAP keys must be non-NULL")
-                keys[i] = _python_to_value(factory, items[i][0], key_type)
-                values[i] = _python_to_value(
-                    factory, items[i][1], null_type if items[i][1] is None and value_type == NULL else value_type
-                )
+                keys[i] = _python_to_value(factory, items[i][0], NULL)
+                values[i] = _python_to_value(factory, items[i][1], null_type)
         with nogil:
             rc = duckdb_v2_value_create_map(
-                factory, key_type, value_type, keys, values, count, &out_value, &err
+                factory, entry_type, entry_type, keys, values, count, &out_value, &err
             )
+        if rc == DUCKDB_V2_ERROR_QUERY_NOT_IMPLEMENTED and count > 0:
+            # As for a list: keys or values with no common type are cast to ForceMaxLogicalType's choice.
+            _logger.debug("map keys or values have no common type; casting to the highest-scoring type")
+            with nogil:
+                duckdb_v2_error_info_destroy(&err)
+            forced_key = _forced_type(keys, count)
+            try:
+                forced_value = _forced_type(values, count)
+                try:
+                    with nogil:
+                        rc = duckdb_v2_value_create_map(
+                            factory, forced_key, forced_value, keys, values, count, &out_value, &err
+                        )
+                finally:
+                    with nogil:
+                        duckdb_v2_logical_type_destroy(&forced_value)
+            finally:
+                with nogil:
+                    duckdb_v2_logical_type_destroy(&forced_key)
         check_v2(rc, err, "duckdb_v2_value_create_map")
     finally:
         if keys != NULL:
@@ -1344,12 +1182,6 @@ cdef duckdb_v2_value_handle _dict_to_value(
                     with nogil:
                         duckdb_v2_value_destroy(&values[i])
             free(values)
-        if key_type != NULL:
-            with nogil:
-                duckdb_v2_logical_type_destroy(&key_type)
-        if value_type != NULL:
-            with nogil:
-                duckdb_v2_logical_type_destroy(&value_type)
         if null_type != NULL:
             with nogil:
                 duckdb_v2_logical_type_destroy(&null_type)
@@ -1357,13 +1189,16 @@ cdef duckdb_v2_value_handle _dict_to_value(
 
 
 cdef duckdb_v2_value_handle _python_to_value(
-    duckdb_v2_factory_handle factory, object val, duckdb_v2_logical_type_handle target_type
+    duckdb_v2_factory_handle factory, object val, duckdb_v2_logical_type_handle null_type=NULL
 ) except? NULL:
-    """Build one owned duckdb_v2_value from a Python parameter value"""
+    """Build one owned duckdb_v2_value from a Python parameter value's own type.
+
+    A None is a SQLNULL value, as in duckdb-python; null_type is a SQLNULL type the caller already
+    built for it, else one is built here.
+    """
     cdef duckdb_v2_error_info_handle err = NULL
     cdef duckdb_v2_error_t rc
     cdef duckdb_v2_value_handle out_value = NULL
-    cdef duckdb_v2_logical_type_handle null_type = NULL
     cdef bint own_null_type = False
     cdef bytes as_bytes
     cdef duckdb_v2_str_t sv
@@ -1376,9 +1211,7 @@ cdef duckdb_v2_value_handle _python_to_value(
     cdef double double_val
 
     if val is None:
-        if target_type != NULL and _logical_type_id(target_type) != DUCKDB_V2_LOGICAL_TYPE_ID_UNKNOWN:
-            null_type = target_type
-        else:
+        if null_type == NULL:
             null_type = _sqlnull_type(factory)
             own_null_type = True
         try:
@@ -1475,10 +1308,10 @@ cdef duckdb_v2_value_handle _python_to_value(
         return _uuid_to_value(factory, val)
 
     if isinstance(val, list):
-        return _list_to_value(factory, val, target_type)
+        return _list_to_value(factory, val)
 
     if isinstance(val, dict):
-        return _dict_to_value(factory, val, target_type)
+        return _dict_to_value(factory, val)
 
     raise TypeError(f"cannot bind Python {type(val).__name__} as a query parameter")
 
@@ -1574,7 +1407,7 @@ cdef class CApiResult:
         if self._destroyed:
             raise RuntimeError("result already destroyed")
         if self._pending:
-            # Bind could not supply the schema, so asking for it fixes the format as rows.
+            # Nothing has bound it yet, so asking for the schema fixes the format as rows.
             self.submit()
         if self._result == NULL:
             raise RuntimeError("this result's schema was already handed to an Arrow export")
@@ -1753,7 +1586,7 @@ cdef class CApiResult:
 
     @property
     def pending(self):
-        """True while the statement is bound but not yet submitted as rows or Arrow"""
+        """True while the statement is parsed but not yet submitted as rows or Arrow"""
         return bdv2_load_acquire(&self._pending) != _NOT_PENDING
 
     @property

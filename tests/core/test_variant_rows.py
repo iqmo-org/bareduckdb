@@ -118,9 +118,35 @@ def _storage(conn):
     conn.execute("insert into t values (1, 'x'), (2, null)")
 
 
+_CONSUMERS = ["fetchall", "arrow_table", "arrow_reader", "df", "pl"]
+
+
 @pytest.mark.parametrize("statement", ["pragma storage_info('t')", "call pragma_storage_info('t')"])
-@pytest.mark.parametrize("consumer", ["fetchall", "arrow_table", "arrow_reader", "df", "pl"])
-def test_a_variant_pragma_works_on_every_consumer(statement, consumer):
+@pytest.mark.parametrize("consumer", _CONSUMERS)
+def test_a_variant_pragma_raises_on_every_consumer(statement, consumer):
+    """A PRAGMA or CALL runs as rows at execute(), and the row path has no VARIANT route"""
+    if consumer == "df":
+        pytest.importorskip("pandas")
+    if consumer == "pl":
+        pytest.importorskip("polars")
+    with bareduckdb.connect() as conn:
+        _storage(conn)
+        result = conn.execute(statement)
+        with pytest.raises((NotImplementedError, RuntimeError), match="VARIANT|already ran as a row result"):
+            getattr(result, consumer)()
+
+
+# The README workarounds: the SELECT form of the table function, or Arrow asked for up front.
+_WORKAROUNDS = [
+    ("select * from pragma_storage_info('t')", None),
+    ("pragma storage_info('t')", "arrow_table"),
+    ("call pragma_storage_info('t')", "arrow_table"),
+]
+
+
+@pytest.mark.parametrize(("statement", "output_type"), _WORKAROUNDS)
+@pytest.mark.parametrize("consumer", _CONSUMERS)
+def test_a_variant_pragma_workaround_works_on_every_consumer(statement, output_type, consumer):
     if consumer == "df":
         pytest.importorskip("pandas")
     if consumer == "pl":
@@ -128,7 +154,14 @@ def test_a_variant_pragma_works_on_every_consumer(statement, consumer):
     with bareduckdb.connect() as conn:
         _storage(conn)
         expected = conn.execute("select * from pragma_storage_info('t')").arrow_table()
-        got = getattr(conn.execute(statement), consumer)()
+        if consumer == "fetchall" and output_type is None:
+            # A SELECT's rows have no VARIANT route either, so its row fetch also asks for Arrow.
+            output_type = "arrow_table"
+        if consumer == "arrow_reader" and output_type == "arrow_table":
+            # arrow_reader() refuses a materialized result; ask for a reader up front instead.
+            output_type = "arrow_reader"
+        result = conn.execute(statement) if output_type is None else conn.execute(statement, output_type=output_type)
+        got = getattr(result, consumer)()
         if consumer == "fetchall":
             assert len(got) == expected.num_rows, got
             assert got[0][9] is None or isinstance(got[0][9], dict), got[0]
@@ -152,7 +185,7 @@ def test_a_variant_pragma_reports_duckdb_types():
 
 
 def test_the_next_statement_closes_an_unread_variant_pragma():
-    """Run as Arrow at execute(), it holds an engine result until read or superseded"""
+    """Run as rows at execute(), it holds an engine result until read or superseded"""
     with bareduckdb.connect() as conn:
         _storage(conn)
         conn.execute("pragma storage_info('t')")
@@ -162,7 +195,7 @@ def test_the_next_statement_closes_an_unread_variant_pragma():
 def test_the_next_statement_ends_a_variant_pragma_reader():
     with bareduckdb.connect() as conn:
         _storage(conn)
-        reader = conn.execute("pragma storage_info('t')").arrow_reader()
+        reader = conn.execute("select * from pragma_storage_info('t')").arrow_reader()
         assert conn.execute("select count(*) from t").fetchall() == [(2,)]
         with pytest.raises(pa.ArrowInvalid, match="another statement"):
             reader.read_all()

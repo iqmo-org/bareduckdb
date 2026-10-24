@@ -242,7 +242,7 @@ class Result:
             result_obj: A CApiResult, PyArrow Table, RecordBatchReader, or Arrow C stream capsule.
             deferred: The connection-side state a deferred CApiResult needs at its first consumer.
         """
-        from ..capi.impl.result import ArrowResult, CApiResult  # type: ignore[import-untyped]  # pyarrow-free
+        from ..capi.impl.result import CApiResult  # type: ignore[import-untyped]  # pyarrow-free
 
         self._capi = None
         self._table = None
@@ -265,9 +265,6 @@ class Result:
         rows_changed = self._capi.rows_changed if self._capi is not None else None
         self._rowcount = -1 if rows_changed is None else rows_changed
         self._schema: tuple[tuple[str, ...], tuple[str, ...]] | None = None
-        if isinstance(result_obj, ArrowResult) and result_obj.shape is not None:
-            # A PRAGMA or CALL the row path cannot read, run as Arrow at execute(): bind's names and types.
-            self._schema = result_obj.shape
         self._consumed_by = None
         self._cancelled = None
         self._failed = None

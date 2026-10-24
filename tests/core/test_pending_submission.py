@@ -1,4 +1,4 @@
-"""A SELECT is bound at execute() and submitted once by its first consumer, as rows or as Arrow."""
+"""A SELECT is parsed at execute() and bound and submitted once, by its first consumer, as rows or as Arrow."""
 
 import subprocess
 import sys
@@ -444,10 +444,11 @@ def test_an_unresolved_parameter_type_goes_to_arrow_when_nothing_read_its_schema
 
 
 def test_a_bind_error_carries_the_line_context():
-    """duckdb-python's text includes the LINE / caret context, which bind alone drops"""
+    """duckdb-python's text includes the LINE / caret context; a SELECT binds at its first consumer"""
     with bareduckdb.connect() as conn:
+        conn.execute("select * from no_such_table")
         with pytest.raises(RuntimeError) as info:
-            conn.execute("select * from no_such_table")
+            conn.fetchall()
         message = str(info.value)
         assert "Table with name no_such_table does not exist" in message, message
         assert "LINE 1:" in message, message
@@ -455,8 +456,9 @@ def test_a_bind_error_carries_the_line_context():
 
 def test_a_bind_error_with_parameters_carries_the_line_context():
     with bareduckdb.connect() as conn:
+        conn.execute("select * from no_such_table where x = ?", [1])
         with pytest.raises(RuntimeError) as info:
-            conn.execute("select * from no_such_table where x = ?", [1])
+            conn.fetchall()
         message = str(info.value)
         assert "Table with name no_such_table does not exist" in message, message
         assert "LINE 1:" in message, message

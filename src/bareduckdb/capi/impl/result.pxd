@@ -94,7 +94,5 @@ cdef class ArrowResult:
     cdef ArrowArray _first
     # Set by the export: closes the stream when the connection runs its next statement.
     cdef object _lease
-    # (names, DuckDB type names) bind reported, for a PRAGMA or CALL run as Arrow at execute(); else None.
-    cdef public object shape
 
     cdef void _destroy(self) noexcept

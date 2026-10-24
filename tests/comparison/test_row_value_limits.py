@@ -92,24 +92,31 @@ def _storage_conn(module):
 
 @pytest.mark.parametrize("statement", _VARIANT_STATEMENTS)
 def test_a_variant_column_fetches_like_duckdb(statement):
-    """The row path has no VARIANT route, so a PRAGMA or CALL with one runs as Arrow and decodes it"""
+    """The row path has no VARIANT route, so the README workaround asks for Arrow up front and decodes it"""
     pytest.importorskip("pyarrow")
     expected = _storage_conn(duckdb).execute(statement).fetchall()
-    conn = _storage_conn(bareduckdb)
-    if statement.startswith("select"):
-        # A SELECT still takes the row path, which raises; ask for Arrow up front.
-        got = conn.execute(statement, output_type="arrow_table").fetchall()
-    else:
-        got = conn.execute(statement).fetchall()
+    got = _storage_conn(bareduckdb).execute(statement, output_type="arrow_table").fetchall()
     assert got == expected, (got, expected)
 
 
-@pytest.mark.filterwarnings("ignore:Arrow output on a DB-API result:UserWarning")
 @pytest.mark.parametrize("statement", _VARIANT_STATEMENTS[:2])
+def test_a_variant_pragma_fetch_raises(statement):
+    """A PRAGMA or CALL runs as rows at execute(), where a VARIANT column has no route"""
+    with pytest.raises(NotImplementedError, match="VARIANT"):
+        _storage_conn(bareduckdb).execute(statement).fetchall()
+
+
+@pytest.mark.filterwarnings("ignore:Arrow output on a DB-API result:UserWarning")
+@pytest.mark.parametrize("statement", _VARIANT_STATEMENTS)
 def test_a_variant_pragma_read_as_arrow_matches_duckdb(statement):
+    """The README workarounds: Arrow asked for up front, or the SELECT form of the table function"""
     pytest.importorskip("pyarrow")
     expected = _storage_conn(duckdb).execute(statement).to_arrow_table()
-    got = _storage_conn(bareduckdb).execute(statement).arrow_table()
+    conn = _storage_conn(bareduckdb)
+    if statement.startswith("select"):
+        got = conn.execute(statement).arrow_table()
+    else:
+        got = conn.execute(statement, output_type="arrow_table").arrow_table()
     assert got.equals(expected), (got.schema, expected.schema)
 
 

@@ -145,9 +145,11 @@ include("${CMAKE_CURRENT_BINARY_DIR}/duckdb_lib.cmake")
 message(STATUS "DuckDB artifact: ${DUCKDB_ARTIFACT}")
 message(STATUS "DuckDB library:  ${DUCKDB_SHARED_LIB}")
 
-# The runtime library ships inside the package at bareduckdb/_libs/. Copying it
-# into the source tree, exactly as setup.py:260-273 did, gives one path into the
-# wheel (via wheel.packages) and keeps editable installs working unchanged.
+# Copy the fetched library into the untracked bareduckdb/_libs/ so source and
+# editable builds find it in-tree. It does not ship in the wheel: the .gitignore
+# *.so/*.dll/*.dylib rules keep it out, and auditwheel/delocate exclude it.
+# _duckdb_runtime resolves it at first import (BAREDUCKDB_DUCKDB_LIB, _libs/,
+# user cache, download).
 file(MAKE_DIRECTORY "${BAREDUCKDB_LIBS}")
 file(COPY_FILE "${DUCKDB_SHARED_LIB}"
      "${BAREDUCKDB_LIBS}/${DUCKDB_SHARED_LIB_NAME}"

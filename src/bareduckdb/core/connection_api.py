@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import ast
-import inspect
 import logging
-import uuid
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from typing import Any, Callable, Literal, Mapping, Optional, Sequence
-
-    from . import PyArrowCapsule
 
 from ..capi.parse_cache import DEFAULT_PARSE_CACHE_SIZE
 from ..compat.result_compat import Result
@@ -18,9 +13,12 @@ from .sql_statement import Statement, build_statement
 
 logger = logging.getLogger(__name__)
 
+_UDTF_MESSAGE = """{name} is not implemented. DuckDB's v2 C API parse_sql exposes no function-call sites, so a UDTF call in SQL cannot be discovered. Register the function's result with register() instead."""
+
+_REPLACEMENT_SCAN_MESSAGE = """enable_replacement_scan=True is not implemented. DuckDB's v2 C API parse_sql exposes no table references, so names cannot be resolved from the caller's scope. Register the object with register() instead."""
+
 
 class ConnectionAPI(ConnectionBase):
-    _udtf_registry: dict[str, Callable]
     _last_result: Result  # Result or None
     _default_output_type: Literal["arrow_table", "arrow_reader", "arrow_capsule"]
 
@@ -43,11 +41,18 @@ class ConnectionAPI(ConnectionBase):
             config: Configuration dict (e.g., {'threads': '4'})
             read_only: Whether to open in read-only mode
             arrow_table_collector: Arrow collection mode
-            udtf_functions: Dict of UDTF name -> function
+            udtf_functions: Not implemented; a non-empty dict raises NotImplementedError
             output_type: Default output format for queries
+            enable_replacement_scan: Not implemented; True raises NotImplementedError
             parse_cache_size: Parsed single SELECTs kept for reuse, keyed by SQL text; 0 disables
             _from_impl: Internal parameter for creating cursor with shared database
         """
+        # Checked before the database opens, so a refused option leaves nothing to close.
+        if udtf_functions:
+            raise NotImplementedError(_UDTF_MESSAGE.format(name="udtf_functions"))
+        if enable_replacement_scan:
+            raise NotImplementedError(_REPLACEMENT_SCAN_MESSAGE)
+
         super().__init__(
             database=database,
             config=config,
@@ -57,81 +62,12 @@ class ConnectionAPI(ConnectionBase):
             _from_impl=_from_impl,
         )
 
-        self._udtf_registry: dict[str, Callable] = {}
         self._default_output_type = output_type
         self._last_result = None
-        self.enable_replacement_scan = enable_replacement_scan
-
-        if udtf_functions:
-            for name, func in udtf_functions.items():
-                self.register_udtf(name, func)
-
-        logger.debug("ConnectionAPI initialized with %d UDTFs", len(self._udtf_registry))
-
-    def _parse_sql_value(self, value_str: str) -> Any:
-        if not value_str:
-            return value_str
-
-        if value_str.startswith("'") and value_str.endswith("'"):
-            return value_str[1:-1].replace("''", "'")
-
-        try:
-            return ast.literal_eval(value_str)
-        except (ValueError, SyntaxError):
-            return value_str
-
-    def _generate_table_name(self, func_name: str, kwargs: dict[str, Any]) -> str:
-        """
-        Generate unique table name for UDTF call.
-
-        Args:
-            func_name: UDTF function name
-            kwargs: Function arguments (for logging only)
-
-        Returns:
-            Table name like "_udtf_faker_abc12345"
-        """
-        unique_id = uuid.uuid4().hex[:8]
-
-        table_name = f"_udtf_{func_name}_{unique_id}"
-        logger.debug("Generated table name: %s for %s(%s)", table_name, func_name, kwargs)
-
-        return table_name
-
-    def _call_udtf(self, func_name: str, args: list[Any], kwargs: dict[str, Any] | None = None) -> Any:
-        if func_name not in self._udtf_registry:
-            raise ValueError(f"UDTF '{func_name}' not registered")
-
-        func = self._udtf_registry[func_name]
-        kwargs = kwargs or {}
-
-        sig = inspect.signature(func)
-        params = list(sig.parameters.keys())
-
-        if params and params[-1] == "conn":
-            logger.debug("UDTF '%s' requests conn injection", func_name)
-            result = func(*args, **kwargs, conn=self)
-        else:
-            result = func(*args, **kwargs)
-
-        if not hasattr(result, "__arrow_c_stream__"):
-            raise TypeError(f"UDTF '{func_name}' must return an object with __arrow_c_stream__ method. Got {type(result).__name__}")
-
-        return result
 
     def register_udtf(self, name: str, func: Callable) -> None:
-        """
-        Register a UDTF by name.
-
-        Args:
-            name: UDTF name to use in SQL
-            func: Python function that returns Arrow-compatible data
-        """
-        if not callable(func):
-            raise TypeError(f"UDTF must be callable, got {type(func)}")
-
-        self._udtf_registry[name] = func
-        logger.debug("Registered UDTF: %s", name)
+        """Not implemented; the v2 API cannot discover UDTF call sites"""
+        raise NotImplementedError(_UDTF_MESSAGE.format(name="register_udtf()"))
 
     def execute(
         self,
@@ -153,119 +89,12 @@ class ConnectionAPI(ConnectionBase):
         else:
             call_output_type = output_type if output_type is not None else self._default_output_type
 
-        from .. import features
-
-        # Without table-reference extraction _preprocess finds nothing, so skip its parse and SHOW TABLES.
-        if features["sql_parsing"]:
-            query, data = self._preprocess(query, data)
-
         deferred = _Deferred(self) if call_output_type is None else None
         result = self._call(query=query, output_type=call_output_type, parameters=parameters, data=data, batch_size=batch_size, deferred=deferred)
         result = Result(result, deferred=deferred)
         self._last_result = result
 
         return self
-
-    def _get_replacement(self, name: str) -> PyArrowCapsule | None:
-        for frame_info in inspect.stack()[1:]:  # Skip current frame
-            frame = frame_info.frame
-
-            if name in frame.f_locals:
-                obj = frame.f_locals[name]
-                if hasattr(obj, "__arrow_c_stream__"):
-                    logger.debug("Replacement scan: found %s in frame locals", name)
-                    return obj
-                else:
-                    logger.warning("Replacement scan: %s found but doesn't implement __arrow_c_stream__", name)
-                    return None
-
-            if name in frame.f_globals:
-                obj = frame.f_globals[name]
-                if hasattr(obj, "__arrow_c_stream__"):
-                    logger.debug("Replacement scan: found %s in frame globals", name)
-                    return obj
-                else:
-                    logger.warning("Replacement scan: %s found but doesn't implement __arrow_c_stream__", name)
-                    return None
-
-        return None
-
-    def _preprocess(self, query, data):
-        """Handle UDTFs and Replacement Scans
-
-        The goals here are:
-        - Bindings don't need to call back into Python, allowing threading
-        - Easier extension/customization of inspection & UDTF logic - all in Python
-        - Faster execution - no Python callbacks (which has threading implications), and arrow statistics
-        """
-        if not self.enable_replacement_scan and len(self._udtf_registry) == 0:
-            return query, data
-
-        # using DuckDB Parser
-        try:
-            parse_result = self._impl.parse_sql(query)
-        except Exception as e:
-            logger.warning("Failed to parse SQL for preprocessing: %s", e)
-            return query, data or {}
-
-        if parse_result.get("error"):
-            logger.warning("SQL parsing error: %s", parse_result.get("error_message"))
-            return query, data or {}
-
-        data = data or {}
-
-        if self.enable_replacement_scan:
-            # A registered name never enters the catalog, so SHOW TABLES alone would miss it.
-            existing_tables = set(self._registered_objects)
-            try:
-                tables_result = self._call("SHOW TABLES", output_type="arrow_table")
-                existing_tables |= {row["name"] for row in tables_result.to_pylist()}
-            except Exception as e:
-                logger.warning("Failed to get table list: %s", e)
-
-            table_refs = set(parse_result.get("table_refs", []))
-            unknown_tables = table_refs - existing_tables
-
-            for table_name in unknown_tables:
-                replacement = self._get_replacement(table_name)
-                if replacement is not None:
-                    data[table_name] = replacement
-                    logger.debug("Replacement scan found: %s", table_name)
-
-        # UDTF processing
-        if len(self._udtf_registry) > 0:
-            function_calls = parse_result.get("function_calls", [])
-            replacements = []
-
-            for func_info in function_calls:
-                func_name = func_info["name"]
-                if func_name in self._udtf_registry:
-                    raw_args = func_info.get("args", [])
-                    raw_kwargs = func_info.get("kwargs", {})
-                    args = [self._parse_sql_value(arg) for arg in raw_args]
-                    kwargs = {k: self._parse_sql_value(v) for k, v in raw_kwargs.items()}
-
-                    table_name = self._generate_table_name(func_name, args)  # type: ignore
-
-                    try:
-                        result = self._call_udtf(func_name, args, kwargs)
-                        data[table_name] = result
-                        logger.debug("Executed UDTF %s -> %s", func_name, table_name)
-
-                        # Reconstruct original text
-                        arg_parts = list(raw_args)
-                        kwarg_parts = [f"{k} := {v}" for k, v in raw_kwargs.items()]
-                        original_text = f"{func_name}({', '.join(arg_parts + kwarg_parts)})"
-
-                        replacements.append({"original": original_text, "replacement": table_name})
-                    except Exception as e:
-                        logger.error("Failed to execute UDTF %s: %s", func_name, e)
-                        raise RuntimeError(f"UDTF execution failed for {func_name}: {e}") from e
-
-            for repl in replacements:
-                query = query.replace(repl["original"], repl["replacement"])
-
-        return query, data
 
     def parse_sql(self, query: str) -> list[Statement]:
         """Parse a SQL string into its statements

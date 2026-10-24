@@ -22,8 +22,14 @@ VSWHERE = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswher
 VC_TOOLS_REQUIREMENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
 
 # Manifest of the pin; a partial re-pin fails here instead of at link time or runtime.
-EXPECTED_HEADER_SHA = "f8f3f4dcd954cea2613572e8cc40a8612698d232"
-EXPECTED_HEADER_FUNCTION_COUNT = 609
+EXPECTED_HEADER_SHA = "d54cbbe3df17e8e5ce68312f483b4155836112aa"
+EXPECTED_HEADER_FUNCTION_COUNT = 620
+
+# Every duckdb_v2_* function is stamped unstable since duckdb/duckdb#27410, so a consumer that calls one must opt in.
+ALLOW_UNSTABLE = "DUCKDB_V2_API_ALLOW_UNSTABLE=1"
+
+# Exact text of every prototype and callback typedef the pxd names; unstable means a signature can move under an unchanged name.
+PROTOTYPE_SNAPSHOT = Path(__file__).with_name("pxd_prototypes.txt")
 
 # Overrides the library the link test links against, for checking a freshly built libduckdb before it is installed.
 LINK_LIB_ENV = "BAREDUCKDB_DUCKDB_LINK_LIB"
@@ -146,6 +152,27 @@ def pxd_functions():
     return {m.group(1): _top_level_param_count(m.group(2)) for m in re.finditer(pattern, body, re.S)}
 
 
+def header_prototypes():
+    """Return {name: whitespace-normalized text} for every prototype and callback typedef in the vendored header"""
+    text = VENDORED_HEADER.read_text(encoding="utf-8")
+    out = {}
+    for m in re.finditer(r"DUCKDB_C_API\s+(.*?\);)", text, re.S):
+        sig = " ".join(m.group(1).split())
+        name = re.search(r"(duckdb_v2_\w+)\s*\(", sig)
+        if name:
+            out[name.group(1)] = sig
+    for m in re.finditer(r"typedef\s+[^;{}]*?\(\s*\*\s*(duckdb_v2_\w+)\s*\)\s*\([^;]*?\);", text, re.S):
+        out[m.group(1)] = " ".join(m.group(0).split())
+    return out
+
+
+def declared_prototypes():
+    """Return the sorted header text of every prototype and callback typedef the pxd names"""
+    named = set(re.findall(r"duckdb_v2_\w+", PXD.read_text(encoding="utf-8")))
+    protos = header_prototypes()
+    return [protos[name] for name in sorted(named & protos.keys())]
+
+
 def pinned_sha():
     """Return the SHA recorded in HEADER_VERSION.txt, the last non-comment line"""
     lines = [ln.strip() for ln in HEADER_VERSION.read_text(encoding="utf-8").splitlines()]
@@ -225,6 +252,20 @@ def test_pxd_declarations_match_header():
     assert not mismatched, f"parameter count differs between duckdb_v2.pxd and duckdb_v2.h: {mismatched}"
 
 
+def test_declared_prototypes_match_snapshot():
+    """The header text of everything the pxd names is unchanged since the snapshot was reviewed"""
+    current = declared_prototypes()
+    recorded = PROTOTYPE_SNAPSHOT.read_text(encoding="utf-8").splitlines()
+    added = sorted(set(current) - set(recorded))
+    removed = sorted(set(recorded) - set(current))
+    assert not added and not removed, (
+        f"""prototypes the pxd names changed in duckdb_v2.h.
+now in the header: {added}
+in the snapshot only: {removed}
+Re-read each against duckdb_v2.pxd and its callers, then regenerate with `python {Path(__file__).relative_to(REPO_ROOT)}`."""
+    )
+
+
 def test_header_compiles_standalone(tmp_path):
     src = tmp_path / "t.c"
     src.write_text(
@@ -270,13 +311,14 @@ int main(void) {{ return sink[0] != 0 ? 0 : 1; }}
             "cl",
             "/nologo",
             f"/I{INCLUDE_DIR}",
+            f"/D{ALLOW_UNSTABLE}",
             str(src),
             f"/Fo{tmp_path / 't.obj'}",
             f"/Fe{tmp_path / 't.exe'}",
             str(lib),
         ]
     else:
-        cmd = [_cc(), "-I", str(INCLUDE_DIR), str(src), str(lib)]
+        cmd = [_cc(), "-I", str(INCLUDE_DIR), f"-D{ALLOW_UNSTABLE}", str(src), str(lib)]
         if sys.platform == "darwin":
             cmd += [
                 "-Wl,-undefined,error",
@@ -286,3 +328,8 @@ int main(void) {{ return sink[0] != 0 ? 0 : 1; }}
     _compile(cmd, cwd=tmp_path)
     exe = tmp_path / ("t.exe" if sys.platform == "win32" else "t")
     assert exe.exists(), f"linker reported success but {exe} was not written"
+
+
+if __name__ == "__main__":
+    PROTOTYPE_SNAPSHOT.write_text("\n".join(declared_prototypes()) + "\n", encoding="utf-8")
+    print(f"wrote {PROTOTYPE_SNAPSHOT}")

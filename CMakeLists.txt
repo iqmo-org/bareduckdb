@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21...4.3)
+cmake_minimum_required(VERSION 3.21...4.4)
 
 project(
   ${SKBUILD_PROJECT_NAME}
@@ -16,7 +16,7 @@ project(
 if(DEFINED ENV{BAREDUCKDB_DUCKDB_CHANNEL})
   set(_bdb_channel_default "$ENV{BAREDUCKDB_DUCKDB_CHANNEL}")
 else()
-  set(_bdb_channel_default "preview")
+  set(_bdb_channel_default "stable")
 endif()
 set(BAREDUCKDB_DUCKDB_CHANNEL "${_bdb_channel_default}"
     CACHE STRING "DuckDB download channel: preview | stable")
@@ -24,10 +24,10 @@ set(BAREDUCKDB_DUCKDB_CHANNEL "${_bdb_channel_default}"
 if(DEFINED ENV{BAREDUCKDB_DUCKDB_VERSION})
   set(_bdb_version_default "$ENV{BAREDUCKDB_DUCKDB_VERSION}")
 else()
-  set(_bdb_version_default "latest")
+  set(_bdb_version_default "")
 endif()
 set(BAREDUCKDB_DUCKDB_VERSION "${_bdb_version_default}"
-    CACHE STRING "Version tag, used only by the stable channel")
+    CACHE STRING "Version tag, used only by the stable channel; empty selects _duckdb_fetch.STABLE_VERSION")
 
 set(BAREDUCKDB_DUCKDB_ARTIFACT "$ENV{BAREDUCKDB_DUCKDB_ARTIFACT}"
     CACHE STRING "Override the platform artifact name, e.g. linux-arm64-musl")
@@ -114,9 +114,11 @@ message(STATUS "Free-threaded interpreter: ${BAREDUCKDB_FREE_THREADED}")
 set(_fetch_cmd
     "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/fetch_duckdb.py"
     --channel "${BAREDUCKDB_DUCKDB_CHANNEL}"
-    --version "${BAREDUCKDB_DUCKDB_VERSION}"
     --cache-dir "${CMAKE_CURRENT_SOURCE_DIR}/.duckdb-cache"
     --cmake-out "${CMAKE_CURRENT_BINARY_DIR}/duckdb_lib.cmake")
+if(BAREDUCKDB_DUCKDB_VERSION)
+  list(APPEND _fetch_cmd --version "${BAREDUCKDB_DUCKDB_VERSION}")
+endif()
 if(BAREDUCKDB_DUCKDB_ARTIFACT)
   list(APPEND _fetch_cmd --artifact "${BAREDUCKDB_DUCKDB_ARTIFACT}")
 endif()
@@ -143,9 +145,11 @@ include("${CMAKE_CURRENT_BINARY_DIR}/duckdb_lib.cmake")
 message(STATUS "DuckDB artifact: ${DUCKDB_ARTIFACT}")
 message(STATUS "DuckDB library:  ${DUCKDB_SHARED_LIB}")
 
-# The runtime library ships inside the package at bareduckdb/_libs/. Copying it
-# into the source tree, exactly as setup.py:260-273 did, gives one path into the
-# wheel (via wheel.packages) and keeps editable installs working unchanged.
+# Copy the fetched library into the untracked bareduckdb/_libs/ so source and
+# editable builds find it in-tree. It does not ship in the wheel: the .gitignore
+# *.so/*.dll/*.dylib rules keep it out, and auditwheel/delocate exclude it.
+# _duckdb_runtime resolves it at first import (BAREDUCKDB_DUCKDB_LIB, _libs/,
+# user cache, download).
 file(MAKE_DIRECTORY "${BAREDUCKDB_LIBS}")
 file(COPY_FILE "${DUCKDB_SHARED_LIB}"
      "${BAREDUCKDB_LIBS}/${DUCKDB_SHARED_LIB_NAME}"
@@ -217,7 +221,7 @@ foreach(_pyx IN LISTS BAREDUCKDB_PYX)
   target_link_libraries(${_name} PRIVATE duckdb::duckdb)
 
   target_compile_definitions(${_name} PRIVATE
-    DUCKDB_V2_API_ALLOW_UNSTABLE=0
+    DUCKDB_V2_API_ALLOW_UNSTABLE=1
     DUCKDB_V2_API_ALLOW_DEPRECATED=0)
 
   # Windows free-threaded pyconfig.h does not define Py_GIL_DISABLED; it is

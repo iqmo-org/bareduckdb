@@ -3,53 +3,64 @@
 
 cdef extern from *:
     """
+    /* Inline and marked unused: not every module that cimports this calls every helper. */
+    #ifndef BDV2_INLINE
+    #if defined(_MSC_VER)
+    #define BDV2_INLINE static __inline
+    #elif defined(__GNUC__)
+    #define BDV2_INLINE static inline __attribute__((unused))
+    #else
+    #define BDV2_INLINE static inline
+    #endif
+    #endif
+
     #if defined(_WIN32)
     #include <windows.h>
-    static void bdv2_yield(void) { SwitchToThread(); }
+    BDV2_INLINE void bdv2_yield(void) { SwitchToThread(); }
     #else
     #include <sched.h>
-    static void bdv2_yield(void) { sched_yield(); }
+    BDV2_INLINE void bdv2_yield(void) { sched_yield(); }
     #endif
 
     #if defined(_MSC_VER)
     #include <intrin.h>
-    static int bdv2_cas(long *ptr, long oldv, long newv) {
+    BDV2_INLINE int bdv2_cas(long *ptr, long oldv, long newv) {
         return _InterlockedCompareExchange(ptr, newv, oldv) == oldv;
     }
-    static long bdv2_add(long *ptr, long delta) {
+    BDV2_INLINE long bdv2_add(long *ptr, long delta) {
         return _InterlockedExchangeAdd(ptr, delta) + delta;
     }
-    static void bdv2_unlock(long *ptr) {
+    BDV2_INLINE void bdv2_unlock(long *ptr) {
         _InterlockedExchange(ptr, 0);
     }
-    static long bdv2_load_acquire(long *ptr) {
+    BDV2_INLINE long bdv2_load_acquire(long *ptr) {
         /* MSVC has no acquire-load intrinsic that is correct on both x64 and ARM64, and
            a volatile read is only acquire under /volatile:ms. An interlocked no-op read
            is a full barrier on every target MSVC compiles for. */
         return _InterlockedCompareExchange(ptr, 0, 0);
     }
-    static void bdv2_store_release(long *ptr, long value) {
+    BDV2_INLINE void bdv2_store_release(long *ptr, long value) {
         _InterlockedExchange(ptr, value);
     }
     #else
-    static int bdv2_cas(long *ptr, long oldv, long newv) {
+    BDV2_INLINE int bdv2_cas(long *ptr, long oldv, long newv) {
         return __sync_bool_compare_and_swap(ptr, oldv, newv);
     }
-    static long bdv2_add(long *ptr, long delta) {
+    BDV2_INLINE long bdv2_add(long *ptr, long delta) {
         return __sync_add_and_fetch(ptr, delta);
     }
-    static void bdv2_unlock(long *ptr) {
+    BDV2_INLINE void bdv2_unlock(long *ptr) {
         __atomic_store_n(ptr, 0, __ATOMIC_RELEASE);
     }
-    static long bdv2_load_acquire(long *ptr) {
+    BDV2_INLINE long bdv2_load_acquire(long *ptr) {
         return __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
     }
-    static void bdv2_store_release(long *ptr, long value) {
+    BDV2_INLINE void bdv2_store_release(long *ptr, long value) {
         __atomic_store_n(ptr, value, __ATOMIC_RELEASE);
     }
     #endif
 
-    static void bdv2_lock(long *ptr) {
+    BDV2_INLINE void bdv2_lock(long *ptr) {
         while (!bdv2_cas(ptr, 0, 1)) {
             bdv2_yield();
         }

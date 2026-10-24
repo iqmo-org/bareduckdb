@@ -25,8 +25,8 @@ _fetch = _load_fetch_module()
 def main() -> int:
     """Resolve the DuckDB library, downloading if needed, and emit a CMake fragment"""
     ap = argparse.ArgumentParser()
-    ap.add_argument("--channel", default="preview", choices=["preview", "stable"])
-    ap.add_argument("--version", default="latest")
+    ap.add_argument("--channel", default="stable", choices=["preview", "stable"])
+    ap.add_argument("--version", default="")
     ap.add_argument("--artifact", default=None)
     ap.add_argument("--target-machine", default=None)
     ap.add_argument("--cache-dir", required=True)
@@ -34,6 +34,7 @@ def main() -> int:
     ap.add_argument("--cmake-out", required=True)
     args = ap.parse_args()
 
+    args.version = args.version or _fetch.STABLE_VERSION
     artifact = args.artifact or _fetch.duckdb_artifact(args.target_machine)
     lib_name = _fetch.shared_lib_name()
 

@@ -21,7 +21,8 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 
 PREVIEW_BRANCH = "v2.0-cyanoptera"
 PREVIEW_URL = "https://artifacts.duckdb.org/{branch}/duckdb-shared-libs-{artifact}.tar.gz"
-STABLE_URL = "https://install.duckdb.org/{version}/libduckdb-{artifact}.zip"
+STABLE_VERSION = "v2.0.0"
+STABLE_URL = "https://install.duckdb.org/{version}/duckdb-shared-libs-{artifact}.tar.gz"
 
 
 def is_musl() -> bool:

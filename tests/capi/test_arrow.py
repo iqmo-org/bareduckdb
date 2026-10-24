@@ -33,7 +33,7 @@ except ImportError:
 ORACLE_HOWTO = (
     "the official duckdb client is not importable, so the cross-check did not run. "
     "It belongs to no dependency group, so `uv sync` uninstalls it; enable it with "
-    "`uv pip install 'duckdb>=1.5.5'` on a 3.12 to 3.14 interpreter, since it publishes "
+    "`uv pip install 'duckdb==2.0.*'` on a 3.12 to 3.14 interpreter, since it publishes "
     "no wheel above cp314. Set BAREDUCKDB_REQUIRE_ORACLE=1 to fail instead of skipping."
 )
 ORACLE_REQUIRED = os.environ.get("BAREDUCKDB_REQUIRE_ORACLE") == "1"

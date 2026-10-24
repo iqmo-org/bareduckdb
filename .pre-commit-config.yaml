@@ -3,7 +3,7 @@ default_language_version:
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
-    rev: v0.16.9
+    rev: v0.17.2
     hooks:
       # Run the linter.
       - id: ruff-check
@@ -32,7 +32,7 @@ repos:
     hooks:
       - id: nbstripout
   - repo: https://github.com/MarcoGorelli/cython-lint
-    rev: v0.21.1
+    rev: v0.22.0
     hooks:
       # .pxd files are cdef extern declarations transcribed from the vendored C
       # header; line length there is a consequence of the C signature, not
@@ -50,4 +50,4 @@ repos:
         language: node
         pass_filenames: true
         exclude: ^(tests|benchmarks)/
-        additional_dependencies: ["pyright"]
+        additional_dependencies: ["pyright@1.1.414"]

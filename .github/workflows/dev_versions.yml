@@ -49,13 +49,13 @@ jobs:
           submodules: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7.0.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
 
       - name: Install UV
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           cache-suffix: -dev-versions-${{ matrix.python-version }}
@@ -174,7 +174,7 @@ jobs:
         if: matrix.python-version != '3.14t' && !startsWith(matrix.python-version, '3.15')
         shell: bash
         run: |
-          uv pip install "duckdb==1.5.*" --pre
+          uv pip install "duckdb==2.0.*"
           uv run --no-sync pytest tests/comparison -v --tb=short --cov=bareduckdb --cov-append
           uv pip uninstall duckdb
 
@@ -277,10 +277,6 @@ jobs:
               test -x "$PY" || { echo "ERROR: no interpreter at $PY"; ls /opt/python; exit 1; }
               gcc --version | head -1
               export UV_PYTHON="$PY"
-              # TODO(cp315): delete this block once pandas/pyarrow ship stable cp315 wheels
-              if [ "${{ matrix.python }}" = cp315t ]; then
-                uv lock --upgrade-package pandas --upgrade-package pyarrow
-              fi
               uv sync --no-default-groups --extra test --reinstall-package bareduckdb
 
               # libduckdb must be the musl build, not glibc

@@ -182,7 +182,7 @@ class TestArrowDuckDBParquet:
         duckdb_conn = duckdb.connect(":memory:")
         duckdb_conn.execute("SET arrow_output_version='1.0'; SET produce_arrow_string_view=False")
         duckdb_conn.register("arrow_table", filtered_table)
-        duckdb_result = duckdb_conn.execute(query).fetch_arrow_table()
+        duckdb_result = duckdb_conn.execute(query).to_arrow_table()
         pq.write_table(duckdb_result, duckdb_path)
         duckdb_readback = pq.read_table(duckdb_path)
         duckdb_conn.close()

@@ -38,12 +38,11 @@ DEFAULT_TABLE_BATCH_ROWS = 16_777_216
 
 
 # What a superseded stream's get_last_error reports; pyarrow raises it as ArrowInvalid (EINVAL).
-SUPERSEDED_ERROR = (
-    "Invalid Input Error: this result was closed because its connection ran another statement. "
-    "Read a result before the connection's next statement, or run that statement on a cursor()"
+cdef const char *_superseded_text = (
+    b"Invalid Input Error: this result was closed because its connection ran another statement. "
+    b"Read a result before the connection's next statement, or run that statement on a cursor()"
 )
-_SUPERSEDED_BYTES = SUPERSEDED_ERROR.encode("utf-8")
-cdef const char *_superseded_text = _SUPERSEDED_BYTES
+SUPERSEDED_ERROR = _superseded_text.decode("utf-8")
 
 
 cdef struct bd_stream_owner:

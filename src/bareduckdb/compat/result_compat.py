@@ -188,7 +188,9 @@ class Result:
         self._rows_iter = None
         self._row_chunks = None
         self._stream_batch_rows = None
-        self._was_deferred = self._capi is not None
+        # duckdb 2.0's DBAPI answer: the changed-row count of a plain INSERT, UPDATE or DELETE, else -1.
+        rows_changed = self._capi.rows_changed if self._capi is not None else None
+        self._rowcount = -1 if rows_changed is None else rows_changed
         self._schema: tuple[tuple[str, ...], tuple[str, ...]] | None = None
         self._consumed_by = None
         self._cancelled = None
@@ -559,6 +561,9 @@ class Result:
                     row_chunks = capi.row_chunks()
                     self._row_chunks = row_chunks
                     self._rows_iter = itertools.chain.from_iterable(row_chunks)
+                    if capi.rows_changed is not None:
+                        # duckdb 2.0 returns a changed-rows statement's count as its one row.
+                        self._rows_iter = itertools.chain([(capi.rows_changed,)], self._rows_iter)
                     self._capi = None
 
                 rows_iter = self._rows_iter
@@ -625,10 +630,8 @@ class Result:
 
     @property
     def rowcount(self) -> int:
-        """DB-API 2.0 row count, or -1 when it cannot be known without draining the result"""
-        if self._table is None and self._was_deferred:
-            return -1
-        return len(self.arrow_table())
+        """DB-API 2.0 row count: the rows an INSERT, UPDATE or DELETE changed, else -1, as in duckdb 2.0"""
+        return self._rowcount
 
     @property
     def columns(self) -> list[str]:

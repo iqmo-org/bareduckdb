@@ -37,7 +37,7 @@ arrow = [
     "pyarrow>=26.0.0; sys_platform != 'win32' or platform_machine != 'ARM64'",
 ]
 test = [
-    "pytest>=8.4.2",
+    "pytest>=9.0.3",
     "anyio>=4.15",
     "trio>=0.34",
     "pytest-xdist>=3.8.0",
@@ -125,7 +125,6 @@ manylinux-aarch64-image = "manylinux_2_28"
 musllinux-x86_64-image = "musllinux_1_2"
 musllinux-aarch64-image = "musllinux_1_2"
 
-enable = ["cpython-prerelease"]  # TODO: remove when 3.15 ships
 test-requires = ["uv"]
 
 [tool.cibuildwheel.linux]
@@ -141,10 +140,48 @@ repair-wheel-command = "delocate-wheel --require-archs {delocate_archs} --ignore
 repair-wheel-command = ""
 
 [[tool.cibuildwheel.overrides]]
-# TODO: remove when 3.15 ships
-select = ["cp315-*", "cp315t-*"]
-# build-frontend is build[uv], so the test env installs via `uv pip`; UV_EXTRA_INDEX_URL
-test-environment = { UV_EXTRA_INDEX_URL = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple", PIP_EXTRA_INDEX_URL = "https://pypi.anaconda.org/scientific-python-nightly-wheels/simple" }
+# GraalPy: built by .github/workflows/graalpy.yml with `--only gp313_253-manylinux_x86_64`.
+select = "gp*"
+# cibuildwheel documents a GraalPy/uv incompatibility; use plain build.
+build-frontend = "build"
+# pyarrow/pandas/numpy have GraalPy wheels only on Oracle's index; pins are its newest graalpy253 wheels, binary only so drift fails fast.
+test-requires = ["pyarrow==24.0.0", "pandas==3.0.3", "pytest", "filelock", "pytest-run-parallel", "tzdata"]
+test-environment = { PIP_EXTRA_INDEX_URL = "https://www.graalvm.org/python/wheels/", PIP_ONLY_BINARY = "pyarrow,pandas,numpy" }
+test-command = '''
+set -e
+python -VV
+python -m pip --version
+LIB={project}/src/bareduckdb/_libs/libduckdb.so
+test -f "$LIB" || { echo "ERROR: $LIB missing after build"; exit 1; }
+PKG=$(python -c "import importlib.util as u; print(u.find_spec('bareduckdb').submodule_search_locations[0])")
+mkdir -p "$PKG/_libs"
+cp -f "$LIB" "$PKG/_libs/"
+python -m pytest --import-mode=importlib -o addopts= -p no:randomly -v \
+  {project}/tests/capi/test_no_runtime_deps.py \
+  {project}/tests/capi/test_connection.py \
+  {project}/tests/capi/test_result.py \
+  {project}/tests/capi/test_arrow.py \
+  {project}/tests/capi/test_register.py \
+  {project}/tests/capi/test_errors.py \
+  {project}/tests/capi/test_lifetime.py \
+  {project}/tests/capi/test_locking.py \
+  {project}/tests/capi/test_atomics.py \
+  {project}/tests/capi/test_duckdb_runtime.py \
+  {project}/tests/core/test_connect.py \
+  {project}/tests/core/test_register.py \
+  {project}/tests/core/test_arrow_in.py \
+  {project}/tests/core/test_type_roundtrip_matrix.py \
+  {project}/tests/compat/test_compat_basic.py \
+  {project}/tests/compat/test_arrow_reader_contract.py
+python -m pytest --import-mode=importlib -o addopts= -p no:randomly --parallel-threads=4 --iterations=5 --tb=short \
+  -m "not anyio and not parallel_threads" \
+  {project}/tests/capi/test_locking.py \
+  {project}/tests/capi/test_atomics.py \
+  {project}/tests/capi/test_result.py \
+  {project}/tests/capi/test_arrow.py \
+  {project}/tests/capi/test_connection.py \
+  {project}/tests/core/test_register.py
+'''
 
 [tool.cython-lint]
 max-line-length = 160
@@ -190,6 +227,7 @@ ignore = [
 "tests/**/*.py" = ["S101"]
 
 [tool.uv]
+required-version = ">=0.13.4"
 default-groups = ["dev"]
 environments = [ # no need to resolve packages beyond these platforms with uv...
     "python_version >= '3.12' and sys_platform == 'darwin' and platform_machine == 'arm64'",
@@ -235,7 +273,7 @@ dev = [
     "pytest-xdist>=3.8.0",
     "pytest-repeat>=0.9.3",
     "tabulate",
-    "ruff>=0.14.10",
+    "ruff>=0.17.2",
 ]
 # Packages with no free-threaded support
 dev-gil = [

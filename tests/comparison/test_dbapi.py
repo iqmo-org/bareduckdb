@@ -53,6 +53,30 @@ class TestDBAPIBasics:
         assert bare_conn.rowcount == -1
         assert duck_conn.rowcount == -1
 
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "INSERT INTO t VALUES (4), (5), (6)",
+            "UPDATE t SET i = i + 10 WHERE i < 3",
+            "DELETE FROM t WHERE i = 3",
+            "DELETE FROM t WHERE i = 999",
+            "INSERT INTO t VALUES (7), (8) RETURNING i",
+            "CREATE TABLE u AS SELECT * FROM range(4)",
+            "CREATE TABLE u(i INTEGER)",
+            "BEGIN",
+        ],
+    )
+    def test_rowcount_and_rows_after_a_write(self, both_connections, sql):
+        """rowcount, the description's names and the rows a write returns all match duckdb 2.0"""
+        bare_conn, duck_conn = both_connections
+        observed = []
+        for conn in (bare_conn, duck_conn):
+            conn.execute("CREATE TABLE t(i INTEGER)")
+            conn.execute("INSERT INTO t VALUES (1), (2), (3)")
+            conn.execute(sql)
+            observed.append((conn.rowcount, [d[0] for d in conn.description], conn.fetchall(), conn.rowcount))
+        assert observed[0] == observed[1], observed
+
     def test_fetchone(self, both_connections):
         bare_conn, duck_conn = both_connections
 

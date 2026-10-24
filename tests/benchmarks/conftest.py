@@ -430,7 +430,7 @@ def conn(request):
     _apply_connection_settings(connection, request)
 
     # Warm the connection
-    _ = connection.execute("select * from range(10)").fetch_arrow_table()
+    _ = connection.sql("select * from range(10)").to_arrow_table()
 
     yield connection
     connection.close()
@@ -451,7 +451,7 @@ def conne(request):
         connection = bareduckdb.connect()
 
     # Warm the connection
-    _ = connection.execute("select * from range(10)").fetch_arrow_table()
+    _ = connection.sql("select * from range(10)").to_arrow_table()
 
     yield connection.sql
     connection.close()

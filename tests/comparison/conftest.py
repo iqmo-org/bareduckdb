@@ -291,7 +291,7 @@ def run_query_and_export(
     output_path: str | Path
 ) -> pa.Table:
     result = connection.execute(query, parameters=parameters)
-    table = result.fetch_arrow_table()
+    table = result.to_arrow_table()
 
     pq.write_table(table, str(output_path))
 

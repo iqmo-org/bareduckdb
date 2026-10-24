@@ -96,7 +96,7 @@ def test_rows_stay_readable_after_arrow_table_materializes_them():
         result = conn._last_result_get()
         assert result.arrow_table().num_rows == 3
         assert result.fetchall() == [(0,), (1,), (2,)]
-        assert result.rowcount == 3
+        assert result.rowcount == -1
 
 
 def test_an_explicit_output_type_stays_eager():
@@ -107,7 +107,7 @@ def test_an_explicit_output_type_stays_eager():
         result = conn._last_result_get()
         assert result._capi is None
         assert isinstance(result._table, pa.Table)
-        assert result.rowcount == 1
+        assert result.rowcount == -1
         assert [d[1] for d in result.description] == [pa.int32()]
 
 

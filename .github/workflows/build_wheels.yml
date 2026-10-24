@@ -36,14 +36,14 @@ jobs:
           submodules: false
 
       - name: Install Astral UV
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           cache-suffix: -${{ matrix.python }}-${{ matrix.platform.cibw_system }}_${{ matrix.platform.arch }}
 
       - name: Build and test wheels
         if: matrix.platform.cibw_system != 'musllinux'
-        uses: pypa/cibuildwheel@v4.3.0
+        uses: pypa/cibuildwheel@b9e566a2b284570af229f6c2a33673410d0389a3 # v4.3.4
         env:
           CIBW_TEST_COMMAND: pytest {project}/tests --import-mode=importlib --ignore={project}/tests/experimental --ignore={project}/tests/downstream --ignore={project}/tests/comparison --ignore={project}/tests/benchmarks -v -n auto --cov=bareduckdb --cov-report=term-missing
           CIBW_TEST_EXTRAS: "test"
@@ -53,7 +53,7 @@ jobs:
 
       - name: Build and test wheels (musllinux)
         if: matrix.platform.cibw_system == 'musllinux'
-        uses: pypa/cibuildwheel@v4.3.0
+        uses: pypa/cibuildwheel@b9e566a2b284570af229f6c2a33673410d0389a3 # v4.3.4
         env:
           CIBW_TEST_COMMAND: |
             set -e
@@ -87,7 +87,7 @@ jobs:
           submodules: false
 
       - name: Install Astral UV
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
 
       - name: Build sdist
         run: uv build --sdist --out-dir dist
@@ -99,7 +99,7 @@ jobs:
           path: dist/*.tar.gz
           compression-level: 0
 
-  # cibuildwheel doesn't support 25.3 yet
+  # Separate job: the matrix's CIBW_TEST_* env vars would mask pyproject's gp* override
   graalpy_wheel:
     name: GraalPy wheel
     uses: ./.github/workflows/graalpy.yml
@@ -141,6 +141,6 @@ jobs:
           test -z "$bad" || { echo "ERROR: unrepaired linux tag, PyPI will reject:"; echo "$bad"; exit 1; }
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: dist/

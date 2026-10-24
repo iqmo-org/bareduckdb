@@ -475,7 +475,7 @@ class Result:
                 self._read = True
                 _reader = self._reader
                 self._reader = None
-                if not hasattr(_reader, "read_next_batch"):
+                if hasattr(_reader, "lease"):
                     import pyarrow as pa
 
                     reader = pa.RecordBatchReader._import_from_c_capsule(self._export_reader(_reader))  # type: ignore

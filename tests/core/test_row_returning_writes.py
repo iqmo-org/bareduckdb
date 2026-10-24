@@ -222,15 +222,13 @@ def test_an_effect_group_asked_for_as_arrow_runs_at_execute():
         assert conn.execute("select * from t").fetchall() == [(1, 0)]
 
 
-def test_a_returning_over_a_dynamic_pivot_cannot_become_arrow_after_a_plain_execute():
-    """It ran as rows at execute(), and DuckDB has no row-to-Arrow conversion"""
+def test_a_returning_over_a_dynamic_pivot_converts_its_rows_after_a_plain_execute():
+    """It ran as rows at execute(), so arrow_table() builds the table from those rows, writing once"""
     pytest.importorskip("pyarrow")
     with bareduckdb.connect() as conn:
         _pivot_tables(conn)
         conn.execute(_PIVOT_RETURNING)
-        with pytest.raises(RuntimeError, match="already ran as a row result"):
-            conn.arrow_table()
-        assert conn.fetchall() == [(1, 2)]
+        assert conn.arrow_table().to_pylist() == [{"a": 1, "b": 2}]
         assert conn.execute("select count(*) from dst").fetchall() == [(1,)]
 
 

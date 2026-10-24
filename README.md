@@ -184,6 +184,18 @@ then. anyio's `move_on_after` and `fail_after` work on either backend, and
 `bareduckdb.register_as_duckdb()` aliases the `duckdb` module to bareduckdb. CI runs
 SQLAlchemy (duckdb-engine), jupysql and magic-duckdb this way.
 
+```python
+import bareduckdb
+
+bareduckdb.register_as_duckdb()
+import duckdb
+
+print(duckdb.__version__)  # bareduckdb's version
+with duckdb.connect() as conn:
+    print(conn.execute("PRAGMA version").arrow_table())
+    print(conn.execute("select * from range(10)").df())
+```
+
 ### Run without network access
 
 In a container, mount the cache directory (see "The DuckDB library"), or the download repeats
@@ -323,6 +335,14 @@ Defaults follow DuckDB, with these differences.
 - VARINT returns `int`, not `str`.
 - TIMESTAMPTZ values compare equal to duckdb-python's but carry a different `tzinfo`.
 - UNION and VARIANT raise from `fetchall()` and work through Arrow.
+- A PRAGMA, CALL or `RETURNING` statement runs at `execute()` as rows. Its Arrow consumers
+  (`arrow_table()`, `df()`, `pl()`, `arrow_reader()`) build the table from those rows under
+  DuckDB's own Arrow types, and need pyarrow. A column whose row value is lossy (INTERVAL,
+  BIT, BIGNUM, TIMESTAMP_NS, TIME_NS) or that does not convert raises and leaves the rows
+  fetchable; pass `output_type="arrow_table"` to `execute()` for those. An infinite or
+  out-of-range date or timestamp is refused the same way, as is a real `9999-12-31` or
+  `0001-01-01`, which the row value cannot tell apart from infinity. A converted ENUM's
+  dictionary holds only the values present.
 
 ### Not implemented
 
@@ -335,6 +355,28 @@ Defaults follow DuckDB, with these differences.
   [narwhals](https://github.com/narwhals-dev/narwhals).
 - Python scalar UDFs and fsspec filesystems.
 - Filter pushdown into registered sources.
+
+### DuckDB C API 2.0 limitations
+
+These come from the v2 C API itself, not from bareduckdb, and go away when upstream adds the
+missing route.
+
+- **No VARIANT or UNION route in the value API.** `fetchall()` raises `NotImplementedError` on a
+  VARIANT or UNION column. The Arrow export handles both; DuckDB writes VARIANT as the
+  `arrow.parquet.variant` extension struct.
+- **A result's format is fixed when it is submitted, and there is no row-to-Arrow conversion.**
+  A PRAGMA, CALL or `RETURNING` runs at `execute()` as rows, so its Arrow consumers build the
+  table from those rows. That fails for a column the row path cannot read or cannot represent
+  exactly, including VARIANT. `PRAGMA storage_info` and `CALL duckdb_settings()` are the common
+  cases.
+
+Workarounds for a PRAGMA or CALL whose Arrow consumer raises:
+
+```python
+conn.execute("select * from pragma_storage_info('t')").arrow_table()  # PRAGMA name(args) as a table function
+conn.execute("select * from duckdb_settings()").df()                  # CALL f() as SELECT * FROM f()
+conn.execute("pragma storage_info('t')", output_type="arrow_table")   # ask for Arrow up front
+```
 
 ## Why it works this way
 

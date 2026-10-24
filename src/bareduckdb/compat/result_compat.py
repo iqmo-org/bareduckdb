@@ -28,7 +28,87 @@ logger = logging.getLogger(__name__)
 _MATERIALIZING_BATCH_ROWS = 16_777_216
 
 # DuckDB types whose row value does not carry the Arrow value: INTERVAL folds months into days, BIT is a str, BIGNUM an int, *_NS stops at microseconds.
-_ROWS_NOT_ARROW_TYPES = re.compile(r"\b(INTERVAL|BIT|BITSTRING|BIGNUM|VARINT|TIMESTAMP_NS|TIME_NS|UNION|VARIANT|GEOMETRY)\b")
+_ROWS_NOT_ARROW_TYPES = frozenset(("INTERVAL", "BIT", "BITSTRING", "BIGNUM", "VARINT", "UNION", "VARIANT", "GEOMETRY"))
+
+# A DuckDB type's text: quoted identifiers, string literals (ENUM members), words, numbers and punctuation.
+_TYPE_TOKEN = re.compile(r"""\s*(?:("(?:[^"]|"")*")|('(?:[^']|'')*')|([A-Za-z_][A-Za-z0-9_$]*)|(\d+)|([(),\[\]]))""")
+
+# Types whose parenthesised arguments are (member name, member type) pairs.
+_NAMED_MEMBER_TYPES = frozenset(("STRUCT", "ROW", "UNION"))
+
+
+def _type_tokens(text: str) -> list[tuple[str, str]]:
+    """Split a DuckDB type's text into (kind, token) pairs; raises ValueError on text it does not recognise"""
+    tokens = []
+    pos = 0
+    text = text.rstrip()
+    while pos < len(text):
+        match = _TYPE_TOKEN.match(text, pos)
+        if match is None or match.end() == pos:
+            raise ValueError(f"unrecognised type text at {pos}: {text!r}")
+        kind = ("quoted", "string", "word", "number", "punct")[match.lastindex - 1]  # type: ignore[operator]
+        tokens.append((kind, match.group(match.lastindex)))  # type: ignore[arg-type]
+        pos = match.end()
+    return tokens
+
+
+def _type_names(text: str) -> set[str]:
+    """The DuckDB type names a type's text is built from, never a STRUCT member name or an ENUM member"""
+    tokens = _type_tokens(text)
+    names: set[str] = set()
+
+    def expect(pos: int, token: str) -> int:
+        if pos >= len(tokens) or tokens[pos] != ("punct", token):
+            raise ValueError(f"expected {token!r} at token {pos} of {text!r}")
+        return pos + 1
+
+    def parse_type(pos: int) -> int:
+        words = []
+        while pos < len(tokens) and tokens[pos][0] == "word":
+            words.append(tokens[pos][1].upper())
+            pos += 1
+        if not words:
+            raise ValueError(f"expected a type name at token {pos} of {text!r}")
+        name = " ".join(words)
+        names.add(name)
+        if pos < len(tokens) and tokens[pos] == ("punct", "("):
+            pos += 1
+            while True:
+                if name in _NAMED_MEMBER_TYPES:
+                    if pos >= len(tokens) or tokens[pos][0] not in ("word", "quoted"):
+                        raise ValueError(f"expected a member name at token {pos} of {text!r}")
+                    pos = parse_type(pos + 1)
+                elif pos < len(tokens) and tokens[pos][0] in ("string", "number"):
+                    pos += 1
+                else:
+                    pos = parse_type(pos)
+                if pos < len(tokens) and tokens[pos] == ("punct", ","):
+                    pos += 1
+                    continue
+                pos = expect(pos, ")")
+                break
+        while pos < len(tokens) and tokens[pos] == ("punct", "["):
+            pos += 1
+            if pos < len(tokens) and tokens[pos][0] == "number":
+                pos += 1
+            pos = expect(pos, "]")
+        return pos
+
+    if parse_type(0) != len(tokens):
+        raise ValueError(f"trailing text after the type in {text!r}")
+    return names
+
+
+def _rows_not_arrow(type_name: str) -> bool:
+    """True when a column of this DuckDB type cannot be rebuilt exactly from its row values"""
+    try:
+        names = _type_names(type_name)
+    except ValueError as exc:
+        # Refused rather than guessed: an unparsed type could hide one of the lossy ones.
+        logger.debug("type text not parsed, refusing its rows-to-Arrow conversion: %s", exc)
+        return True
+    return any(name in _ROWS_NOT_ARROW_TYPES or name.endswith("_NS") for name in names)
+
 
 _BIGNUM_HEADER_BYTES = 3
 _BIGNUM_LENGTH_MASK = 0x7FFFFF
@@ -187,7 +267,8 @@ def _has_infinity(value: Any) -> bool:
         # Exact type: datetime.max compares unequal to date.max, but a datetime is also a date.
         return any(type(value) is type(marker) and value == marker for marker in _INFINITY_MARKERS)
     if isinstance(value, dict):
-        return any(_has_infinity(v) for v in value.values())
+        # A MAP row is a dict whose keys can be dates; a nested-key MAP is {'key': [...], 'value': [...]}, walked as values.
+        return any(_has_infinity(k) or _has_infinity(v) for k, v in value.items())
     if isinstance(value, (list, tuple)):
         return any(_has_infinity(v) for v in value)
     return False
@@ -209,6 +290,9 @@ def _arrow_array(pa: Any, values: Any, field: pa.Field) -> pa.Array:
     elif pa.types.is_integer(storage_type) and any(isinstance(v, bool) for v in values):
         values = [None if v is None else int(v) for v in values]
     elif pa.types.is_time(storage_type):
+        if any(isinstance(v, str) for v in values):
+            # The row path returns DuckDB's text for a time Python cannot hold, such as 24:00:00.
+            raise ValueError(f"column {field.name!r} holds a time outside Python's range, which its row value carries as text")
         # Arrow has no time-with-timezone; DuckDB's exporter writes the wall clock, as here.
         values = [v if v is None else v.replace(tzinfo=None) for v in values]
     storage = pa.array(values, type=storage_type)
@@ -356,7 +440,7 @@ class Result:
     def _table_from_rows(self, capi: Any) -> None:
         """Build the table of a result that already ran as rows, under DuckDB's own Arrow schema; call under _result_lock"""
         names, types = tuple(capi.columns), tuple(capi.column_types)
-        lossy = [f"{name} {type_name}" for name, type_name in zip(names, types, strict=True) if _ROWS_NOT_ARROW_TYPES.search(type_name)]
+        lossy = [f"{name} {type_name}" for name, type_name in zip(names, types, strict=True) if _rows_not_arrow(type_name)]
         try:
             import pyarrow as pa
         except ImportError as exc:

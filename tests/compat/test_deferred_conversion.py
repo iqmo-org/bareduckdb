@@ -108,7 +108,7 @@ def test_an_explicit_output_type_stays_eager():
         assert result._capi is None
         assert isinstance(result._table, pa.Table)
         assert result.rowcount == -1
-        assert [d[1] for d in result.description] == [pa.int32()]
+        assert [d[1] for d in result.description] == ["INTEGER"]
 
 
 def test_metadata_on_a_schema_that_needs_stepping_leaves_the_result_whole():

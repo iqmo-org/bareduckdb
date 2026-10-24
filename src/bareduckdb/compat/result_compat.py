@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from ..capi.arrow_export import cancel_translating_reader, cancelled_from, empty_shape_result
 from ..capi.impl.errors import QueryCancelled  # type: ignore[import-untyped]
+from .arrow_type_names import schema_columns, stream_schema
 
 if TYPE_CHECKING:
     from typing import Any
@@ -265,6 +266,7 @@ class Result:
         rows_changed = self._capi.rows_changed if self._capi is not None else None
         self._rowcount = -1 if rows_changed is None else rows_changed
         self._schema: tuple[tuple[str, ...], tuple[str, ...]] | None = None
+        self._arrow_schema: Any = None  # an exported stream's schema, mapped to DuckDB names only if description asks
         self._consumed_by = None
         self._cancelled = None
         self._failed = None
@@ -411,8 +413,6 @@ class Result:
     def _result_table(self) -> pa.Table:
         import pyarrow as pa
 
-        if self._table is not None:
-            return self._table
         with self._result_lock:
             self._raise_if_cancelled()
             if self._capi is not None:
@@ -432,18 +432,48 @@ class Result:
                     reader.close()
                 self._table = table
                 return table
+            if self._consumed_by != "arrow_table()":
+                self._claim("arrow_table()")
+            return self._table_locked()
+
+    def _table_locked(self) -> pa.Table:
+        """The table behind a result that is not pending, reading an execute()-time reader in full; call under _result_lock"""
         if self._table is not None:
             return self._table
-        if self._consumed_by is not None:
-            raise RuntimeError(
-                f"this result was consumed by {self._consumed_by}; re-execute query to call "
-                "arrow_table(). The rows are not cached, so there is nothing left to re-read"
-            )
-        if self._read:
+        if self._reader is None or self._read:
             raise RuntimeError("Can't materialize a Reader or Capsule if it's already been retrieved")
-        self._table = pa.table(self)  # type: ignore
-        self._reader = None
-        return self._table  # type: ignore
+        import pyarrow as pa
+
+        source, self._reader = self._reader, None
+        self._read = True
+        if hasattr(source, "lease"):
+            capsule = self._export_reader(source)
+        elif hasattr(source, "__arrow_c_stream__"):
+            capsule = source.__arrow_c_stream__()
+        else:
+            capsule = source
+        reader = pa.RecordBatchReader._import_from_c_capsule(capsule)  # type: ignore
+        try:
+            table = reader.read_all()
+        except Exception as exc:
+            self._record_read_cancel(exc)
+            raise
+        finally:
+            reader.close()
+        self._table = table
+        return table
+
+    def _keep_reader_schema(self, reader: Any) -> None:
+        """Keep the schema of a reader leaving this result, so description still answers; call under _result_lock"""
+        if self._schema is not None:
+            return
+        try:
+            if hasattr(reader, "schema"):
+                self._arrow_schema = reader.schema
+            elif type(reader).__name__ == "PyCapsule":
+                self._arrow_schema = stream_schema(reader)
+        except Exception as exc:
+            logger.debug("no schema kept for the reader handed out: %s", exc)
 
     def arrow_reader(self, batch_size: int | None = None) -> pa.RecordBatchReader:
         """Return the streaming reader, or raise if the result was materialized.
@@ -464,14 +494,20 @@ class Result:
                 self._bound_schema()
                 capsule = self._engine_capsule(batch_size or 0)
                 reader = pa.RecordBatchReader._import_from_c_capsule(capsule)  # type: ignore
+                self._keep_reader_schema(reader)
                 return cancel_translating_reader(reader, self._set_cancelled)
+
+            if self._consumed_by is not None and self._consumed_by != "arrow_table()":
+                self._claim("arrow_reader()")
 
             if self._reader is not None:
                 if batch_size:
                     logger.debug("arrow_reader(batch_size=%d) ignored: the reader was made at execute()", batch_size)
+                self._claim("arrow_reader()")
                 self._read = True
                 _reader = self._reader
                 self._reader = None
+                self._keep_reader_schema(_reader)
                 if hasattr(_reader, "lease"):
                     import pyarrow as pa
 
@@ -499,10 +535,19 @@ class Result:
                 if self._table is not None:
                     return self._table.__arrow_c_stream__(requested_schema)
                 self._bound_schema()
-                return self._engine_capsule(self._stream_batch_rows or 0, requested_schema)
+                capsule = self._engine_capsule(self._stream_batch_rows or 0, requested_schema)
+                if self._schema is None:
+                    try:
+                        self._arrow_schema = stream_schema(capsule)
+                    except Exception as exc:
+                        logger.debug("no schema kept for the exported stream: %s", exc)
+                return capsule
 
+            if self._consumed_by in (None, "a row fetch"):
+                self._claim("an Arrow export")
             self._read = True
             if self._reader is not None:
+                self._keep_reader_schema(self._reader)
                 if hasattr(self._reader, "lease"):
                     return self._export_reader(self._reader)
                 if hasattr(self._reader, "__arrow_c_stream__"):
@@ -663,19 +708,22 @@ class Result:
             if rows is not None:
                 return rows
 
-        table = self.arrow_table()
-
-        if self._offset >= len(table):
+        with self._result_lock:
+            self._raise_if_cancelled()
+            # Only arrow_table() leaves its rows readable; any other consumer took them.
+            if self._consumed_by != "arrow_table()":
+                self._claim("a row fetch")
+            table = self._table_locked()
+            # Read, sliced and advanced under one lock, so concurrent fetchers never share a row.
+            start = self._offset
+            end_idx = len(table) if size is None else min(start + size, len(table))
+            self._offset = max(start, end_idx)
+        if start >= end_idx:
             return []
-
-        if size is None:
-            end_idx = len(table)
-        else:
-            end_idx = min(self._offset + size, len(table))
 
         opaque = [(i, d) for i, f in enumerate(table.schema) if (d := _field_decoder(f)) is not None]
 
-        rows = [tuple(col[idx].as_py() for col in table.columns) for idx in range(self._offset, end_idx)]
+        rows = [tuple(col[idx].as_py() for col in table.columns) for idx in range(start, end_idx)]
 
         if opaque:
             decoded = []
@@ -687,7 +735,6 @@ class Result:
                 decoded.append(tuple(values))
             rows = decoded
 
-        self._offset = end_idx
         return rows
 
     def _fetch_rows_streaming(self, size: int | None) -> list[tuple[Any, ...]] | None:
@@ -710,6 +757,9 @@ class Result:
                     self._capi = None
 
                 rows_iter = self._rows_iter
+                if rows_iter is not None and self._consumed_by is None:
+                    # Rows a refused Arrow conversion handed back.
+                    self._claim("a row fetch")
                 if rows_iter is None:
                     if self._released:
                         return []
@@ -757,19 +807,33 @@ class Result:
         if capi is not None and capi.schema_known:
             self._schema = (tuple(capi.columns), tuple(capi.column_types))
 
-    def _locked_schema(self) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    def _locked_schema(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         with self._result_lock:
             if self._failed is not None:
                 self._raise_if_cancelled()
-            return self._deferred_schema()
+            names_types = self._deferred_schema()
+            if names_types is None:
+                names_types = self._arrow_names()
+                self._schema = names_types
+            return names_types
+
+    def _arrow_names(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """DuckDB type names mapped from the Arrow schema, for a result whose DuckDB types were never known; call under _result_lock"""
+        if self._table is not None:
+            return schema_columns(self._table.schema)
+        if self._arrow_schema is not None:
+            return schema_columns(self._arrow_schema)
+        if self._reader is not None and hasattr(self._reader, "schema"):
+            return schema_columns(self._reader.schema)
+        if self._reader is not None and type(self._reader).__name__ == "PyCapsule":
+            return schema_columns(stream_schema(self._reader))
+        raise RuntimeError("this result has no schema left to describe")
 
     @property
     def description(self) -> list[tuple[Any, ...]]:
         """DB-API 2.0 column description: 7-item tuples (name, type_code, display_size, internal_size, precision, scale, null_ok)"""
-        names_types = self._locked_schema()
-        if names_types is not None:
-            return [(name, type_name, None, None, None, None, None) for name, type_name in zip(*names_types, strict=True)]
-        return [(field.name, field.type, None, None, None, None, None) for field in self.arrow_table().schema]
+        names, types = self._locked_schema()
+        return [(name, type_name, None, None, None, None, None) for name, type_name in zip(names, types, strict=True)]
 
     @property
     def rowcount(self) -> int:
@@ -779,11 +843,7 @@ class Result:
     @property
     def columns(self) -> list[str]:
         """Return column names"""
-        names_types = self._locked_schema()
-        if names_types is not None:
-            return list(names_types[0])
-
-        return [field.name for field in self.arrow_table().schema]  # pyright: ignore[reportUnknownVariableType]
+        return list(self._locked_schema()[0])
 
     def _release(self) -> None:
         """Drop the engine result and its registry borrow now"""

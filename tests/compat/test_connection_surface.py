@@ -71,11 +71,15 @@ def test_description_type_code_is_the_duckdb_type_name():
         assert [d[1] for d in conn.description] == ["INTEGER", "VARCHAR"]
 
 
-def test_description_type_code_is_the_arrow_type_in_an_eager_mode():
-    pa = pytest.importorskip("pyarrow")
-    with bareduckdb.connect(output_type="arrow_table") as conn:
+@pytest.mark.parametrize("output_type", ["arrow_table", "arrow_reader", "arrow_capsule"])
+def test_description_type_code_is_the_duckdb_type_name_in_an_eager_mode(output_type):
+    """Mapped back from the Arrow schema, without reading the result"""
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect(output_type=output_type) as conn:
         conn.execute(QUERY)
-        assert [d[1] for d in conn.description] == [pa.int32(), pa.string()]
+        assert [d[1] for d in conn.description] == ["INTEGER", "VARCHAR"]
+        if output_type == "arrow_reader":
+            assert conn._last_result_get().arrow_reader().read_all().num_rows == 1
 
 
 def test_rowcount_is_unknown_on_an_unconsumed_result():

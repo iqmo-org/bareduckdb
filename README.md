@@ -356,6 +356,28 @@ Defaults follow DuckDB, with these differences.
 - Python scalar UDFs and fsspec filesystems.
 - Filter pushdown into registered sources.
 
+### DuckDB C API 2.0 limitations
+
+These come from the v2 C API itself, not from bareduckdb, and go away when upstream adds the
+missing route.
+
+- **No VARIANT or UNION route in the value API.** `fetchall()` raises `NotImplementedError` on a
+  VARIANT or UNION column. The Arrow export handles both; DuckDB writes VARIANT as the
+  `arrow.parquet.variant` extension struct.
+- **A result's format is fixed when it is submitted, and there is no row-to-Arrow conversion.**
+  A PRAGMA, CALL or `RETURNING` runs at `execute()` as rows, so its Arrow consumers build the
+  table from those rows. That fails for a column the row path cannot read or cannot represent
+  exactly, including VARIANT. `PRAGMA storage_info` and `CALL duckdb_settings()` are the common
+  cases.
+
+Workarounds for a PRAGMA or CALL whose Arrow consumer raises:
+
+```python
+conn.execute("select * from pragma_storage_info('t')").arrow_table()  # PRAGMA name(args) as a table function
+conn.execute("select * from duckdb_settings()").df()                  # CALL f() as SELECT * FROM f()
+conn.execute("pragma storage_info('t')", output_type="arrow_table")   # ask for Arrow up front
+```
+
 ## Why it works this way
 
 **A SELECT waits for its first consumer.** DuckDB fixes a result's format, rows or Arrow, when

@@ -39,8 +39,8 @@ class Connection(ConnectionAPI):
             output_type: Default output format for queries
             config: {'threads': '4', 'memory_limit': '1GB'}
             read_only: default False
-            udtf_functions: Dict of UDTF name -> function for template expansion
-            enable_replacement_scan: Enable automatic discovery from scope
+            udtf_functions: Not implemented; a non-empty dict raises NotImplementedError
+            enable_replacement_scan: Not implemented; True raises NotImplementedError
             parse_cache_size: Parsed single SELECTs kept for reuse, keyed by SQL text; 0 disables
             _from_impl: Internal parameter for creating cursor with shared database
         """

@@ -289,32 +289,31 @@ def test_appender_raises_before_touching_the_table():
             conn.appender("t", schema="main", catalog="memory")
 
 
-def test_register_udtf_rejects_a_non_callable():
+def test_register_udtf_raises_not_implemented():
     with bareduckdb.connect() as conn:
-        with pytest.raises(TypeError, match="must be callable"):
-            conn.register_udtf("nope", 42)
+        with pytest.raises(NotImplementedError, match="no function-call sites"):
+            conn.register_udtf("rows", lambda: None)
 
 
-def test_register_udtf_stores_the_callable():
-    def make_rows():
-        return None
-
-    with bareduckdb.connect() as conn:
-        assert conn.register_udtf("rows", make_rows) is None
-        assert conn._udtf_registry["rows"] is make_rows
+def test_udtf_functions_constructor_argument_raises_not_implemented():
+    with pytest.raises(NotImplementedError, match="udtf_functions is not implemented"):
+        bareduckdb.Connection(udtf_functions={"rows": lambda: None})
 
 
-def test_udtf_functions_constructor_argument_populates_the_registry():
-    def make_rows():
-        return None
-
-    with bareduckdb.Connection(udtf_functions={"rows": make_rows}) as conn:
-        assert conn._udtf_registry == {"rows": make_rows}
+@pytest.mark.parametrize("empty", [None, {}])
+def test_udtf_functions_constructor_argument_accepts_empty(empty):
+    with bareduckdb.Connection(udtf_functions=empty) as conn:
+        assert conn.execute(QUERY).fetchall() == [(1, "x")]
 
 
-def test_udtf_functions_constructor_argument_rejects_a_non_callable():
-    with pytest.raises(TypeError, match="must be callable"):
-        bareduckdb.Connection(udtf_functions={"rows": 42})
+def test_enable_replacement_scan_true_raises_not_implemented():
+    with pytest.raises(NotImplementedError, match="no table references"):
+        bareduckdb.connect(enable_replacement_scan=True)
+
+
+def test_enable_replacement_scan_false_is_accepted():
+    with bareduckdb.connect(enable_replacement_scan=False) as conn:
+        assert conn.execute(QUERY).fetchall() == [(1, "x")]
 
 
 def test_invalid_output_type_raises_value_error():

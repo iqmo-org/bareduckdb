@@ -41,7 +41,7 @@ def test_sql_case(conn, data_files, registered_tables, test_id, sql_path, regist
     raw_sql, expected = parse_sql_case(sql_path, replace_placeholders=False)
     sql, _ = rewrite_sql_for_registration(raw_sql, registration_mode)
 
-    result = conn.execute(sql).fetch_arrow_table()
+    result = conn.sql(sql).to_arrow_table()
     _check_result(result, expected)
 
 
@@ -59,6 +59,6 @@ def test_warm_repeat(conn, data_files, registration_mode):
         pytest.skip("warm replay is about a registered source; parquet mode registers nothing")
     conn.register("t", load_data_by_mode(path, registration_mode))
 
-    conn.execute(sql).fetch_arrow_table()  # cold, deliberately outside the timing
+    conn.sql(sql).to_arrow_table()  # cold, deliberately outside the timing
     for _ in range(5):
-        conn.execute(sql).fetch_arrow_table()
+        conn.sql(sql).to_arrow_table()

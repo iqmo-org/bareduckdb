@@ -275,28 +275,6 @@ def test_registering_an_unsupported_object_raises_invalid_input(bad):
         conn.close()
 
 
-def test_preprocessing_treats_a_registered_name_as_existing():
-    """A registered name never enters the catalog, so SHOW TABLES alone would miss it"""
-    conn = bareduckdb.connect(enable_replacement_scan=True)
-    try:
-        conn.register("t", pa.table(CAT_TABLE))
-        # parse_sql reports no table refs on this backend, so stub it to reach the branch.
-        class _StubbedParse:
-            def __init__(self, impl):
-                self._impl = impl
-
-            def __getattr__(self, attribute):
-                return getattr(self._impl, attribute)
-
-            def parse_sql(self, query):
-                return {"statement_type": "SELECT", "table_refs": ["t"], "function_calls": [], "error": False}
-
-        conn._impl = _StubbedParse(conn._impl)
-        assert conn._preprocess("SELECT * FROM t", None) == ("SELECT * FROM t", {})
-    finally:
-        conn.close()
-
-
 def test_repeated_reregistration_stays_correct(conn):
     for i in range(25):
         conn._register_arrow("t", pa.table({"a": list(range(i + 1))}))

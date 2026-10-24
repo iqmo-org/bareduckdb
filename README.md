@@ -334,7 +334,8 @@ Defaults follow DuckDB, with these differences.
   pyarrow's default conversion.
 - VARINT returns `int`, not `str`.
 - TIMESTAMPTZ values compare equal to duckdb-python's but carry a different `tzinfo`.
-- UNION and VARIANT raise from `fetchall()` and work through Arrow.
+- UNION, VARIANT and GEOMETRY raise from `fetchall()` on a SELECT and work through Arrow. A
+  PRAGMA or CALL returning one runs as Arrow, so all of its consumers work.
 - A PRAGMA, CALL or `RETURNING` statement runs at `execute()` as rows. Its Arrow consumers
   (`arrow_table()`, `df()`, `pl()`, `arrow_reader()`) build the table from those rows under
   DuckDB's own Arrow types, and need pyarrow. A column whose row value is lossy (INTERVAL,
@@ -361,21 +362,24 @@ Defaults follow DuckDB, with these differences.
 These come from the v2 C API itself, not from bareduckdb, and go away when upstream adds the
 missing route.
 
-- **No VARIANT or UNION route in the value API.** `fetchall()` raises `NotImplementedError` on a
-  VARIANT or UNION column. The Arrow export handles both; DuckDB writes VARIANT as the
-  `arrow.parquet.variant` extension struct.
+- **No VARIANT, UNION or GEOMETRY route in the value API.** `fetchall()` on a SELECT raises
+  `NotImplementedError` for these columns. The Arrow export handles them; DuckDB writes VARIANT
+  as the `arrow.parquet.variant` extension struct, and `fetchall()` on an Arrow result decodes
+  it to the values duckdb-python returns. DuckDB's exporter itself rejects an INTERVAL, or a
+  39-digit HUGEINT, inside a VARIANT.
 - **A result's format is fixed when it is submitted, and there is no row-to-Arrow conversion.**
-  A PRAGMA, CALL or `RETURNING` runs at `execute()` as rows, so its Arrow consumers build the
-  table from those rows. That fails for a column the row path cannot read or cannot represent
-  exactly, including VARIANT. `PRAGMA storage_info` and `CALL duckdb_settings()` are the common
-  cases.
+  A PRAGMA, CALL or `RETURNING` runs at `execute()`, as rows unless it returns one of the
+  columns above, in which case it runs as Arrow. Its other consumers then convert: Arrow
+  consumers build the table from rows, and row fetches read from Arrow. The conversion refuses
+  the types listed under "Differences from duckdb-python".
 
-Workarounds for a PRAGMA or CALL whose Arrow consumer raises:
+Workarounds for a SELECT with a VARIANT, UNION or GEOMETRY column, or a statement whose Arrow
+consumer raises:
 
 ```python
-conn.execute("select * from pragma_storage_info('t')").arrow_table()  # PRAGMA name(args) as a table function
-conn.execute("select * from duckdb_settings()").df()                  # CALL f() as SELECT * FROM f()
-conn.execute("pragma storage_info('t')", output_type="arrow_table")   # ask for Arrow up front
+conn.execute("select v from t", output_type="arrow_table").fetchall()  # rows read from Arrow
+conn.execute("select * from duckdb_settings()").df()                   # CALL f() as SELECT * FROM f()
+conn.execute("pragma storage_info('t')", output_type="arrow_table")    # ask for Arrow up front
 ```
 
 ## Why it works this way

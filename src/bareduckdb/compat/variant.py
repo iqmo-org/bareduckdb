@@ -14,6 +14,11 @@ _EPOCH_DATE = datetime.date(1970, 1, 1)
 _EPOCH = datetime.datetime(1970, 1, 1)
 _EPOCH_UTC = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
 
+# DuckDB's infinity markers: the type's maximum, and its negation for -infinity.
+_DATE_INFINITY = 2**31 - 1
+_TIMESTAMP_INFINITY = 2**63 - 1
+_MICROS_PER_DAY = 86_400_000_000
+
 _BASIC_PRIMITIVE = 0
 _BASIC_SHORT_STRING = 1
 _BASIC_OBJECT = 2
@@ -69,7 +74,9 @@ def _value(buf: bytes, pos: int, names: list[str]) -> Any:
     values_at = offsets_at + (count + 1) * offset_size
     children = [_value(buf, values_at + _uint(buf, offsets_at + i * offset_size, offset_size), names) for i in range(count)]
     if basic == _BASIC_OBJECT:
-        return {names[_uint(buf, ids_at + i * id_size, id_size)]: child for i, child in enumerate(children)}
+        fields = {names[_uint(buf, ids_at + i * id_size, id_size)]: child for i, child in enumerate(children)}
+        # duckdb-python orders object keys by name, whatever order they were written in.
+        return {key: fields[key] for key in sorted(fields)}
     return children
 
 
@@ -78,6 +85,48 @@ def _decimal(buf: bytes, pos: int, size: int) -> decimal.Decimal:
     unscaled = _sint(buf, pos + 1, size)
     # The tuple form is exact; arithmetic would round at the context's 28 digits.
     return decimal.Decimal((1 if unscaled < 0 else 0, tuple(int(d) for d in str(abs(unscaled))), -scale))
+
+
+def _date(days: int) -> datetime.date | str:
+    if abs(days) == _DATE_INFINITY:
+        return datetime.date.max if days > 0 else datetime.date.min
+    try:
+        return _EPOCH_DATE + datetime.timedelta(days=days)
+    except OverflowError:
+        return _date_text(days)
+
+
+def _timestamp(ticks: int, per_micro: int, utc: bool) -> datetime.datetime | str:
+    if abs(ticks) == _TIMESTAMP_INFINITY:
+        # duckdb-python's answer for every TIMESTAMP type, naive even for TIMESTAMPTZ.
+        return datetime.datetime.max if ticks > 0 else datetime.datetime.min
+    micros = ticks // per_micro
+    try:
+        return (_EPOCH_UTC if utc else _EPOCH) + datetime.timedelta(microseconds=micros)
+    except OverflowError:
+        days, micros = divmod(micros, _MICROS_PER_DAY)
+        seconds, fraction = divmod(micros, 1_000_000)
+        text = f"{_date_text(days)} {seconds // 3600:02d}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"
+        if fraction:
+            text += f".{fraction:06d}".rstrip("0")
+        return text + "+00" if utc else text
+
+
+def _date_text(days: int) -> str:
+    """Return DuckDB's text for a date Python cannot hold, such as '10000-01-01' or '0001-01-01 (BC)'"""
+    # Proleptic Gregorian civil-from-days (H. Hinnant), valid for any int.
+    z = days + 719468
+    era = z // 146097
+    doe = z - era * 146097
+    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+    mp = (5 * doy + 2) // 153
+    day = doy - (153 * mp + 2) // 5 + 1
+    month = mp + 3 if mp < 10 else mp - 9
+    year = yoe + era * 400 + (month <= 2)
+    if year <= 0:
+        return f"{1 - year:04d}-{month:02d}-{day:02d} (BC)"
+    return f"{year:04d}-{month:02d}-{day:02d}"
 
 
 def _primitive(buf: bytes, pos: int, type_id: int) -> Any:
@@ -92,11 +141,9 @@ def _primitive(buf: bytes, pos: int, type_id: int) -> Any:
     if type_id in _DECIMAL_SIZES:
         return _decimal(buf, pos, _DECIMAL_SIZES[type_id])
     if type_id == 11:
-        return _EPOCH_DATE + datetime.timedelta(days=_sint(buf, pos, 4))
-    if type_id == 12:
-        return _EPOCH_UTC + datetime.timedelta(microseconds=_sint(buf, pos, 8))
-    if type_id == 13:
-        return _EPOCH + datetime.timedelta(microseconds=_sint(buf, pos, 8))
+        return _date(_sint(buf, pos, 4))
+    if type_id in (12, 13):
+        return _timestamp(_sint(buf, pos, 8), 1, type_id == 12)
     if type_id == 14:
         return struct.unpack_from("<f", buf, pos)[0]
     if type_id == 15:
@@ -106,10 +153,8 @@ def _primitive(buf: bytes, pos: int, type_id: int) -> Any:
     if type_id == 17:
         micros = _sint(buf, pos, 8)
         return (datetime.datetime.min + datetime.timedelta(microseconds=micros)).time()
-    if type_id == 18:
-        return _EPOCH_UTC + datetime.timedelta(microseconds=_sint(buf, pos, 8) // 1000)
-    if type_id == 19:
-        return _EPOCH + datetime.timedelta(microseconds=_sint(buf, pos, 8) // 1000)
+    if type_id in (18, 19):
+        return _timestamp(_sint(buf, pos, 8), 1000, type_id == 18)
     if type_id == 20:
         return uuid.UUID(bytes=bytes(buf[pos : pos + 16]))
     raise ValueError(f"unsupported variant primitive type {type_id}")

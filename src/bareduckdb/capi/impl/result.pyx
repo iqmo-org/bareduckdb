@@ -2690,6 +2690,9 @@ cdef object _bignum_from_storage(duckdb_v2_str_t view):
 
 cdef object _micros_to_time(int64_t micros):
     hours, rem = divmod(micros, 3_600_000_000)
+    if hours >= 24:
+        # TIME allows 24:00:00, datetime.time does not; OverflowError routes it to DuckDB's text, as duckdb-python returns it.
+        raise OverflowError(f"TIME {micros} microseconds is past 23:59:59.999999")
     minutes, rem = divmod(rem, 60_000_000)
     seconds, microseconds = divmod(rem, 1_000_000)
     return datetime.time(int(hours), int(minutes), int(seconds), int(microseconds))

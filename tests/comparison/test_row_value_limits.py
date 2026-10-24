@@ -22,6 +22,10 @@ _ROW_QUERIES = [
     "select [map {[1]: 2}]",
     "select map {1: map {[1]: 2}}",
     "select null::map(int[], int)",
+    # datetime.time stops at 23:59:59.999999, so 24:00:00 comes back as DuckDB's text.
+    "select time '24:00:00', '24:00:00'::time_ns, time '23:59:59.999999'",
+    "select timetz '24:00:00+00', timetz '24:00:00+05:30'",
+    "select [time '24:00:00', time '01:00:00'], {'t': time '24:00:00'}",
 ]
 
 

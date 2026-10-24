@@ -18,17 +18,9 @@ def _quote_identifier(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-def refuse_rows_as_arrow(capi: Any) -> None:
-    """Raise, consuming nothing, when a result already ran as rows and so cannot become Arrow"""
-    from .impl.result import ROWS_NOT_ARROW  # type: ignore[import-untyped]
-
-    if capi.returns_rows and not capi.pending:
-        raise RuntimeError(ROWS_NOT_ARROW)
-
-
 def arrow_result_of(capi: Any, batch_rows: int | None = 0) -> Any:
     """Return an ArrowResult for a CApiResult, consuming the CApiResult"""
-    from .impl.result import ArrowResult, execute  # type: ignore[import-untyped]
+    from .impl.result import ArrowResult  # type: ignore[import-untyped]
 
     if isinstance(capi, ArrowResult):
         return capi
@@ -40,8 +32,15 @@ def arrow_result_of(capi: Any, batch_rows: int | None = 0) -> Any:
     names, types = capi.columns, capi.column_types
     conn = capi.connection
     capi.close()
+    return empty_shape_result(conn, names, types, batch_rows)
+
+
+def empty_shape_result(conn: Any, names: Any, types: Any, batch_rows: int | None = 0) -> Any:
+    """Return an empty ArrowResult with these columns, so DuckDB's own exporter supplies their Arrow types"""
+    from .impl.result import execute  # type: ignore[import-untyped]
+
     columns = ", ".join(f"CAST(NULL AS {type_name}) AS {_quote_identifier(name)}" for name, type_name in zip(names, types, strict=True))
-    logger.debug("exporting the empty status shape of a drained statement: %s", columns)
+    logger.debug("exporting an empty shape: %s", columns)
     return execute(conn, f"SELECT {columns} LIMIT 0", None, batch_rows, True)
 
 

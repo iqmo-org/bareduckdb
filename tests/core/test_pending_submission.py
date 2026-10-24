@@ -103,27 +103,154 @@ def test_description_does_not_submit_a_bound_select():
         assert table.to_pylist() == [{"a": 1, "b": "x"}], table
 
 
-def test_a_refused_arrow_consumer_leaves_the_rows_readable():
-    """The refusal tells the caller to fetch the rows, so they must still be there"""
+_ROW_RESULTS = [
+    ("pragma version", "select * from pragma_version()"),
+    ("call pragma_version()", "select * from pragma_version()"),
+    ("pragma table_info('t')", "select * from pragma_table_info('t')"),
+    ("insert into t values (1, 'x') returning *", "select 1::int as a, 'x' as b"),
+]
+
+
+@pytest.mark.parametrize(("statement", "select"), _ROW_RESULTS)
+@pytest.mark.parametrize("consumer", ["arrow_table", "arrow_reader", "df", "pl"])
+def test_an_arrow_consumer_converts_a_statement_that_ran_as_rows(statement, select, consumer):
+    """A PRAGMA, CALL or RETURNING ran as rows at execute(); its Arrow consumer matches the SELECT form"""
+    pytest.importorskip("pyarrow")
+    if consumer == "df":
+        pytest.importorskip("pandas")
+    if consumer == "pl":
+        pytest.importorskip("polars")
+    with bareduckdb.connect() as conn:
+        conn.execute("create table t(a int, b varchar)")
+        expected = conn.execute(select).arrow_table()
+        got = getattr(conn.execute(statement), consumer)()
+        if consumer == "arrow_reader":
+            got = got.read_all()
+        elif consumer == "df":
+            got = type(expected).from_pandas(got, preserve_index=False)
+        elif consumer == "pl":
+            got = got.to_arrow()
+            expected = __import__("polars").from_arrow(expected).to_arrow()
+        assert got.to_pylist() == expected.to_pylist(), (got, expected)
+        if consumer == "arrow_table":
+            assert got.schema == expected.schema, (got.schema, expected.schema)
+
+
+_TYPED_VALUES = [
+    "true",
+    "-3::tinyint",
+    "200::utinyint",
+    "9007199254740993::bigint",
+    "12::hugeint",
+    "12::uhugeint",
+    "1.5::float",
+    "123.456::decimal(18,3)",
+    "1234567890123456789012345678.9::decimal(38,1)",
+    "'héllo'",
+    "'\\xAA\\x00'::blob",
+    "date '2024-02-29'",
+    "time '12:34:56.789'",
+    "timestamp '2024-01-02 03:04:05.123456'",
+    "'2024-01-02 03:04:05'::timestamp_s",
+    "'2024-01-02 03:04:05.123'::timestamp_ms",
+    "timestamptz '2024-01-02 03:04:05+02'",
+    "'f47ac10b-58cc-4372-a567-0e02b2c3d479'::uuid",
+    "[1, null, 3]",
+    "[1.0, 2.0]::double[2]",
+    "{'x': 1, 'y': ['z']}",
+    "map {'k': 1, 'j': 2}",
+    "null::int",
+    "'{\"a\":1}'::json",
+]
+
+
+@pytest.mark.parametrize("lossless", [False, True])
+@pytest.mark.parametrize("expr", _TYPED_VALUES)
+def test_converted_rows_match_the_engine_arrow_export(expr, lossless):
+    """The rows of a RETURNING become exactly the table DuckDB's own exporter gives for the same value"""
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        if lossless:
+            conn.execute("set arrow_lossless_conversion = true")
+        conn.execute(f"create table t as select {expr} as c limit 0")
+        expected = conn.execute(f"select {expr} as c").arrow_table()
+        got = conn.execute(f"insert into t select {expr} returning c").arrow_table()
+        assert got.equals(expected), (got, expected)
+
+
+def test_a_converted_enum_keeps_its_values():
+    """The dictionary holds the values present, where DuckDB's export carries every member"""
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        conn.execute("create type e as enum ('a', 'b', 'c')")
+        conn.execute("create table t(c e)")
+        got = conn.execute("insert into t values ('b'), ('a') returning c").arrow_table()
+        expected = conn.execute("select c from t").arrow_table()
+        assert got.schema == expected.schema, (got.schema, expected.schema)
+        assert got.to_pylist() == expected.to_pylist(), (got, expected)
+
+
+def test_a_converted_returning_writes_once_and_leaves_the_table_readable():
     pytest.importorskip("pyarrow")
     with bareduckdb.connect() as conn:
         conn.execute("create table t(a int)")
-        conn.execute("insert into t values (1) returning a")
+        conn.execute("insert into t values (1), (2) returning a")
+        assert conn.arrow_table().to_pylist() == [{"a": 1}, {"a": 2}]
+        assert conn.fetchall() == [(1,), (2,)]
+        assert conn.execute("select count(*) from t").fetchall() == [(2,)]
+
+
+@pytest.mark.parametrize("column", ["interval '1 month'", "'0101'::bit", "12::bignum", "'2024-01-02 03:04:05.123456789'::timestamp_ns"])
+def test_a_lossy_row_type_is_refused_and_leaves_the_rows_readable(column):
+    """The row value cannot carry the Arrow value, so the refusal consumes nothing"""
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        conn.execute(f"create table t as select {column} as c limit 0")
+        conn.execute(f"insert into t select {column} returning c")
         with pytest.raises(RuntimeError, match="already ran as a row result") as info:
             conn.arrow_table()
-        assert "Fetch its rows" in str(info.value), str(info.value)
-        assert conn.fetchall() == [(1,)]
+        assert "do not carry the Arrow value" in str(info.value), str(info.value)
+        assert len(conn.fetchall()) == 1
         assert conn.execute("select count(*) from t").fetchall() == [(1,)]
+
+
+@pytest.mark.parametrize("lossless", [False, True])
+def test_hugeint_extremes_convert_only_where_arrow_holds_them(lossless):
+    """decimal128(38) cannot hold a 39-digit HUGEINT; the lossless opaque form can"""
+    pytest.importorskip("pyarrow")
+    big = "170141183460469231731687303715884105727::hugeint"
+    with bareduckdb.connect() as conn:
+        if lossless:
+            conn.execute("set arrow_lossless_conversion = true")
+        conn.execute(f"create table t as select {big} as c limit 0")
+        conn.execute(f"insert into t select {big} returning c")
+        if lossless:
+            assert conn.arrow_table().equals(conn.execute(f"select {big} as c").arrow_table())
+        else:
+            with pytest.raises(RuntimeError, match="did not convert"):
+                conn.arrow_table()
+
+
+def test_a_value_that_does_not_convert_leaves_the_rows_readable():
+    """A HUGEINT past decimal128(38) fails after the drain, so the drained rows are handed back"""
+    pytest.importorskip("pyarrow")
+    big = "170141183460469231731687303715884105727::hugeint"
+    with bareduckdb.connect() as conn:
+        conn.execute(f"create table t as select {big} as c limit 0")
+        conn.execute(f"insert into t select {big} returning c")
+        with pytest.raises(RuntimeError, match="did not convert to DuckDB's Arrow types"):
+            conn.arrow_table()
+        assert conn.fetchall() == [(170141183460469231731687303715884105727,)]
 
 
 def test_a_refused_pl_leaves_the_rows_readable():
     pytest.importorskip("polars")
     with bareduckdb.connect() as conn:
-        conn.execute("create table t(a int)")
-        conn.execute("insert into t values (1) returning a")
+        conn.execute("create table t(c interval)")
+        conn.execute("insert into t values (interval '1 day') returning c")
         with pytest.raises(RuntimeError, match="already ran as a row result"):
             conn.pl()
-        assert conn.fetchall() == [(1,)]
+        assert len(conn.fetchall()) == 1
 
 
 def test_an_interrupt_before_the_row_consumer_cancels_it():

@@ -142,8 +142,8 @@ def test_metadata_on_a_schema_that_needs_stepping_leaves_the_result_whole():
         conn.execute("PIVOT piv ON k USING sum(v)")
         result = conn._last_result_get()
         assert result.columns == ["a", "b"]
-        with pytest.raises(RuntimeError, match="already ran as a row result"):
-            result.arrow_table()
+        # Reading the columns ran it as rows, so arrow_table() converts those rows.
+        assert result.arrow_table().to_pylist() == [{"a": 1, "b": 2}]
 
 
 def test_execute_batch_size_reaches_the_polars_stream():

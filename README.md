@@ -184,6 +184,18 @@ then. anyio's `move_on_after` and `fail_after` work on either backend, and
 `bareduckdb.register_as_duckdb()` aliases the `duckdb` module to bareduckdb. CI runs
 SQLAlchemy (duckdb-engine), jupysql and magic-duckdb this way.
 
+```python
+import bareduckdb
+
+bareduckdb.register_as_duckdb()
+import duckdb
+
+print(duckdb.__version__)  # bareduckdb's version
+with duckdb.connect() as conn:
+    print(conn.execute("PRAGMA version").arrow_table())
+    print(conn.execute("select * from range(10)").df())
+```
+
 ### Run without network access
 
 In a container, mount the cache directory (see "The DuckDB library"), or the download repeats
@@ -323,6 +335,12 @@ Defaults follow DuckDB, with these differences.
 - VARINT returns `int`, not `str`.
 - TIMESTAMPTZ values compare equal to duckdb-python's but carry a different `tzinfo`.
 - UNION and VARIANT raise from `fetchall()` and work through Arrow.
+- A PRAGMA, CALL or `RETURNING` statement runs at `execute()` as rows. Its Arrow consumers
+  (`arrow_table()`, `df()`, `pl()`, `arrow_reader()`) build the table from those rows under
+  DuckDB's own Arrow types, and need pyarrow. A column whose row value is lossy (INTERVAL,
+  BIT, BIGNUM, TIMESTAMP_NS, TIME_NS) or that does not convert raises and leaves the rows
+  fetchable; pass `output_type="arrow_table"` to `execute()` for those. A converted ENUM's
+  dictionary holds only the values present.
 
 ### Not implemented
 

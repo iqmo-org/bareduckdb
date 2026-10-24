@@ -5,10 +5,12 @@ from __future__ import annotations
 import datetime
 import itertools
 import logging
+import re
 import threading
+import uuid
 from typing import TYPE_CHECKING
 
-from ..capi.arrow_export import cancel_translating_reader, cancelled_from, refuse_rows_as_arrow
+from ..capi.arrow_export import cancel_translating_reader, cancelled_from, empty_shape_result
 from ..capi.impl.errors import QueryCancelled  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:
@@ -23,6 +25,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MATERIALIZING_BATCH_ROWS = 16_777_216
+
+# DuckDB types whose row value does not carry the Arrow value: INTERVAL folds months into days, BIT is a str, BIGNUM an int, *_NS stops at microseconds.
+_ROWS_NOT_ARROW_TYPES = re.compile(r"\b(INTERVAL|BIT|BITSTRING|BIGNUM|VARINT|TIMESTAMP_NS|TIME_NS|UNION|VARIANT|GEOMETRY)\b")
 
 _BIGNUM_HEADER_BYTES = 3
 _BIGNUM_LENGTH_MASK = 0x7FFFFF
@@ -88,6 +93,13 @@ _OPAQUE_DECODERS = {
 }
 
 
+# Inverse of _OPAQUE_DECODERS, for the types whose row value is the whole Arrow value.
+_OPAQUE_ENCODERS = {
+    "hugeint": lambda value: value.to_bytes(16, "little", signed=True),
+    "uhugeint": lambda value: value.to_bytes(16, "little", signed=False),
+}
+
+
 def _opaque_decoder(arrow_type: pa.DataType):
     if getattr(arrow_type, "extension_name", None) != "arrow.opaque":
         return None
@@ -141,6 +153,33 @@ def _value_decoder(arrow_type: pa.DataType):
         return decode_map
 
     return None
+
+
+def refuse_message() -> str:
+    from ..capi.impl.result import ROWS_NOT_ARROW  # type: ignore[import-untyped]
+
+    return ROWS_NOT_ARROW
+
+
+def _arrow_array(pa: Any, values: Any, field: pa.Field) -> pa.Array:
+    """Build one column from row values, adapting the few the row path hands back in another form"""
+    arrow_type = field.type
+    storage_type = arrow_type.storage_type if isinstance(arrow_type, pa.BaseExtensionType) else arrow_type
+    opaque = _OPAQUE_ENCODERS.get(arrow_type.type_name) if _opaque_decoder(arrow_type) is not None else None
+    if opaque is not None:
+        values = [v if v is None else opaque(v) for v in values]
+    elif any(isinstance(v, uuid.UUID) for v in values):
+        as_bytes = pa.types.is_fixed_size_binary(storage_type) or pa.types.is_binary(storage_type)
+        values = [v if not isinstance(v, uuid.UUID) else (v.bytes if as_bytes else str(v)) for v in values]
+    elif pa.types.is_integer(storage_type) and any(isinstance(v, bool) for v in values):
+        values = [None if v is None else int(v) for v in values]
+    elif pa.types.is_time(storage_type):
+        # Arrow has no time-with-timezone; DuckDB's exporter writes the wall clock, as here.
+        values = [v if v is None else v.replace(tzinfo=None) for v in values]
+    storage = pa.array(values, type=storage_type)
+    if storage_type is not arrow_type:
+        return arrow_type.wrap_array(storage)
+    return storage
 
 
 class Result:
@@ -262,11 +301,61 @@ class Result:
             raise
 
     def _take_for_arrow(self, consumer: str) -> None:
-        """Refuse a result that already ran as rows, consuming nothing, then claim it; call under _result_lock"""
+        """Claim the result for an Arrow consumer, converting one that already ran as rows to a table; call under _result_lock"""
         self._raise_if_cancelled()
-        if self._capi is not None:
-            refuse_rows_as_arrow(self._capi)
+        capi = self._capi
+        if capi is not None and capi.returns_rows and not capi.pending:
+            self._claim(consumer)
+            self._table_from_rows(capi)
+            return
         self._claim(consumer)
+
+    def _table_from_rows(self, capi: Any) -> None:
+        """Build the table of a result that already ran as rows, under DuckDB's own Arrow schema; call under _result_lock"""
+        names, types = tuple(capi.columns), tuple(capi.column_types)
+        lossy = [f"{name} {type_name}" for name, type_name in zip(names, types, strict=True) if _ROWS_NOT_ARROW_TYPES.search(type_name)]
+        try:
+            import pyarrow as pa
+        except ImportError as exc:
+            self._consumed_by = None
+            raise RuntimeError(f"{refuse_message()}. Converting its rows needs pyarrow") from exc
+        if lossy:
+            self._consumed_by = None
+            raise RuntimeError(f"{refuse_message()}. Its rows do not carry the Arrow value of {', '.join(lossy)}")
+
+        self._schema = (names, types)
+        self._capi = None
+        # Read before the drain, whose end destroys the result and drops its connection.
+        conn = capi.connection
+        try:
+            rows = list(itertools.chain.from_iterable(capi.row_chunks()))
+        except QueryCancelled as exc:
+            logger.debug("row drain for an Arrow consumer cancelled: %s", exc)
+            self._cancelled = exc
+            capi.close()
+            raise
+        except Exception as exc:
+            logger.debug("row drain for an Arrow consumer failed: %s", exc)
+            self._failed = exc
+            capi.close()
+            raise
+        # The engine's copy goes before the schema query, which the open result would refuse.
+        capi.close()
+        self._release_data()
+
+        try:
+            shape = empty_shape_result(conn, names, types)
+            schema = pa.RecordBatchReader._import_from_c_capsule(shape.__arrow_c_stream__()).read_all().schema  # type: ignore
+            columns = list(zip(*rows, strict=True)) if rows else [()] * len(names)
+            arrays = [_arrow_array(pa, values, field) for values, field in zip(columns, schema, strict=True)]
+            self._table = pa.Table.from_arrays(arrays, schema=schema)
+        except Exception as exc:
+            logger.debug("rows did not convert to DuckDB's Arrow schema: %s", exc)
+            # Hand the drained rows back, so the refusal leaves them fetchable as before.
+            self._consumed_by = None
+            self._rows_iter = iter(rows)
+            raise RuntimeError(f"{refuse_message()}. Its rows did not convert to DuckDB's Arrow types: {exc}") from exc
+        logger.debug("converted %d rows that already ran as a row result to Arrow", len(rows))
 
     def _record_read_cancel(self, exc: BaseException) -> None:
         """Make a cancel seen while reading the Arrow stream sticky, then raise it as QueryCancelled"""
@@ -287,6 +376,8 @@ class Result:
             self._raise_if_cancelled()
             if self._capi is not None:
                 self._take_for_arrow("arrow_table()")
+                if self._table is not None:
+                    return self._table
                 self._bound_schema()
                 capsule = self._engine_capsule(_MATERIALIZING_BATCH_ROWS)
                 reader = pa.RecordBatchReader._import_from_c_capsule(capsule)  # type: ignore
@@ -326,9 +417,11 @@ class Result:
                 import pyarrow as pa
 
                 self._take_for_arrow("arrow_reader()")
+                self._read = True
+                if self._table is not None:
+                    return self._table.to_reader()
                 self._bound_schema()
                 capsule = self._engine_capsule(batch_size or 0)
-                self._read = True
                 reader = pa.RecordBatchReader._import_from_c_capsule(capsule)  # type: ignore
                 return cancel_translating_reader(reader, self._set_cancelled)
 
@@ -356,8 +449,10 @@ class Result:
                 # The caller may have claimed already (arrow_table, pl); if not, name the export.
                 if self._consumed_by is None:
                     self._take_for_arrow("an Arrow export")
-                self._bound_schema()
                 self._read = True
+                if self._table is not None:
+                    return self._table.__arrow_c_stream__(requested_schema)
+                self._bound_schema()
                 return self._engine_capsule(self._stream_batch_rows or 0, requested_schema)
 
             self._read = True

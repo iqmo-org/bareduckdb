@@ -76,8 +76,10 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     DUCKDB_V2_RESULT_STEP_STATUS_WAITING,
     DUCKDB_V2_RESULT_TYPE_CHANGED_ROWS,
     DUCKDB_V2_RESULT_TYPE_QUERY_RESULT,
+    DUCKDB_V2_STATEMENT_TYPE_CALL,
     DUCKDB_V2_STATEMENT_TYPE_EXPLAIN,
     DUCKDB_V2_STATEMENT_TYPE_MULTI,
+    DUCKDB_V2_STATEMENT_TYPE_PRAGMA,
     DUCKDB_V2_STATEMENT_TYPE_SELECT,
     DUCKDB_V2_VECTOR_TYPE_CONSTANT,
     DUCKDB_V2_VECTOR_TYPE_DICTIONARY,
@@ -436,6 +438,16 @@ cdef object _execute_bound(
         elif statement_type == DUCKDB_V2_STATEMENT_TYPE_MULTI and not effect_group:
             # Bind rejects a group, so its schema resolves once the first consumer submits it.
             return _pending_result(conn, &current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred)
+        elif statement_type == DUCKDB_V2_STATEMENT_TYPE_PRAGMA or statement_type == DUCKDB_V2_STATEMENT_TYPE_CALL:
+            from bareduckdb.capi.statement_kind import rows_cannot_read
+
+            shape = _bound_shape(c_conn, current)
+            if shape is not None and rows_cannot_read(shape[1]):
+                # Still run here for its effect, but as Arrow: the row path has no route for these columns.
+                _logger.debug("PRAGMA or CALL with columns the row path cannot read runs as Arrow: %s", shape[1])
+                out = _execute_arrow_last(conn, current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred)
+                out.shape = shape
+                return out
         return _execute_last(conn, current, _build_params(c_conn, current, parameters), batch_rows, reg, transferred)
     finally:
         # A pending result took ownership of the statement and set this to NULL.
@@ -443,6 +455,46 @@ cdef object _execute_bound(
             duckdb_v2_sql_statement_destroy(&current)
         if invalidates:
             bdv2_add(&_parse_epoch, 1)
+
+
+cdef object _bound_shape(duckdb_v2_connection_handle c_conn, duckdb_v2_sql_statement_handle statement):
+    """Bind a statement for its column names and type names, or return None when bind refuses it"""
+    cdef duckdb_v2_schema_handle out_schema = NULL
+    cdef duckdb_v2_schema_handle out_parameters = NULL
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef idx_t count = 0
+    cdef idx_t i
+    cdef duckdb_v2_identifier_t name
+    cdef duckdb_v2_logical_type_handle col_type
+
+    with nogil:
+        rc = duckdb_v2_statement_bind(c_conn, statement, &out_schema, &out_parameters, &err)
+    if rc != DUCKDB_V2_ERROR_NONE:
+        if err != NULL:
+            with nogil:
+                duckdb_v2_error_info_destroy(&err)
+        _logger.debug("bind refused the statement; it runs as rows")
+        return None
+    try:
+        with nogil:
+            rc = duckdb_v2_schema_get_count(out_schema, &count, &err)
+        check_v2(rc, err, "duckdb_v2_schema_get_count")
+        names = []
+        types = []
+        for i in range(count):
+            with nogil:
+                rc = duckdb_v2_schema_get_field(out_schema, i, &name, &col_type, &err)
+            check_v2(rc, err, "duckdb_v2_schema_get_field")
+            names.append(str_view_to_str(name))
+            types.append(_logical_type_text(col_type))
+        return (tuple(names), tuple(types))
+    finally:
+        with nogil:
+            if out_schema != NULL:
+                duckdb_v2_schema_destroy(&out_schema)
+            if out_parameters != NULL:
+                duckdb_v2_schema_destroy(&out_parameters)
 
 
 cdef bint _group_is_query(duckdb_v2_sql_statement_handle statement) except -1:

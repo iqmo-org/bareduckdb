@@ -108,6 +108,16 @@ def _opaque_decoder(arrow_type: pa.DataType):
     return _OPAQUE_DECODERS.get(arrow_type.type_name)
 
 
+def _field_decoder(field: pa.Field):
+    """A decoder for a field's values, reading the VARIANT extension from the field's metadata"""
+    from .variant import VARIANT_EXTENSION, decode_variant
+
+    metadata = field.metadata or {}
+    if metadata.get(b"ARROW:extension:name") == VARIANT_EXTENSION or getattr(field.type, "extension_name", None) == VARIANT_EXTENSION.decode():
+        return decode_variant
+    return _value_decoder(field.type)
+
+
 def _value_decoder(arrow_type: pa.DataType):
     import pyarrow as pa_
 
@@ -116,13 +126,13 @@ def _value_decoder(arrow_type: pa.DataType):
         return direct
 
     if pa_.types.is_list(arrow_type) or pa_.types.is_large_list(arrow_type) or pa_.types.is_fixed_size_list(arrow_type):
-        child = _value_decoder(arrow_type.value_type)
+        child = _field_decoder(arrow_type.value_field)
         if child is None:
             return None
         return lambda values: [None if v is None else child(v) for v in values]
 
     if pa_.types.is_struct(arrow_type):
-        children = {f.name: d for f in arrow_type if (d := _value_decoder(f.type)) is not None}
+        children = {f.name: d for f in arrow_type if (d := _field_decoder(f)) is not None}
         if not children:
             return None
 
@@ -136,8 +146,8 @@ def _value_decoder(arrow_type: pa.DataType):
         return decode_struct
 
     if pa_.types.is_map(arrow_type):
-        key = _value_decoder(arrow_type.key_type)
-        item = _value_decoder(arrow_type.item_type)
+        key = _field_decoder(arrow_type.key_field)
+        item = _field_decoder(arrow_type.item_field)
         if key is None and item is None:
             return None
 
@@ -232,7 +242,7 @@ class Result:
             result_obj: A CApiResult, PyArrow Table, RecordBatchReader, or Arrow C stream capsule.
             deferred: The connection-side state a deferred CApiResult needs at its first consumer.
         """
-        from ..capi.impl.result import CApiResult  # type: ignore[import-untyped]  # pyarrow-free
+        from ..capi.impl.result import ArrowResult, CApiResult  # type: ignore[import-untyped]  # pyarrow-free
 
         self._capi = None
         self._table = None
@@ -255,6 +265,9 @@ class Result:
         rows_changed = self._capi.rows_changed if self._capi is not None else None
         self._rowcount = -1 if rows_changed is None else rows_changed
         self._schema: tuple[tuple[str, ...], tuple[str, ...]] | None = None
+        if isinstance(result_obj, ArrowResult) and result_obj.shape is not None:
+            # A PRAGMA or CALL the row path cannot read, run as Arrow at execute(): bind's names and types.
+            self._schema = result_obj.shape
         self._consumed_by = None
         self._cancelled = None
         self._failed = None
@@ -302,6 +315,13 @@ class Result:
             # The Arrow result is bound by now, so the names it read may go.
             self._release_data()
         capsule = arrow.__arrow_c_stream__(requested_schema)
+        if self._deferred is not None:
+            self._deferred.track(arrow)
+        return capsule
+
+    def _export_reader(self, arrow: Any) -> PyArrowCapsule:
+        """Export an engine Arrow result made at execute(), so the connection's next statement closes its stream"""
+        capsule = arrow.__arrow_c_stream__()
         if self._deferred is not None:
             self._deferred.track(arrow)
         return capsule
@@ -455,6 +475,11 @@ class Result:
                 self._read = True
                 _reader = self._reader
                 self._reader = None
+                if not hasattr(_reader, "read_next_batch"):
+                    import pyarrow as pa
+
+                    reader = pa.RecordBatchReader._import_from_c_capsule(self._export_reader(_reader))  # type: ignore
+                    return cancel_translating_reader(reader, self._set_cancelled)
 
                 return _reader  #  type: ignore # TODO: Handle Capsule scenario
 
@@ -481,6 +506,8 @@ class Result:
 
             self._read = True
             if self._reader is not None:
+                if hasattr(self._reader, "lease"):
+                    return self._export_reader(self._reader)
                 if hasattr(self._reader, "__arrow_c_stream__"):
                     return self._reader.__arrow_c_stream__()
                 else:
@@ -649,7 +676,7 @@ class Result:
         else:
             end_idx = min(self._offset + size, len(table))
 
-        opaque = [(i, d) for i, f in enumerate(table.schema) if (d := _value_decoder(f.type)) is not None]
+        opaque = [(i, d) for i, f in enumerate(table.schema) if (d := _field_decoder(f)) is not None]
 
         rows = [tuple(col[idx].as_py() for col in table.columns) for idx in range(self._offset, end_idx)]
 
@@ -768,6 +795,10 @@ class Result:
             row_chunks, self._row_chunks = self._row_chunks, None
             self._rows_iter = None
             capi, self._capi = self._capi, None
+            reader = self._reader if hasattr(self._reader, "lease") else None
+        if reader is not None:
+            # Unexported, it still holds the engine result; exported, close() is a no-op.
+            reader.close()
         if row_chunks is not None:
             row_chunks.close()
         if capi is not None:

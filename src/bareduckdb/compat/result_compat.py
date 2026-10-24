@@ -161,9 +161,33 @@ def refuse_message() -> str:
     return ROWS_NOT_ARROW
 
 
+# The row path's answer for DuckDB's +-infinity, which the Arrow export carries as the type's own limit instead.
+_INFINITY_MARKERS = (datetime.date.max, datetime.date.min, datetime.datetime.max, datetime.datetime.min)
+
+
+def _has_temporal(pa: Any, arrow_type: pa.DataType) -> bool:
+    if pa.types.is_date(arrow_type) or pa.types.is_timestamp(arrow_type):
+        return True
+    return any(_has_temporal(pa, arrow_type.field(i).type) for i in range(arrow_type.num_fields))
+
+
+def _has_infinity(value: Any) -> bool:
+    if isinstance(value, datetime.date):
+        # Exact type: datetime.max compares unequal to date.max, but a datetime is also a date.
+        return any(type(value) is type(marker) and value == marker for marker in _INFINITY_MARKERS)
+    if isinstance(value, dict):
+        return any(_has_infinity(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_has_infinity(v) for v in value)
+    return False
+
+
 def _arrow_array(pa: Any, values: Any, field: pa.Field) -> pa.Array:
     """Build one column from row values, adapting the few the row path hands back in another form"""
     arrow_type = field.type
+    if _has_temporal(pa, arrow_type) and any(_has_infinity(v) for v in values):
+        # A real 9999-12-31 is refused too: the row value cannot tell it from infinity.
+        raise ValueError(f"column {field.name!r} holds an infinite date or timestamp, or the row value standing for one")
     storage_type = arrow_type.storage_type if isinstance(arrow_type, pa.BaseExtensionType) else arrow_type
     opaque = _OPAQUE_ENCODERS.get(arrow_type.type_name) if _opaque_decoder(arrow_type) is not None else None
     if opaque is not None:

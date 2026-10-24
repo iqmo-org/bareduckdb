@@ -2003,7 +2003,7 @@ cdef list _decode_chunk(
                 # Through int: Cython's direct enum conversion leaves an unused variable on the limited API.
                 type_id = <duckdb_v2_logical_type_id_t><int>decoder[1]
                 if _scalar_supported(type_id):
-                    columns.append(_decode_scalar_column(vector, size, type_id, decoder[2], col))
+                    columns.append(_decode_scalar_column(vector, size, type_id, decoder[2], col, factory, &varchar_type))
                     continue
             columns.append([_decode_cell(vector, row, decoder, factory, &varchar_type) for row in range(size)])
     finally:
@@ -2014,7 +2014,13 @@ cdef list _decode_chunk(
 
 
 cdef list _decode_scalar_column(
-    duckdb_v2_vector_handle vector, idx_t size, duckdb_v2_logical_type_id_t type_id, str type_name, idx_t col
+    duckdb_v2_vector_handle vector,
+    idx_t size,
+    duckdb_v2_logical_type_id_t type_id,
+    str type_name,
+    idx_t col,
+    duckdb_v2_factory_handle factory,
+    duckdb_v2_logical_type_handle *varchar_type,
 ):
     """Decode one scalar column: a single nogil pass reads every cell, then the Python values are built"""
     cdef duckdb_v2_error_info_handle err = NULL
@@ -2054,7 +2060,10 @@ cdef list _decode_scalar_column(
         out = [None] * size
         for row in range(size):
             if not cells[row].is_null:
-                out[row] = _convert_scalar(&cells[row], type_id)
+                try:
+                    out[row] = _convert_scalar(&cells[row], type_id)
+                except OverflowError:
+                    out[row] = _decode_cell(vector, row, ("text", <int>type_id), factory, varchar_type)
         return out
     finally:
         if borrows:
@@ -2108,8 +2117,14 @@ cdef object _decode_value(
     if is_null:
         return None
 
+    if kind == "text":
+        return _value_text(value, <duckdb_v2_logical_type_id_t><int>decoder[1], factory, varchar_type)
+
     if kind == "scalar":
-        return _decode_scalar(value, <duckdb_v2_logical_type_id_t><int>decoder[1], decoder[2])
+        try:
+            return _decode_scalar(value, <duckdb_v2_logical_type_id_t><int>decoder[1], decoder[2])
+        except OverflowError:
+            return _value_text(value, <duckdb_v2_logical_type_id_t><int>decoder[1], factory, varchar_type)
 
     if kind == "list" or kind == "array":
         child_decoder = decoder[1]
@@ -2190,6 +2205,9 @@ cdef object _decode_value(
         with nogil:
             rc = duckdb_v2_value_get_child_count(value, &child_count, &err)
         check_v2(rc, err, "duckdb_v2_value_get_child_count")
+        if key_decoder[0] in _NESTED_KINDS:
+            # duckdb-python's form for a key type a dict cannot hold, used even when empty.
+            return _decode_map_entries(value, child_count, key_decoder, value_decoder, factory, varchar_type)
         out_map = {}
         # value_get_child_count's doc: a MAP value's children alternate key, value.
         for i in range(0, child_count, 2):
@@ -2212,6 +2230,40 @@ cdef object _decode_value(
         return out_map
 
     raise NotImplementedError(f"rows(): no v2 decode route implemented for decoder kind {kind!r}")
+
+
+_NESTED_KINDS = frozenset(("list", "array", "struct", "map", "tuple"))
+
+
+cdef dict _decode_map_entries(
+    duckdb_v2_value_handle value,
+    idx_t child_count,
+    tuple key_decoder,
+    tuple value_decoder,
+    duckdb_v2_factory_handle factory,
+    duckdb_v2_logical_type_handle *varchar_type,
+):
+    """Decode a MAP as duckdb-python's {'key': [...], 'value': [...]}"""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_value_handle child = NULL
+    cdef idx_t i
+    cdef list keys = []
+    cdef list values = []
+
+    for i in range(child_count):
+        with nogil:
+            rc = duckdb_v2_value_get_child(value, i, &child, &err)
+        check_v2(rc, err, "duckdb_v2_value_get_child")
+        try:
+            if i % 2 == 0:
+                keys.append(_decode_value(child, key_decoder, factory, varchar_type))
+            else:
+                values.append(_decode_value(child, value_decoder, factory, varchar_type))
+        finally:
+            with nogil:
+                duckdb_v2_value_destroy(&child)
+    return {"key": keys, "value": values}
 
 
 cdef struct bd_scalar:
@@ -2356,6 +2408,63 @@ cdef duckdb_v2_error_t _extract_scalar(
     return rc
 
 
+# DuckDB's infinity markers: the type's maximum, and its negation for -infinity.
+cdef int64_t _DATE_INFINITY = 2147483647
+cdef int64_t _TIMESTAMP_INFINITY = 9223372036854775807
+
+
+cdef bint _is_timestamp(duckdb_v2_logical_type_id_t t) noexcept:
+    return (
+        t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_SEC
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_MS
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_NS
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ
+        or t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ_NS
+    )
+
+
+cdef object _value_text(
+    duckdb_v2_value_handle value,
+    duckdb_v2_logical_type_id_t t,
+    duckdb_v2_factory_handle factory,
+    duckdb_v2_logical_type_handle *varchar_type,
+):
+    """DuckDB's own text for a value, which duckdb-python returns for a date or time outside Python's range"""
+    cdef duckdb_v2_error_info_handle err = NULL
+    cdef duckdb_v2_error_t rc
+    cdef duckdb_v2_value_handle text = NULL
+    cdef duckdb_v2_value_handle utc = NULL
+    cdef duckdb_v2_str_t view
+    cdef int64_t micros = 0
+
+    if varchar_type[0] == NULL:
+        varchar_type[0] = _primitive_type(factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR)
+    if t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ:
+        # duckdb-python prints a TIMESTAMPTZ in UTC; the cast would use the session's TimeZone.
+        with nogil:
+            rc = duckdb_v2_value_get_timestamp_tz(value, &micros, &err)
+        check_v2(rc, err, "duckdb_v2_value_get_timestamp_tz(out of range)")
+        with nogil:
+            rc = duckdb_v2_value_create_timestamp(factory, micros, &utc, &err)
+        check_v2(rc, err, "duckdb_v2_value_create_timestamp(out of range)")
+        value = utc
+    try:
+        with nogil:
+            rc = duckdb_v2_value_cast(factory, value, varchar_type[0], &text, &err)
+        check_v2(rc, err, "duckdb_v2_value_cast(out of range)")
+        with nogil:
+            rc = duckdb_v2_value_get_varchar(text, &view, &err)
+        check_v2(rc, err, "duckdb_v2_value_get_varchar(out of range)")
+        return str_view_to_str(view) + ("+00" if utc != NULL else "")
+    finally:
+        with nogil:
+            if text != NULL:
+                duckdb_v2_value_destroy(&text)
+            if utc != NULL:
+                duckdb_v2_value_destroy(&utc)
+
+
 cdef object _convert_scalar(bd_scalar *o, duckdb_v2_logical_type_id_t t):
     """Build the Python value for a scalar _extract_scalar read"""
     if t == DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT or t == DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER:
@@ -2384,11 +2493,16 @@ cdef object _convert_scalar(bd_scalar *o, duckdb_v2_logical_type_id_t t):
     if t == DUCKDB_V2_LOGICAL_TYPE_ID_BLOB:
         return str_view_to_bytes(o.sv)
     if t == DUCKDB_V2_LOGICAL_TYPE_ID_DATE:
+        if o.i64 == _DATE_INFINITY or o.i64 == -_DATE_INFINITY:
+            return datetime.date.max if o.i64 > 0 else datetime.date.min
         return _EPOCH_DATE + datetime.timedelta(days=o.i64)
     if t == DUCKDB_V2_LOGICAL_TYPE_ID_TIME:
         return _micros_to_time(o.i64)
     if t == DUCKDB_V2_LOGICAL_TYPE_ID_TIME_NS:
         return _micros_to_time(o.i64 // 1000)
+    if _is_timestamp(t) and (o.i64 == _TIMESTAMP_INFINITY or o.i64 == -_TIMESTAMP_INFINITY):
+        # duckdb-python's answer for every TIMESTAMP type, naive even for TIMESTAMPTZ.
+        return datetime.datetime.max if o.i64 > 0 else datetime.datetime.min
     if t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP:
         return _EPOCH_DATETIME + datetime.timedelta(microseconds=o.i64)
     if t == DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_SEC:

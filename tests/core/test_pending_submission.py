@@ -231,6 +231,30 @@ def test_hugeint_extremes_convert_only_where_arrow_holds_them(lossless):
                 conn.arrow_table()
 
 
+@pytest.mark.parametrize("value", ["'infinity'::timestamp", "'-infinity'::date", "['infinity'::timestamptz]"])
+def test_an_infinite_temporal_value_is_refused_and_leaves_the_rows_readable(value):
+    """The row value is datetime.max or min, which would become a finite Arrow value where DuckDB keeps infinity"""
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        conn.execute(f"create table t as select {value} as c limit 0")
+        conn.execute(f"insert into t select {value} returning c")
+        with pytest.raises(RuntimeError, match="infinite date or timestamp"):
+            conn.arrow_table()
+        assert len(conn.fetchall()) == 1
+
+
+def test_an_out_of_range_timestamp_is_refused():
+    """The row value is DuckDB's text, which does not convert to an Arrow timestamp"""
+    pytest.importorskip("pyarrow")
+    value = "timestamp '294247-01-10 04:00:54.775806'"
+    with bareduckdb.connect() as conn:
+        conn.execute(f"create table t as select {value} as c limit 0")
+        conn.execute(f"insert into t select {value} returning c")
+        with pytest.raises(RuntimeError, match="did not convert"):
+            conn.arrow_table()
+        assert conn.fetchall() == [("294247-01-10 04:00:54.775806",)]
+
+
 def test_a_value_that_does_not_convert_leaves_the_rows_readable():
     """A HUGEINT past decimal128(38) fails after the drain, so the drained rows are handed back"""
     pytest.importorskip("pyarrow")

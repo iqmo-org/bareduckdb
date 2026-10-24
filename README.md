@@ -339,7 +339,9 @@ Defaults follow DuckDB, with these differences.
   (`arrow_table()`, `df()`, `pl()`, `arrow_reader()`) build the table from those rows under
   DuckDB's own Arrow types, and need pyarrow. A column whose row value is lossy (INTERVAL,
   BIT, BIGNUM, TIMESTAMP_NS, TIME_NS) or that does not convert raises and leaves the rows
-  fetchable; pass `output_type="arrow_table"` to `execute()` for those. A converted ENUM's
+  fetchable; pass `output_type="arrow_table"` to `execute()` for those. An infinite or
+  out-of-range date or timestamp is refused the same way, as is a real `9999-12-31` or
+  `0001-01-01`, which the row value cannot tell apart from infinity. A converted ENUM's
   dictionary holds only the values present.
 
 ### Not implemented

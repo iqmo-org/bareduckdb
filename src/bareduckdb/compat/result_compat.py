@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from ..capi.arrow_export import cancel_translating_reader, cancelled_from, empty_shape_result
 from ..capi.impl.errors import QueryCancelled  # type: ignore[import-untyped]
+from .arrow_type_names import schema_columns, stream_schema
 
 if TYPE_CHECKING:
     from typing import Any
@@ -27,7 +28,87 @@ logger = logging.getLogger(__name__)
 _MATERIALIZING_BATCH_ROWS = 16_777_216
 
 # DuckDB types whose row value does not carry the Arrow value: INTERVAL folds months into days, BIT is a str, BIGNUM an int, *_NS stops at microseconds.
-_ROWS_NOT_ARROW_TYPES = re.compile(r"\b(INTERVAL|BIT|BITSTRING|BIGNUM|VARINT|TIMESTAMP_NS|TIME_NS|UNION|VARIANT|GEOMETRY)\b")
+_ROWS_NOT_ARROW_TYPES = frozenset(("INTERVAL", "BIT", "BITSTRING", "BIGNUM", "VARINT", "UNION", "VARIANT", "GEOMETRY"))
+
+# A DuckDB type's text: quoted identifiers, string literals (ENUM members), words, numbers and punctuation.
+_TYPE_TOKEN = re.compile(r"""\s*(?:("(?:[^"]|"")*")|('(?:[^']|'')*')|([A-Za-z_][A-Za-z0-9_$]*)|(\d+)|([(),\[\]]))""")
+
+# Types whose parenthesised arguments are (member name, member type) pairs.
+_NAMED_MEMBER_TYPES = frozenset(("STRUCT", "ROW", "UNION"))
+
+
+def _type_tokens(text: str) -> list[tuple[str, str]]:
+    """Split a DuckDB type's text into (kind, token) pairs; raises ValueError on text it does not recognise"""
+    tokens = []
+    pos = 0
+    text = text.rstrip()
+    while pos < len(text):
+        match = _TYPE_TOKEN.match(text, pos)
+        if match is None or match.end() == pos:
+            raise ValueError(f"unrecognised type text at {pos}: {text!r}")
+        kind = ("quoted", "string", "word", "number", "punct")[match.lastindex - 1]  # type: ignore[operator]
+        tokens.append((kind, match.group(match.lastindex)))  # type: ignore[arg-type]
+        pos = match.end()
+    return tokens
+
+
+def _type_names(text: str) -> set[str]:
+    """The DuckDB type names a type's text is built from, never a STRUCT member name or an ENUM member"""
+    tokens = _type_tokens(text)
+    names: set[str] = set()
+
+    def expect(pos: int, token: str) -> int:
+        if pos >= len(tokens) or tokens[pos] != ("punct", token):
+            raise ValueError(f"expected {token!r} at token {pos} of {text!r}")
+        return pos + 1
+
+    def parse_type(pos: int) -> int:
+        words = []
+        while pos < len(tokens) and tokens[pos][0] == "word":
+            words.append(tokens[pos][1].upper())
+            pos += 1
+        if not words:
+            raise ValueError(f"expected a type name at token {pos} of {text!r}")
+        name = " ".join(words)
+        names.add(name)
+        if pos < len(tokens) and tokens[pos] == ("punct", "("):
+            pos += 1
+            while True:
+                if name in _NAMED_MEMBER_TYPES:
+                    if pos >= len(tokens) or tokens[pos][0] not in ("word", "quoted"):
+                        raise ValueError(f"expected a member name at token {pos} of {text!r}")
+                    pos = parse_type(pos + 1)
+                elif pos < len(tokens) and tokens[pos][0] in ("string", "number"):
+                    pos += 1
+                else:
+                    pos = parse_type(pos)
+                if pos < len(tokens) and tokens[pos] == ("punct", ","):
+                    pos += 1
+                    continue
+                pos = expect(pos, ")")
+                break
+        while pos < len(tokens) and tokens[pos] == ("punct", "["):
+            pos += 1
+            if pos < len(tokens) and tokens[pos][0] == "number":
+                pos += 1
+            pos = expect(pos, "]")
+        return pos
+
+    if parse_type(0) != len(tokens):
+        raise ValueError(f"trailing text after the type in {text!r}")
+    return names
+
+
+def _rows_not_arrow(type_name: str) -> bool:
+    """True when a column of this DuckDB type cannot be rebuilt exactly from its row values"""
+    try:
+        names = _type_names(type_name)
+    except ValueError as exc:
+        # Refused rather than guessed: an unparsed type could hide one of the lossy ones.
+        logger.debug("type text not parsed, refusing its rows-to-Arrow conversion: %s", exc)
+        return True
+    return any(name in _ROWS_NOT_ARROW_TYPES or name.endswith("_NS") for name in names)
+
 
 _BIGNUM_HEADER_BYTES = 3
 _BIGNUM_LENGTH_MASK = 0x7FFFFF
@@ -108,6 +189,16 @@ def _opaque_decoder(arrow_type: pa.DataType):
     return _OPAQUE_DECODERS.get(arrow_type.type_name)
 
 
+def _field_decoder(field: pa.Field):
+    """A decoder for a field's values, reading the VARIANT extension from the field's metadata"""
+    from .variant import VARIANT_EXTENSION, decode_variant
+
+    metadata = field.metadata or {}
+    if metadata.get(b"ARROW:extension:name") == VARIANT_EXTENSION or getattr(field.type, "extension_name", None) == VARIANT_EXTENSION.decode():
+        return decode_variant
+    return _value_decoder(field.type)
+
+
 def _value_decoder(arrow_type: pa.DataType):
     import pyarrow as pa_
 
@@ -116,13 +207,13 @@ def _value_decoder(arrow_type: pa.DataType):
         return direct
 
     if pa_.types.is_list(arrow_type) or pa_.types.is_large_list(arrow_type) or pa_.types.is_fixed_size_list(arrow_type):
-        child = _value_decoder(arrow_type.value_type)
+        child = _field_decoder(arrow_type.value_field)
         if child is None:
             return None
         return lambda values: [None if v is None else child(v) for v in values]
 
     if pa_.types.is_struct(arrow_type):
-        children = {f.name: d for f in arrow_type if (d := _value_decoder(f.type)) is not None}
+        children = {f.name: d for f in arrow_type if (d := _field_decoder(f)) is not None}
         if not children:
             return None
 
@@ -136,8 +227,8 @@ def _value_decoder(arrow_type: pa.DataType):
         return decode_struct
 
     if pa_.types.is_map(arrow_type):
-        key = _value_decoder(arrow_type.key_type)
-        item = _value_decoder(arrow_type.item_type)
+        key = _field_decoder(arrow_type.key_field)
+        item = _field_decoder(arrow_type.item_field)
         if key is None and item is None:
             return None
 
@@ -176,7 +267,8 @@ def _has_infinity(value: Any) -> bool:
         # Exact type: datetime.max compares unequal to date.max, but a datetime is also a date.
         return any(type(value) is type(marker) and value == marker for marker in _INFINITY_MARKERS)
     if isinstance(value, dict):
-        return any(_has_infinity(v) for v in value.values())
+        # A MAP row is a dict whose keys can be dates; a nested-key MAP is {'key': [...], 'value': [...]}, walked as values.
+        return any(_has_infinity(k) or _has_infinity(v) for k, v in value.items())
     if isinstance(value, (list, tuple)):
         return any(_has_infinity(v) for v in value)
     return False
@@ -198,6 +290,9 @@ def _arrow_array(pa: Any, values: Any, field: pa.Field) -> pa.Array:
     elif pa.types.is_integer(storage_type) and any(isinstance(v, bool) for v in values):
         values = [None if v is None else int(v) for v in values]
     elif pa.types.is_time(storage_type):
+        if any(isinstance(v, str) for v in values):
+            # The row path returns DuckDB's text for a time Python cannot hold, such as 24:00:00.
+            raise ValueError(f"column {field.name!r} holds a time outside Python's range, which its row value carries as text")
         # Arrow has no time-with-timezone; DuckDB's exporter writes the wall clock, as here.
         values = [v if v is None else v.replace(tzinfo=None) for v in values]
     storage = pa.array(values, type=storage_type)
@@ -255,6 +350,7 @@ class Result:
         rows_changed = self._capi.rows_changed if self._capi is not None else None
         self._rowcount = -1 if rows_changed is None else rows_changed
         self._schema: tuple[tuple[str, ...], tuple[str, ...]] | None = None
+        self._arrow_schema: Any = None  # an exported stream's schema, mapped to DuckDB names only if description asks
         self._consumed_by = None
         self._cancelled = None
         self._failed = None
@@ -306,6 +402,13 @@ class Result:
             self._deferred.track(arrow)
         return capsule
 
+    def _export_reader(self, arrow: Any) -> PyArrowCapsule:
+        """Export an engine Arrow result made at execute(), so the connection's next statement closes its stream"""
+        capsule = arrow.__arrow_c_stream__()
+        if self._deferred is not None:
+            self._deferred.track(arrow)
+        return capsule
+
     def _submit_rows(self, capi: Any) -> None:
         """Submit a pending engine result as rows, recording a cancel or failure it reports; call under _result_lock"""
         if self._deferred is None or not capi.pending:
@@ -337,7 +440,7 @@ class Result:
     def _table_from_rows(self, capi: Any) -> None:
         """Build the table of a result that already ran as rows, under DuckDB's own Arrow schema; call under _result_lock"""
         names, types = tuple(capi.columns), tuple(capi.column_types)
-        lossy = [f"{name} {type_name}" for name, type_name in zip(names, types, strict=True) if _ROWS_NOT_ARROW_TYPES.search(type_name)]
+        lossy = [f"{name} {type_name}" for name, type_name in zip(names, types, strict=True) if _rows_not_arrow(type_name)]
         try:
             import pyarrow as pa
         except ImportError as exc:
@@ -394,8 +497,6 @@ class Result:
     def _result_table(self) -> pa.Table:
         import pyarrow as pa
 
-        if self._table is not None:
-            return self._table
         with self._result_lock:
             self._raise_if_cancelled()
             if self._capi is not None:
@@ -415,18 +516,48 @@ class Result:
                     reader.close()
                 self._table = table
                 return table
+            if self._consumed_by != "arrow_table()":
+                self._claim("arrow_table()")
+            return self._table_locked()
+
+    def _table_locked(self) -> pa.Table:
+        """The table behind a result that is not pending, reading an execute()-time reader in full; call under _result_lock"""
         if self._table is not None:
             return self._table
-        if self._consumed_by is not None:
-            raise RuntimeError(
-                f"this result was consumed by {self._consumed_by}; re-execute query to call "
-                "arrow_table(). The rows are not cached, so there is nothing left to re-read"
-            )
-        if self._read:
+        if self._reader is None or self._read:
             raise RuntimeError("Can't materialize a Reader or Capsule if it's already been retrieved")
-        self._table = pa.table(self)  # type: ignore
-        self._reader = None
-        return self._table  # type: ignore
+        import pyarrow as pa
+
+        source, self._reader = self._reader, None
+        self._read = True
+        if hasattr(source, "lease"):
+            capsule = self._export_reader(source)
+        elif hasattr(source, "__arrow_c_stream__"):
+            capsule = source.__arrow_c_stream__()
+        else:
+            capsule = source
+        reader = pa.RecordBatchReader._import_from_c_capsule(capsule)  # type: ignore
+        try:
+            table = reader.read_all()
+        except Exception as exc:
+            self._record_read_cancel(exc)
+            raise
+        finally:
+            reader.close()
+        self._table = table
+        return table
+
+    def _keep_reader_schema(self, reader: Any) -> None:
+        """Keep the schema of a reader leaving this result, so description still answers; call under _result_lock"""
+        if self._schema is not None:
+            return
+        try:
+            if hasattr(reader, "schema"):
+                self._arrow_schema = reader.schema
+            elif type(reader).__name__ == "PyCapsule":
+                self._arrow_schema = stream_schema(reader)
+        except Exception as exc:
+            logger.debug("no schema kept for the reader handed out: %s", exc)
 
     def arrow_reader(self, batch_size: int | None = None) -> pa.RecordBatchReader:
         """Return the streaming reader, or raise if the result was materialized.
@@ -447,14 +578,25 @@ class Result:
                 self._bound_schema()
                 capsule = self._engine_capsule(batch_size or 0)
                 reader = pa.RecordBatchReader._import_from_c_capsule(capsule)  # type: ignore
+                self._keep_reader_schema(reader)
                 return cancel_translating_reader(reader, self._set_cancelled)
+
+            if self._consumed_by is not None and self._consumed_by != "arrow_table()":
+                self._claim("arrow_reader()")
 
             if self._reader is not None:
                 if batch_size:
                     logger.debug("arrow_reader(batch_size=%d) ignored: the reader was made at execute()", batch_size)
+                self._claim("arrow_reader()")
                 self._read = True
                 _reader = self._reader
                 self._reader = None
+                self._keep_reader_schema(_reader)
+                if hasattr(_reader, "lease"):
+                    import pyarrow as pa
+
+                    reader = pa.RecordBatchReader._import_from_c_capsule(self._export_reader(_reader))  # type: ignore
+                    return cancel_translating_reader(reader, self._set_cancelled)
 
                 return _reader  #  type: ignore # TODO: Handle Capsule scenario
 
@@ -477,10 +619,21 @@ class Result:
                 if self._table is not None:
                     return self._table.__arrow_c_stream__(requested_schema)
                 self._bound_schema()
-                return self._engine_capsule(self._stream_batch_rows or 0, requested_schema)
+                capsule = self._engine_capsule(self._stream_batch_rows or 0, requested_schema)
+                if self._schema is None:
+                    try:
+                        self._arrow_schema = stream_schema(capsule)
+                    except Exception as exc:
+                        logger.debug("no schema kept for the exported stream: %s", exc)
+                return capsule
 
+            if self._consumed_by in (None, "a row fetch"):
+                self._claim("an Arrow export")
             self._read = True
             if self._reader is not None:
+                self._keep_reader_schema(self._reader)
+                if hasattr(self._reader, "lease"):
+                    return self._export_reader(self._reader)
                 if hasattr(self._reader, "__arrow_c_stream__"):
                     return self._reader.__arrow_c_stream__()
                 else:
@@ -639,19 +792,22 @@ class Result:
             if rows is not None:
                 return rows
 
-        table = self.arrow_table()
-
-        if self._offset >= len(table):
+        with self._result_lock:
+            self._raise_if_cancelled()
+            # Only arrow_table() leaves its rows readable; any other consumer took them.
+            if self._consumed_by != "arrow_table()":
+                self._claim("a row fetch")
+            table = self._table_locked()
+            # Read, sliced and advanced under one lock, so concurrent fetchers never share a row.
+            start = self._offset
+            end_idx = len(table) if size is None else min(start + size, len(table))
+            self._offset = max(start, end_idx)
+        if start >= end_idx:
             return []
 
-        if size is None:
-            end_idx = len(table)
-        else:
-            end_idx = min(self._offset + size, len(table))
+        opaque = [(i, d) for i, f in enumerate(table.schema) if (d := _field_decoder(f)) is not None]
 
-        opaque = [(i, d) for i, f in enumerate(table.schema) if (d := _value_decoder(f.type)) is not None]
-
-        rows = [tuple(col[idx].as_py() for col in table.columns) for idx in range(self._offset, end_idx)]
+        rows = [tuple(col[idx].as_py() for col in table.columns) for idx in range(start, end_idx)]
 
         if opaque:
             decoded = []
@@ -663,7 +819,6 @@ class Result:
                 decoded.append(tuple(values))
             rows = decoded
 
-        self._offset = end_idx
         return rows
 
     def _fetch_rows_streaming(self, size: int | None) -> list[tuple[Any, ...]] | None:
@@ -686,6 +841,9 @@ class Result:
                     self._capi = None
 
                 rows_iter = self._rows_iter
+                if rows_iter is not None and self._consumed_by is None:
+                    # Rows a refused Arrow conversion handed back.
+                    self._claim("a row fetch")
                 if rows_iter is None:
                     if self._released:
                         return []
@@ -733,19 +891,33 @@ class Result:
         if capi is not None and capi.schema_known:
             self._schema = (tuple(capi.columns), tuple(capi.column_types))
 
-    def _locked_schema(self) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    def _locked_schema(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         with self._result_lock:
             if self._failed is not None:
                 self._raise_if_cancelled()
-            return self._deferred_schema()
+            names_types = self._deferred_schema()
+            if names_types is None:
+                names_types = self._arrow_names()
+                self._schema = names_types
+            return names_types
+
+    def _arrow_names(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """DuckDB type names mapped from the Arrow schema, for a result whose DuckDB types were never known; call under _result_lock"""
+        if self._table is not None:
+            return schema_columns(self._table.schema)
+        if self._arrow_schema is not None:
+            return schema_columns(self._arrow_schema)
+        if self._reader is not None and hasattr(self._reader, "schema"):
+            return schema_columns(self._reader.schema)
+        if self._reader is not None and type(self._reader).__name__ == "PyCapsule":
+            return schema_columns(stream_schema(self._reader))
+        raise RuntimeError("this result has no schema left to describe")
 
     @property
     def description(self) -> list[tuple[Any, ...]]:
         """DB-API 2.0 column description: 7-item tuples (name, type_code, display_size, internal_size, precision, scale, null_ok)"""
-        names_types = self._locked_schema()
-        if names_types is not None:
-            return [(name, type_name, None, None, None, None, None) for name, type_name in zip(*names_types, strict=True)]
-        return [(field.name, field.type, None, None, None, None, None) for field in self.arrow_table().schema]
+        names, types = self._locked_schema()
+        return [(name, type_name, None, None, None, None, None) for name, type_name in zip(names, types, strict=True)]
 
     @property
     def rowcount(self) -> int:
@@ -755,11 +927,7 @@ class Result:
     @property
     def columns(self) -> list[str]:
         """Return column names"""
-        names_types = self._locked_schema()
-        if names_types is not None:
-            return list(names_types[0])
-
-        return [field.name for field in self.arrow_table().schema]  # pyright: ignore[reportUnknownVariableType]
+        return list(self._locked_schema()[0])
 
     def _release(self) -> None:
         """Drop the engine result and its registry borrow now"""
@@ -768,6 +936,10 @@ class Result:
             row_chunks, self._row_chunks = self._row_chunks, None
             self._rows_iter = None
             capi, self._capi = self._capi, None
+            reader = self._reader if hasattr(self._reader, "lease") else None
+        if reader is not None:
+            # Unexported, it still holds the engine result; exported, close() is a no-op.
+            reader.close()
         if row_chunks is not None:
             row_chunks.close()
         if capi is not None:

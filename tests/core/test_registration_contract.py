@@ -155,8 +155,9 @@ def test_registrations_are_isolated_per_connection():
     second = bareduckdb.connect()
     try:
         first.register("t", pa.table({"a": [1, 2, 3]}))
-        with pytest.raises(RuntimeError):
-            second.execute("SELECT * FROM t")
+        result = second.execute("SELECT * FROM t")
+        with pytest.raises(RuntimeError, match="does not exist"):
+            result.fetchall()
     finally:
         first.close()
         second.close()

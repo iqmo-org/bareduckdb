@@ -158,9 +158,11 @@ def test_error_message_carries_engine_text(make_conn):
 
 
 def test_error_on_unknown_column(make_conn):
+    """A SELECT binds once, at submission, so a bind error raises at its first consumer"""
     conn = make_conn()
-    with pytest.raises(RuntimeError):
-        execute(conn, "SELECT no_such_column FROM range(1)")
+    result = execute(conn, "SELECT no_such_column FROM range(1)")
+    with pytest.raises(RuntimeError, match="no_such_column"):
+        list(result.rows())
 
 
 # The loop in the body is already the repetition, and repeating it hits the 90s timeout
@@ -597,13 +599,15 @@ def test_columns_after_an_arrow_export_says_what_happened(make_conn):
         result.columns
 
 
-def test_a_select_keeps_its_bound_columns_after_an_arrow_export(make_conn):
-    """Bind supplied the schema at execute(), so the export does not take it away"""
+def test_a_select_has_no_columns_after_an_arrow_export(make_conn):
+    """Nothing binds at execute(), so the schema went with the statement to the Arrow export"""
     conn = make_conn()
     pytest.importorskip("pyarrow")
     result = execute(conn, "SELECT 1 AS a")
+    assert not result.schema_known
     result.__arrow_c_stream__()
-    assert result.columns == ("a",)
+    with pytest.raises(RuntimeError, match="Arrow export"):
+        result.columns
 
 
 def test_call_impl_routes_to_execute(make_conn):

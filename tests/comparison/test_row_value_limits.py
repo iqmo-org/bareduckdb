@@ -22,6 +22,10 @@ _ROW_QUERIES = [
     "select [map {[1]: 2}]",
     "select map {1: map {[1]: 2}}",
     "select null::map(int[], int)",
+    # datetime.time stops at 23:59:59.999999, so 24:00:00 comes back as DuckDB's text.
+    "select time '24:00:00', '24:00:00'::time_ns, time '23:59:59.999999'",
+    "select timetz '24:00:00+00', timetz '24:00:00+05:30'",
+    "select [time '24:00:00', time '01:00:00'], {'t': time '24:00:00'}",
 ]
 
 
@@ -70,3 +74,54 @@ def test_a_row_returning_statement_read_as_df_matches_duckdb(statement, setup):
     # Values only: bareduckdb's df() uses ArrowDtype columns by design.
     assert got.astype(object).where(got.notna(), None).values.tolist() == expected.astype(object).where(expected.notna(), None).values.tolist(), (got, expected)
     assert list(got.columns) == list(expected.columns)
+
+
+_VARIANT_STATEMENTS = [
+    "pragma storage_info('t')",
+    "call pragma_storage_info('t')",
+    "select * from pragma_storage_info('t')",
+]
+
+
+def _storage_conn(module):
+    conn = module.connect()
+    conn.execute("create table t(a int, b varchar)")
+    conn.execute("insert into t values (1, 'x'), (2, null)")
+    return conn
+
+
+@pytest.mark.parametrize("statement", _VARIANT_STATEMENTS)
+def test_a_variant_column_fetches_like_duckdb(statement):
+    """The row path has no VARIANT route, so the README workaround asks for Arrow up front and decodes it"""
+    pytest.importorskip("pyarrow")
+    expected = _storage_conn(duckdb).execute(statement).fetchall()
+    got = _storage_conn(bareduckdb).execute(statement, output_type="arrow_table").fetchall()
+    assert got == expected, (got, expected)
+
+
+@pytest.mark.parametrize("statement", _VARIANT_STATEMENTS[:2])
+def test_a_variant_pragma_fetch_raises(statement):
+    """A PRAGMA or CALL runs as rows at execute(), where a VARIANT column has no route"""
+    with pytest.raises(NotImplementedError, match="VARIANT"):
+        _storage_conn(bareduckdb).execute(statement).fetchall()
+
+
+@pytest.mark.filterwarnings("ignore:Arrow output on a DB-API result:UserWarning")
+@pytest.mark.parametrize("statement", _VARIANT_STATEMENTS)
+def test_a_variant_pragma_read_as_arrow_matches_duckdb(statement):
+    """The README workarounds: Arrow asked for up front, or the SELECT form of the table function"""
+    pytest.importorskip("pyarrow")
+    expected = _storage_conn(duckdb).execute(statement).to_arrow_table()
+    conn = _storage_conn(bareduckdb)
+    if statement.startswith("select"):
+        got = conn.execute(statement).arrow_table()
+    else:
+        got = conn.execute(statement, output_type="arrow_table").arrow_table()
+    assert got.equals(expected), (got.schema, expected.schema)
+
+
+def test_a_variant_call_describes_like_duckdb():
+    statement = "call duckdb_settings()"
+    expected = duckdb.connect().execute(statement).description
+    got = bareduckdb.connect().execute(statement).description
+    assert [(d[0], str(d[1])) for d in got] == [(d[0], str(d[1])) for d in expected], (got, expected)

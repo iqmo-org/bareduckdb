@@ -1,8 +1,8 @@
 name: Benchmarks
 
+# workflow_call so dev_versions.yml runs it after its tests
 on:
   workflow_call:
-  pull_request:
   workflow_dispatch:
 
 jobs:

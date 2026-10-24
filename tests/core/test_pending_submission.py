@@ -1,4 +1,4 @@
-"""A SELECT is bound at execute() and submitted once by its first consumer, as rows or as Arrow."""
+"""A SELECT is parsed at execute() and bound and submitted once, by its first consumer, as rows or as Arrow."""
 
 import subprocess
 import sys
@@ -91,8 +91,8 @@ def test_a_submission_refused_for_a_live_result_raises_again_on_every_later_acce
     _assert_clean_exit(proc)
 
 
-def test_description_does_not_submit_a_bound_select():
-    """Bind supplies a SELECT's schema, so reading it leaves the result free to become Arrow"""
+def test_description_first_then_arrow_table_returns_the_rows():
+    """Reading description submits a SELECT as rows, and arrow_table() then converts those rows"""
     pytest.importorskip("pyarrow")
     with bareduckdb.connect() as conn:
         result = conn.execute("select 1 as a, 'x' as b")._last_result_get()
@@ -200,7 +200,19 @@ def test_a_converted_returning_writes_once_and_leaves_the_table_readable():
         assert conn.execute("select count(*) from t").fetchall() == [(2,)]
 
 
-@pytest.mark.parametrize("column", ["interval '1 month'", "'0101'::bit", "12::bignum", "'2024-01-02 03:04:05.123456789'::timestamp_ns"])
+@pytest.mark.parametrize(
+    "column",
+    [
+        "interval '1 month'",
+        "'0101'::bit",
+        "12::bignum",
+        "'2024-01-02 03:04:05.123456789'::timestamp_ns",
+        "'2020-01-01 00:00:00.123456789+00'::timestamptz_ns",
+        "['2020-01-01 00:00:00.123456789+00'::timestamptz_ns]",
+        "'12:34:56.123456789'::time_ns",
+        "{'variant': interval '1 day'}",
+    ],
+)
 def test_a_lossy_row_type_is_refused_and_leaves_the_rows_readable(column):
     """The row value cannot carry the Arrow value, so the refusal consumes nothing"""
     pytest.importorskip("pyarrow")
@@ -253,6 +265,61 @@ def test_an_out_of_range_timestamp_is_refused():
         with pytest.raises(RuntimeError, match="did not convert"):
             conn.arrow_table()
         assert conn.fetchall() == [("294247-01-10 04:00:54.775806",)]
+
+
+@pytest.mark.parametrize("value", ["map {'infinity'::date: 1}", "map {'-infinity'::timestamp: 1}", "map {'infinity'::timestamptz: 1}"])
+def test_an_infinite_map_key_is_refused_and_leaves_the_rows_readable(value):
+    """A MAP row is a dict, so an infinite key is the row path's date or datetime limit, not DuckDB's infinity"""
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        conn.execute(f"create table t as select {value} as c limit 0")
+        conn.execute(f"insert into t select {value} returning c")
+        with pytest.raises(RuntimeError, match="infinite date or timestamp"):
+            conn.arrow_table()
+        assert len(conn.fetchall()) == 1
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        """{'BIT': 1}::struct("BIT" int)""",
+        """{'VARIANT': 1, 'TIME_NS': 2}::struct("VARIANT" int, "TIME_NS" int)""",
+        """{'interval': 'x', 'union': [1]}::struct("interval" varchar, "union" int[])""",
+        """map {'GEOMETRY': 1}""",
+    ],
+)
+def test_a_type_name_used_as_a_member_name_still_converts(expr):
+    """The refusal reads the type structure, so a STRUCT member named like a lossy type is not refused"""
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        conn.execute(f"create table t as select {expr} as c limit 0")
+        expected = conn.execute(f"select {expr} as c").arrow_table()
+        got = conn.execute(f"insert into t select {expr} returning c").arrow_table()
+        assert got.equals(expected), (got, expected)
+
+
+def test_an_enum_member_named_like_a_type_still_converts():
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        conn.execute("create type e as enum ('INTERVAL', 'BIT', 'x')")
+        conn.execute("create table t(c e)")
+        got = conn.execute("insert into t values ('x') returning c").arrow_table()
+        expected = conn.execute("select c from t").arrow_table()
+        assert got.schema == expected.schema, (got.schema, expected.schema)
+        assert got.to_pylist() == expected.to_pylist(), (got, expected)
+
+
+@pytest.mark.parametrize(("value", "row"), [("'24:00:00'::time", "24:00:00"), ("'24:00:00+00'::timetz", "24:00:00+00")])
+def test_a_time_of_24_hours_is_refused_and_leaves_the_rows_readable(value, row):
+    """The row path returns DuckDB's text for 24:00:00, which no Python time holds"""
+    pytest.importorskip("pyarrow")
+    with bareduckdb.connect() as conn:
+        conn.execute(f"create table t as select {value} as c limit 0")
+        conn.execute(f"insert into t select {value} returning c")
+        with pytest.raises(RuntimeError, match="time outside Python's range") as info:
+            conn.arrow_table()
+        assert "replace()" not in str(info.value), str(info.value)
+        assert conn.fetchall() == [(row,)]
 
 
 def test_a_value_that_does_not_convert_leaves_the_rows_readable():
@@ -444,10 +511,11 @@ def test_an_unresolved_parameter_type_goes_to_arrow_when_nothing_read_its_schema
 
 
 def test_a_bind_error_carries_the_line_context():
-    """duckdb-python's text includes the LINE / caret context, which bind alone drops"""
+    """duckdb-python's text includes the LINE / caret context; a SELECT binds at its first consumer"""
     with bareduckdb.connect() as conn:
+        conn.execute("select * from no_such_table")
         with pytest.raises(RuntimeError) as info:
-            conn.execute("select * from no_such_table")
+            conn.fetchall()
         message = str(info.value)
         assert "Table with name no_such_table does not exist" in message, message
         assert "LINE 1:" in message, message
@@ -455,8 +523,9 @@ def test_a_bind_error_carries_the_line_context():
 
 def test_a_bind_error_with_parameters_carries_the_line_context():
     with bareduckdb.connect() as conn:
+        conn.execute("select * from no_such_table where x = ?", [1])
         with pytest.raises(RuntimeError) as info:
-            conn.execute("select * from no_such_table where x = ?", [1])
+            conn.fetchall()
         message = str(info.value)
         assert "Table with name no_such_table does not exist" in message, message
         assert "LINE 1:" in message, message

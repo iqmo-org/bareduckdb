@@ -319,35 +319,41 @@ from DuckDB's extension directory (`~/.duckdb/extensions/v2.0.0/...`). `duckdb` 
 
 Defaults follow DuckDB, with these differences.
 
-- A SELECT runs at its first consumer, not at `execute()`. Bind errors still raise at
-  `execute()`. A SELECT that is never read never runs.
-- Mixing consumers on one result raises, for example `.pl()` then `.fetchall()`.
-  `arrow_table()` is exempt, and rows can still be fetched after it. Repeating the same call
-  behaves like duckdb-python.
-- A registration can be scanned once per query, so a self-join, a `UNION ALL` over the same
-  name, or a concurrent query from another cursor raises. See "Use a registration twice in one
-  query".
-- Registrations do not appear in `SHOW TABLES`, and they do not shadow a real table of the
-  same name.
-- A SELECT with a data-modifying CTE keeps its write only if read to the end.
-- `df()` returns ArrowDtype columns, not NumPy dtypes. `df(arrow_dtyped=False)` gives
-  pyarrow's default conversion.
-- VARINT returns `int`, not `str`.
-- TIMESTAMPTZ values compare equal to duckdb-python's but carry a different `tzinfo`.
-- UNION and VARIANT raise from `fetchall()` and work through Arrow.
-- A PRAGMA, CALL or `RETURNING` statement runs at `execute()` as rows. Its Arrow consumers
-  (`arrow_table()`, `df()`, `pl()`, `arrow_reader()`) build the table from those rows under
-  DuckDB's own Arrow types, and need pyarrow. A column whose row value is lossy (INTERVAL,
-  BIT, BIGNUM, TIMESTAMP_NS, TIME_NS) or that does not convert raises and leaves the rows
-  fetchable; pass `output_type="arrow_table"` to `execute()` for those. An infinite or
-  out-of-range date or timestamp is refused the same way, as is a real `9999-12-31` or
-  `0001-01-01`, which the row value cannot tell apart from infinity. A converted ENUM's
-  dictionary holds only the values present.
+- `execute()` does not run a SELECT. The first `fetchall()`, `df()`, `pl()` or similar runs
+  it. A SELECT you never read never runs.
+- A SELECT is checked when you read it, not at `execute()`. An error such as an unknown column
+  appears at the first read. A wrong number of parameters still fails at `execute()`.
+- Reading `description` before any other read runs a SELECT as rows. A later `pl()` or
+  `arrow_table()` then builds the table from those rows.
+- A result can be read once, by one method. Calling `pl()` and then `fetchall()` raises, and
+  the error names the first method. `arrow_table()` and `df()` are the exceptions: you can still
+  fetch rows after them.
+- After an Arrow read, `description` derives the types from the Arrow schema. Eight types get a
+  different name: HUGEINT, UHUGEINT, TIMETZ, UUID, BIT, JSON, ENUM and TUPLE. With
+  `SET arrow_lossless_conversion = true`, only ENUM and TUPLE differ.
+- Parameters are typed from the Python value. An int that fits in 32 bits is BIGINT, not INTEGER. An int of
+  2^63 or more is HUGEINT, not UBIGINT. A dict is a MAP, not a STRUCT, so it cannot be inserted
+  into a STRUCT column. A nested list that mixes types, such as `[[1], ['a']]`, raises.
+- A registered name can appear once per query. A self-join, or a `UNION ALL` of the name with
+  itself, raises. See "Use a registration twice in one query".
+- Registered names do not appear in `SHOW TABLES`. A real table with the same name wins.
+- A SELECT whose CTE writes data keeps the write only if you read every row.
+- `df()` returns pandas ArrowDtype columns, not NumPy columns. Use `df(arrow_dtyped=False)` for
+  NumPy.
+- VARINT values are `int`, not `str`.
+- TIMESTAMPTZ values have a different `tzinfo`. They compare equal.
+- `fetchall()` cannot read UNION, VARIANT or GEOMETRY columns. Read them as Arrow. See "DuckDB
+  C API 2.0 limitations".
+- PRAGMA, CALL and `RETURNING` statements run at `execute()`. Reading them as Arrow (`df()`,
+  `pl()`, `arrow_table()`) builds the table from the fetched rows, which needs pyarrow and is
+  slower. Some values cannot be rebuilt exactly, such as INTERVAL, BIT, nanosecond timestamps,
+  infinite dates and the time 24:00:00. Those raise, and `fetchall()` still works. To get Arrow
+  for them, pass `output_type="arrow_table"` to `execute()`.
 
 ### Not implemented
 
-- The appender, `executemany`, and the module-level functions (`bareduckdb.sql`,
-  `read_csv`, ...). These raise `NotImplementedError`.
+- `executemany` and the module-level functions (`bareduckdb.sql`, `read_csv`, ...). These
+  raise `NotImplementedError`.
 - Python table functions and replacement scans. `register_udtf()`, a non-empty
   `connect(udtf_functions=...)` and `connect(enable_replacement_scan=True)` raise
   `NotImplementedError`. Use `register()` instead.
@@ -355,27 +361,28 @@ Defaults follow DuckDB, with these differences.
   [narwhals](https://github.com/narwhals-dev/narwhals).
 - Python scalar UDFs and fsspec filesystems.
 - Filter pushdown into registered sources.
+- Some Arrow tables built from rows (see the PRAGMA bullet above). An ENUM column's dictionary
+  holds only the values present. TIMETZ with `arrow_lossless_conversion` and a MAP with a nested
+  key raise. Memory use is about 2.7 times DuckDB's.
 
 ### DuckDB C API 2.0 limitations
 
-These come from the v2 C API itself, not from bareduckdb, and go away when upstream adds the
-missing route.
+- **The v2 C API is unstable in DuckDB 2.0.0.** 
+- **Rows cannot be converted to Arrow.** PRAGMA, CALL and `RETURNING` must go through Python -> Arrow.
+  ([#25801](https://github.com/duckdb/duckdb/pull/25801) removed the old one).
+- **An Arrow result has no DuckDB types.** `description` after an Arrow read is derived from
+  the Arrow schema. See "Differences from duckdb-python".
+- **VARIANT, UNION and GEOMETRY values cannot be read as rows.** `fetchall()` raises on them. See [#27570](https://github.com/duckdb/duckdb/issues/27570).
+- **A PRAGMA or CALL that returns VARIANT raises on every read**, including `PRAGMA storage_info`. Use the workarounds below.
+- **Some VARIANT contents cannot be exported to Arrow**: INTERVAL, TIMETZ, BIT, TIMESTAMP_S, TIMESTAMP_MS, and integers larger than int64.
+- **v2 C API does not have support appending** Use `register()` with `INSERT ... SELECT`, or `INSERT` with parameters.
 
-- **No VARIANT or UNION route in the value API.** `fetchall()` raises `NotImplementedError` on a
-  VARIANT or UNION column. The Arrow export handles both; DuckDB writes VARIANT as the
-  `arrow.parquet.variant` extension struct.
-- **A result's format is fixed when it is submitted, and there is no row-to-Arrow conversion.**
-  A PRAGMA, CALL or `RETURNING` runs at `execute()` as rows, so its Arrow consumers build the
-  table from those rows. That fails for a column the row path cannot read or cannot represent
-  exactly, including VARIANT. `PRAGMA storage_info` and `CALL duckdb_settings()` are the common
-  cases.
-
-Workarounds for a PRAGMA or CALL whose Arrow consumer raises:
+Workarounds:
 
 ```python
-conn.execute("select * from pragma_storage_info('t')").arrow_table()  # PRAGMA name(args) as a table function
-conn.execute("select * from duckdb_settings()").df()                  # CALL f() as SELECT * FROM f()
-conn.execute("pragma storage_info('t')", output_type="arrow_table")   # ask for Arrow up front
+conn.execute("select * from pragma_storage_info('t')").arrow_table()  # PRAGMA as a SELECT
+conn.execute("select * from duckdb_settings()").df()                  # CALL as a SELECT
+conn.execute("pragma storage_info('t')", output_type="arrow_table")   # Arrow from the start
 ```
 
 ## Why it works this way

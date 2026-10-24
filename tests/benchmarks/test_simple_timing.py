@@ -28,7 +28,7 @@ def test_like_no_param(conn_with_like_data):
 @pytest.mark.benchmark
 def test_like_no_param_polars(conn_with_like_data):
     pytest.importorskip("polars")
-    result = conn_with_like_data.execute("SELECT t1.value FROM t1 JOIN t2 ON t1.t2_id = t2.id WHERE t2.code LIKE '0001%'").pl()
+    result = conn_with_like_data.sql("SELECT t1.value FROM t1 JOIN t2 ON t1.t2_id = t2.id WHERE t2.code LIKE '0001%'").pl()
     assert len(result) > 0
 
 

@@ -9,11 +9,10 @@ release, so the engine is upstream's release build.
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ```bash
-pip install --pre bareduckdb
+pip install bareduckdb
 ```
 
-The DuckDB 2.0 line is a pre-release on PyPI. Without `--pre`, pip installs 0.12, which is
-built on DuckDB 1.x.
+The first import downloads libduckdb; see "The DuckDB library".
 
 ```python
 import bareduckdb
@@ -21,7 +20,7 @@ import polars as pl
 
 with bareduckdb.connect() as conn:
     conn.register("t", pl.DataFrame({"a": [1, 2, 3]}))
-    conn.execute("SELECT sum(a) AS s FROM t").pl()         # polars in and out, no pyarrow
+    conn.execute("SELECT sum(a) AS s FROM t").pl()         # polars frame, s = 6, no pyarrow
     conn.execute("SELECT 42 AS answer").fetchall()         # [(42,)]
 ```
 
@@ -47,57 +46,11 @@ and every extension module declares itself free-threading compatible.
 
 Wheels are under 400 KB and have no required Python dependencies; pyarrow, polars and pandas
 are optional and imported on demand. The DuckDB library, 20 to 40 MB compressed, is downloaded
-from DuckDB's release server on first import and cached (see "The DuckDB library" below).
+from DuckDB's release server on first import and cached.
 
-## Platforms
+## Guides
 
-Wheels are built and tested in CI on these platforms.
-
-| | Linux glibc (manylinux_2_28) | Linux musl (musllinux_1_2) | macOS | Windows |
-| --- | --- | --- | --- | --- |
-| x86_64 | yes | yes | no | yes |
-| arm64 | yes | yes | yes | no |
-
-One `cp312-abi3` limited-API wheel covers GIL builds of CPython 3.12 and newer. `cp314t` and
-`cp315t` wheels cover free-threaded CPython. GraalPy 25.3 (Python 3.13) is built for Linux
-x86_64 only; see [README_GRAALPY.md](README_GRAALPY.md). PyPy is not supported.
-
-Every CPython wheel runs the core test suite before upload, and the GraalPy wheel runs a
-subset. For thread safety, the suite also runs under `pytest-run-parallel` on 3.14 and 3.15t
-on Linux, macOS and Windows, and TSAN and ASAN builds run nightly on free-threaded 3.14.
-
-## The DuckDB library
-
-The wheel does not contain libduckdb. On first import, bareduckdb looks for it in this order:
-
-1. `BAREDUCKDB_DUCKDB_LIB`, a path to the library file or to a directory holding it.
-2. `bareduckdb/_libs/` inside the package, which only a source build fills.
-3. The user cache: `~/.cache/bareduckdb` (`$XDG_CACHE_HOME`), `~/Library/Caches/bareduckdb`,
-   or `%LOCALAPPDATA%\bareduckdb\Cache`.
-4. A download of the pinned release, currently `v2.0.0`, from
-   `install.duckdb.org/v2.0.0/duckdb-shared-libs-<platform>.tar.gz`, into that cache.
-
-The first import therefore needs network access, once per user and DuckDB version. The
-download is checked for CPU architecture but not against a checksum or signature. It relies on
-HTTPS.
-
-In a container, mount the cache directory or the download repeats on every run. For an
-air-gapped host:
-
-```bash
-python -m bareduckdb.install_duckdb --dir /opt/duckdb    # on a machine with network access
-export BAREDUCKDB_DUCKDB_LIB=/opt/duckdb                 # on the target
-export BAREDUCKDB_NO_DOWNLOAD=1                          # fail instead of downloading
-```
-
-With `BAREDUCKDB_NO_DOWNLOAD` set and nothing found, import raises
-`DuckDBLibraryNotFoundError`, listing every path it tried.
-
-`SELECT * FROM pragma_version()` reports DuckDB's own version and source id. Extensions load
-from DuckDB's extension directory (`~/.duckdb/extensions/v2.0.0/...`). `duckdb` and
-`bareduckdb` can be imported in the same process.
-
-## Usage
+### Run a query
 
 ```python
 import bareduckdb
@@ -112,14 +65,9 @@ with bareduckdb.connect() as conn:                     # or connect("file.db")
     conn.execute("SELECT * FROM t").df()            # pandas, ArrowDtype columns
 ```
 
-Each connection keeps the last 128 parsed single-statement SELECTs, keyed by SQL text, so a
-repeated query skips the parse. Bind and execute still run every time, and any other
-statement clears the cache. `bareduckdb.connect(parse_cache_size=0)` turns it off.
+### Query in-memory data
 
-### Querying in-memory data
-
-A query sees a Python object only after it has a name. `register()` names an object on the
-connection until `unregister()` or the connection closes.
+`register()` names an object on the connection until `unregister()` or the connection closes.
 
 ```python
 import bareduckdb
@@ -154,28 +102,10 @@ with bareduckdb.connect() as conn:
 ```
 
 A variable named neither way is not found, even if it is in scope: `SELECT * FROM customers`
-above raises a catalog error.
+above raises a catalog error. "Registered sources" below lists what both accept and how each
+source type is read.
 
-Both accept polars DataFrames and LazyFrames, pyarrow Tables, Datasets, Scanners and
-RecordBatchReaders, pandas DataFrames, and any object with `__arrow_c_stream__`. For Arrow and
-polars data, columns the query does not name are never converted. pandas frames are converted
-with `pyarrow.Table.from_pandas`, which needs pyarrow and copies numpy-backed columns. A
-`pa.RecordBatchReader` is read fully at registration, because a reader from the same
-connection would otherwise hold its query open.
-
-Filters are not pushed into the source, so a `pl.LazyFrame` is asked for every row and DuckDB
-applies the `WHERE`. A registration is re-read on every query, so a `pl.LazyFrame` re-runs its
-pipeline each time. For a frame that fits in memory and is queried repeatedly, `.collect()` it
-first.
-
-The planner gets a row count only for a source with a `len()`: a `pa.Table`, `pl.DataFrame` or
-pandas frame. A `ds.Dataset` or `pl.LazyFrame` reports none, which can make DuckDB pick a full
-sort over a top-N for a large `ORDER BY ... LIMIT`.
-
-Insertion order is preserved by default, as in DuckDB, and scans of registered data stay
-parallel. `SET preserve_insertion_order=false` opts into the unordered, lower-memory sink.
-
-### Using a registration twice in one query
+### Use a registration twice in one query
 
 A registration can be scanned once per query, so a self-join or a `UNION ALL` over the same
 name raises. Read it through a materialized CTE instead:
@@ -190,7 +120,7 @@ query ends. Write `MATERIALIZED` explicitly. Without it DuckDB may inline the CT
 does when the query has a `LIMIT`, and the second scan raises. A CTE does not help concurrent
 queries from other cursors.
 
-### Streaming results
+### Stream a large result in batches
 
 ```python
 reader = conn.execute("SELECT * FROM range(10_000_000)").arrow_reader(batch_size=100_000)
@@ -203,7 +133,7 @@ runs its next statement. After that, a reader still referenced raises `ArrowInva
 next read, where duckdb-python ends it without an error. `reader.close()` does not release the
 query. Use `conn.cursor()` to keep a reader open while running other queries.
 
-### Cancellation and progress
+### Cancel a query and show progress
 
 ```python
 import threading
@@ -227,14 +157,14 @@ polars holds the GIL while it reads. `max_execution_time` still applies, and
 `arrow_table()` and `arrow_reader()` can be interrupted. See
 [README_PROGRESS.md](README_PROGRESS.md).
 
-### Async
+### Run queries from asyncio or trio
 
-The async pool is built on anyio and runs under asyncio or trio. Each query runs on a cursor
-in a worker thread, and cancelling the awaiting task interrupts the query. Results come back
-as `pyarrow.Table`, so the pool needs pyarrow as well as the `aio` extra.
+The async pool is built on anyio. Each query runs on a cursor in a worker thread, and
+cancelling the awaiting task interrupts the query. Results come back as `pyarrow.Table`, so
+the pool needs pyarrow as well as the `aio` extra.
 
 ```bash
-pip install --pre "bareduckdb[aio,arrow]"
+pip install "bareduckdb[aio,arrow]"
 ```
 
 ```python
@@ -249,24 +179,142 @@ after the cancel (see [README_PROGRESS.md](README_PROGRESS.md)), and the cursor 
 then. anyio's `move_on_after` and `fail_after` work on either backend, and
 `asyncio.wait_for` works under asyncio.
 
-### Using it where `duckdb` is expected
+### Use bareduckdb where `duckdb` is expected
 
 `bareduckdb.register_as_duckdb()` aliases the `duckdb` module to bareduckdb. CI runs
 SQLAlchemy (duckdb-engine), jupysql and magic-duckdb this way.
 
-## Differences from duckdb-python
+### Run without network access
+
+In a container, mount the cache directory (see "The DuckDB library"), or the download repeats
+on every run. For an air-gapped host, fetch the library elsewhere and point bareduckdb at it:
+
+```bash
+python -m bareduckdb.install_duckdb --dir /opt/duckdb    # on a machine with network access
+export BAREDUCKDB_DUCKDB_LIB=/opt/duckdb                 # on the target
+export BAREDUCKDB_NO_DOWNLOAD=1                          # fail instead of downloading
+```
+
+With `BAREDUCKDB_NO_DOWNLOAD` set and nothing found, import raises
+`DuckDBLibraryNotFoundError`, listing every path it tried.
+
+## Reference
+
+### Connection
+
+`bareduckdb.connect(database=None, config=None, read_only=False, *, parse_cache_size=128)`
+opens a connection; `None` is an in-memory database. `config` takes DuckDB settings, for
+example `{"threads": "4", "memory_limit": "1GB"}`. The connection is a context manager that
+closes on exit.
+
+| Method | Effect |
+| --- | --- |
+| `execute(sql, parameters=None, *, data=None)` | Runs a statement and returns the connection, whose result methods read that statement's result. `data` names objects for this call only. |
+| `register(name, obj)` | Names an object until `unregister()` or close. Returns the connection. |
+| `unregister(name)` | Removes a name. An unknown name is a no-op. Returns the connection. |
+| `cursor()` | A new connection to the same database, with its own result state. |
+| `interrupt()` | Cancels the running query from any thread; it raises `QueryCancelled`. |
+| `close()` | Closes the connection. |
+
+Each connection keeps the last `parse_cache_size` parsed single-statement SELECTs, keyed by
+SQL text, so a repeated query skips the parse. Bind and execute still run every time, and any
+other statement clears the cache. `0` turns it off.
+
+### Results
+
+These are called on the connection after `execute()`, as in `conn.execute(sql).pl()`.
+
+| Method | Returns | Needs |
+| --- | --- | --- |
+| `fetchone()`, `fetchmany(n)`, `fetchall()` | tuples | nothing |
+| `pl()` | `pl.DataFrame` | polars |
+| `pl_lazy()` | `pl.LazyFrame` over the stream | polars and pyarrow |
+| `arrow_table()` | `pa.Table` | pyarrow |
+| `arrow_reader(batch_size=None)` | `pa.RecordBatchReader` | pyarrow |
+| `df(arrow_dtyped=True)` | `pd.DataFrame` | pandas and pyarrow |
+| `description`, `columns`, `rowcount` | metadata | nothing |
+
+A result is consumed once. `rowcount` is the changed-row count for INSERT, UPDATE and DELETE,
+and -1 otherwise.
+
+### Registered sources
+
+`register()` and `data=` accept polars DataFrames and LazyFrames, pyarrow Tables, Datasets,
+Scanners and RecordBatchReaders, pandas DataFrames, and any object with `__arrow_c_stream__`.
+
+- Arrow and polars data is read in place. Columns the query does not name are never converted.
+- pandas frames are converted with `pyarrow.Table.from_pandas`, which needs pyarrow and copies
+  numpy-backed columns.
+- A `pa.RecordBatchReader` is read fully at registration.
+- A registration is re-read on every query, so a `pl.LazyFrame` re-runs its pipeline each
+  time. For a frame that fits in memory and is queried repeatedly, `.collect()` it first.
+- Filters are not pushed into the source. A `pl.LazyFrame` is asked for every row and DuckDB
+  applies the `WHERE`.
+- The planner gets a row count only for a source with a `len()`: a `pa.Table`, `pl.DataFrame`
+  or pandas frame. Without one, DuckDB can pick a full sort over a top-N for a large
+  `ORDER BY ... LIMIT`.
+- Insertion order is preserved by default, as in DuckDB, and scans stay parallel.
+  `SET preserve_insertion_order=false` opts into the unordered, lower-memory sink.
+
+### Environment variables
+
+| Variable | When | Effect |
+| --- | --- | --- |
+| `BAREDUCKDB_DUCKDB_LIB` | import | Path to libduckdb, or to a directory holding it. Checked first. |
+| `BAREDUCKDB_NO_DOWNLOAD` | import | Raise instead of downloading libduckdb. |
+| `BAREDUCKDB_LOG_LEVEL` | import | Configures logging at this level, for example `DEBUG`. |
+| `BAREDUCKDB_COLLECT_LAZYFRAME` | query | `1` collects a `pl.LazyFrame` instead of streaming it. A measurement toggle, off by default. |
+| `BAREDUCKDB_DUCKDB_DIR` | build | Use a local libduckdb directory instead of downloading one. |
+| `BAREDUCKDB_DUCKDB_CHANNEL` | build | `stable` (default) or `preview`, DuckDB's rolling preview build. |
+| `BAREDUCKDB_DUCKDB_VERSION` | build | Stable release tag to fetch. Empty uses the pinned release. |
+| `BAREDUCKDB_DUCKDB_ARTIFACT` | build | Override the platform artifact name, for example `linux-arm64-musl`. |
+
+### Platforms
+
+| | Linux glibc (manylinux_2_28) | Linux musl (musllinux_1_2) | macOS | Windows |
+| --- | --- | --- | --- | --- |
+| x86_64 | yes | yes | no | yes |
+| arm64 | yes | yes | yes | no |
+
+One `cp312-abi3` limited-API wheel covers GIL builds of CPython 3.12 and newer. `cp314t` and
+`cp315t` wheels cover free-threaded CPython. GraalPy 25.3 (Python 3.13) is built for Linux
+x86_64 only; see [README_GRAALPY.md](README_GRAALPY.md). PyPy is not supported.
+
+Every CPython wheel runs the core test suite before upload, and the GraalPy wheel runs a
+subset. For thread safety, the suite also runs under `pytest-run-parallel` on 3.14 and 3.15t
+on Linux, macOS and Windows, and TSAN and ASAN builds run nightly on free-threaded 3.14.
+
+### The DuckDB library
+
+The wheel does not contain libduckdb. On first import, bareduckdb looks for it in this order:
+
+1. `BAREDUCKDB_DUCKDB_LIB`, a path to the library file or to a directory holding it.
+2. `bareduckdb/_libs/` inside the package, which only a source build fills.
+3. The user cache: `~/.cache/bareduckdb` (`$XDG_CACHE_HOME`), `~/Library/Caches/bareduckdb`,
+   or `%LOCALAPPDATA%\bareduckdb\Cache`.
+4. A download of the pinned release, currently `v2.0.0`, from
+   `install.duckdb.org/v2.0.0/duckdb-shared-libs-<platform>.tar.gz`, into that cache.
+
+The first import therefore needs network access, once per user and DuckDB version. The
+download is checked for CPU architecture but not against a checksum or signature. It relies on
+HTTPS.
+
+`SELECT * FROM pragma_version()` reports DuckDB's own version and source id. Extensions load
+from DuckDB's extension directory (`~/.duckdb/extensions/v2.0.0/...`). `duckdb` and
+`bareduckdb` can be imported in the same process.
+
+### Differences from duckdb-python
 
 Defaults follow DuckDB, with these differences.
 
-- A SELECT runs at its first consumer, not at `execute()`. DuckDB fixes the result format
-  (rows or Arrow) when a query is submitted, so bareduckdb waits until it knows which one is
-  wanted. Bind errors still raise at `execute()`. A SELECT that is never read never runs.
-- A result is consumed once. Repeating the same call behaves like duckdb-python. Mixing
-  consumers raises, for example `.pl()` then `.fetchall()`. `arrow_table()` is exempt, and
-  rows can still be fetched after it.
+- A SELECT runs at its first consumer, not at `execute()`. Bind errors still raise at
+  `execute()`. A SELECT that is never read never runs.
+- Mixing consumers on one result raises, for example `.pl()` then `.fetchall()`.
+  `arrow_table()` is exempt, and rows can still be fetched after it. Repeating the same call
+  behaves like duckdb-python.
 - A registration can be scanned once per query, so a self-join, a `UNION ALL` over the same
-  name, or a concurrent query from another cursor raises. Each query re-reads the source, so
-  sequential queries work. See "Using a registration twice in one query".
+  name, or a concurrent query from another cursor raises. See "Use a registration twice in one
+  query".
 - Registrations do not appear in `SHOW TABLES`, and they do not shadow a real table of the
   same name.
 - A SELECT with a data-modifying CTE keeps its write only if read to the end.
@@ -276,22 +324,43 @@ Defaults follow DuckDB, with these differences.
 - TIMESTAMPTZ values compare equal to duckdb-python's but carry a different `tzinfo`.
 - UNION and VARIANT raise from `fetchall()` and work through Arrow.
 
-## Not implemented
+### Not implemented
 
 - The appender, `executemany`, and the module-level functions (`bareduckdb.sql`,
-  `read_csv`, ...). These raise `NotImplementedError`. The v2 C API has no appender yet.
+  `read_csv`, ...). These raise `NotImplementedError`.
 - Python table functions and replacement scans. `register_udtf()`, a non-empty
   `connect(udtf_functions=...)` and `connect(enable_replacement_scan=True)` raise
-  `NotImplementedError`. The v2 C API's `parse_sql` exposes no table references or
-  function-call sites, so neither can be discovered from SQL. Use `register()` instead.
+  `NotImplementedError`. Use `register()` instead.
 - The relation API. Use SQL, or a frontend such as [ibis](https://ibis-project.org/) or
   [narwhals](https://github.com/narwhals-dev/narwhals).
 - Python scalar UDFs and fsspec filesystems.
 - Filter pushdown into registered sources.
 
-Filter pushdown, the appender and table functions existed in bareduckdb 0.12 on the 1.x API
-and need porting to 2.0. Scalar UDFs and filesystems need DuckDB threads to call back into
-Python, which needs design work first.
+## Why it works this way
+
+**A SELECT waits for its first consumer.** DuckDB fixes a result's format, rows or Arrow, when
+the query is submitted, and offers no conversion afterwards. Submitting at `execute()` would
+mean guessing the format, and running the query twice whenever the guess was wrong.
+
+**A registration is scanned once per query.** The scan converts one Arrow batch at a time per
+worker and discards each converted chunk as soon as it is emitted. Peak memory for a scan stays
+at about one chunk per thread whatever the source's size, and there is nothing left over for a
+second scan of the same name to replay. A materialized CTE makes that copy explicitly, for one
+query.
+
+**libduckdb is downloaded, not bundled.** Linking DuckDB's own release build keeps the wheels
+small and the engine identical to upstream's. Moving to a new DuckDB release is a re-pin, not a
+rebuild of DuckDB.
+
+**Some features wait on the C API.** The v2 C API has no appender yet, and its `parse_sql`
+exposes no table references or function-call sites, so Python table functions and
+replacement scans cannot be discovered from SQL. Filter pushdown, the appender and table
+functions existed in bareduckdb 0.12 on the 1.x API and need porting. Scalar UDFs and
+filesystems need DuckDB threads to call back into Python, which needs design work first.
+
+**Selective filters are slower than in duckdb-python.** Without filter pushdown, every row of
+the named columns is converted before DuckDB filters it. Filtering in the source wins below
+roughly 20% selectivity and loses above it.
 
 ## Development
 

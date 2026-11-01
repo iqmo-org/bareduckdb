@@ -110,7 +110,7 @@ jobs:
 
               echo 'Installing system dependencies'
               apt-get update -qq
-              apt-get install -y -qq unzip curl gcc g++ make clang gdb cmake ninja-build
+              apt-get install -y -qq unzip curl gcc g++ make clang gdb ninja-build
 
               # Enable core dumps for debugging crashes
               ulimit -c unlimited
@@ -161,7 +161,8 @@ jobs:
 
               echo 'Installing build dependencies (including pyarrow for the test run)'
               uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages --upgrade pip
-              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages \"scikit-build-core>=1.0\" \"cython-cmake>=0.3\" \"Cython>=3.1\" \"setuptools-scm>=8\" pyarrow==26.0.0
+              uv pip install --python \"\$PYTHON_PATH\" --system --break-system-packages \"scikit-build-core>=1.0\" \"cmake>=4.4\" \"cython-cmake>=0.3\" \"Cython>=3.1\" \"setuptools-scm>=8\" pyarrow==26.0.0
+              \"\$PYTHON_PATH\" -c 'import cmake; print(\"cmake\", cmake.__version__)'
 
               echo 'Installing bareduckdb'
               echo 'Current directory:'

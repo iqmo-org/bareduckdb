@@ -1290,6 +1290,11 @@ cdef duckdb_v2_value_handle _python_to_value(
         return out_value
 
     if isinstance(val, datetime.time):
+        if val.utcoffset() is not None:
+            raise TypeError(
+                "cannot bind a timezone-aware datetime.time as a query parameter; "
+                "its offset would be dropped. Pass a naive time or a string with the offset"
+            )
         micros_val = <int64_t>(
             (val.hour * 3600 + val.minute * 60 + val.second) * 1_000_000 + val.microsecond
         )

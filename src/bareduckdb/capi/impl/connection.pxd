@@ -62,6 +62,7 @@ cdef struct bd_reg_entry:
     long inflight_peak
     # Child arrays fed to importers so far
     long converted_columns
+    long err_published
     char err_text[BD_ERR_TEXT_CAP]
 
 

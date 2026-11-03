@@ -40,7 +40,7 @@ def install_test_extensions(tmp_path_factory):
     results = {}
 
     with FileLock(str(lock_file)):
-        for ext_name, repository in (("httpfs", None), ("json", None), ("h3", "community")):
+        for ext_name, repository in (("httpfs", None), ("json", None), ("h3", "community"), ("spatial", None)):
             try:
                 conn = Connection()
                 logger.info("Installing %s extension (with file lock)", ext_name)

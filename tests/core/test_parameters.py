@@ -2,7 +2,11 @@
 Test named and positional parameters
 """
 
+import datetime
+
 import pytest
+
+import bareduckdb
 from pathlib import Path
 from bareduckdb.core import ConnectionBase
 
@@ -84,3 +88,19 @@ def test_untyped_none_fetches_like_duckdb_python(parameters, expected):
     with bareduckdb.connect() as conn:
         rows = conn.execute("select ?", parameters).fetchall()
     assert rows == expected, f"parameters={parameters!r} rows={rows!r}"
+
+
+def test_a_timezone_aware_time_parameter_raises_rather_than_dropping_its_offset():
+    """A time with tzinfo raises, since binding it as TIME would drop the offset silently."""
+    conn = bareduckdb.connect()
+    conn.execute("create table t(x timetz)")
+    aware = datetime.time(12, tzinfo=datetime.timezone(datetime.timedelta(hours=-3)))
+    with pytest.raises(TypeError, match="timezone-aware datetime.time"):
+        conn.execute("insert into t values (?)", [aware])
+    assert conn.execute("select count(*) from t").fetchall() == [(0,)]
+
+
+def test_a_naive_time_parameter_still_binds():
+    """A naive time keeps binding as TIME."""
+    conn = bareduckdb.connect()
+    assert conn.execute("select ?::varchar", [datetime.time(12, 30)]).fetchall() == [("12:30:00",)]

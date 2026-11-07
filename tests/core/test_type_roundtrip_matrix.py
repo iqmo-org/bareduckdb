@@ -442,7 +442,6 @@ def test_fetch_arrow_type(case):
         expected = _expected_fetch_type(conn, case.id)
         if case.needs_ext is not None:
             try:
-                conn.install_extension(case.needs_ext)
                 conn.load_extension(case.needs_ext)
             except Exception as exc:
                 pytest.skip(f"{case.needs_ext} extension unavailable: {exc}")
@@ -546,7 +545,6 @@ def test_empty_fetch_arrow_type(case):
         expected = _expected_fetch_type(conn, case.id)
         if case.needs_ext is not None:
             try:
-                conn.install_extension(case.needs_ext)
                 conn.load_extension(case.needs_ext)
             except Exception as exc:
                 pytest.skip(f"{case.needs_ext} extension unavailable: {exc}")
@@ -565,7 +563,6 @@ def test_geometry_carries_geoarrow_extension_metadata():
     conn = bareduckdb.connect()
     try:
         try:
-            conn.install_extension(case.needs_ext)
             conn.load_extension(case.needs_ext)
         except Exception as exc:
             pytest.skip(f"{case.needs_ext} extension unavailable: {exc}")
@@ -585,7 +582,6 @@ def test_fetch_roundtrip(case):
     try:
         if case.needs_ext is not None:
             try:
-                conn.install_extension(case.needs_ext)
                 conn.load_extension(case.needs_ext)
             except Exception as exc:
                 pytest.skip(f"{case.needs_ext} extension unavailable: {exc}")
@@ -657,7 +653,6 @@ def _official_values(case):
     try:
         if case.needs_ext is not None:
             try:
-                conn.install_extension(case.needs_ext)
                 conn.load_extension(case.needs_ext)
             except Exception as exc:
                 pytest.skip(f"{case.needs_ext} extension unavailable: {exc}")

@@ -87,7 +87,6 @@ def test_enum_arrow_export():
 def test_geometry_arrow_export():
     conn = bareduckdb.connect()
     try:
-        conn.install_extension("spatial")
         conn.load_extension("spatial")
     except Exception as exc:
         pytest.skip(f"spatial extension unavailable: {exc}")

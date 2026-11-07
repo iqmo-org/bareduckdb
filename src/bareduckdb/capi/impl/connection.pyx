@@ -149,6 +149,7 @@ from bareduckdb.capi.impl.atomics cimport (
     bdv2_load_acquire,
     bdv2_lock,
     bdv2_store_release,
+    bdv2_yield,
     bdv2_unlock,
 )
 from bareduckdb.capi.impl.errors cimport check_v2, last_error_text, str_view_to_str
@@ -293,9 +294,17 @@ cdef void _bd_fail_write(bd_reg_entry *entry, const char *text, idx_t n) noexcep
     while current != BD_ENTRY_FAILED:
         if bdv2_cas(&entry.state, current, BD_ENTRY_FAILED):
             _bd_copy_text(entry.err_text, text, n)
+            bdv2_store_release(&entry.err_published, 1)
             return
         current = bdv2_load_acquire(&entry.state)
     # Already failed by another thread; its text stands, not ours.
+
+
+cdef const char *_bd_err_text(bd_reg_entry *entry) noexcept nogil:
+    """Return err_text once the failure winner has finished writing it."""
+    while bdv2_load_acquire(&entry.err_published) == 0:
+        bdv2_yield()
+    return entry.err_text
 
 
 cdef void _bd_fail(bd_reg_entry *entry, const char *message) noexcept nogil:
@@ -1208,7 +1217,7 @@ cdef void _bd_tf_exec(
             break
         claimed = _bd_claim_array(entry, &array, &batch_index)
         if claimed == BD_CLAIM_FAILED:
-            _bd_report(err, entry.err_text)
+            _bd_report(err, _bd_err_text(entry))
             return
         if claimed == BD_CLAIM_EOF:
             # Every array went to exactly one worker, and this one holds none, so the scan ends.
@@ -1220,7 +1229,7 @@ cdef void _bd_tf_exec(
         if state.chunks_narrow:
             # A narrowed importer rejects a full-width array, so both sides must be narrowed together.
             if not _bd_narrow_array(entry, state, &array, &narrowed):
-                _bd_report(err, entry.err_text)
+                _bd_report(err, _bd_err_text(entry))
                 return
             fed = &narrowed
         # Diagnostic only: the child arrays this append actually converts, narrowed or full width.
@@ -1230,7 +1239,7 @@ cdef void _bd_tf_exec(
             if fed.release != NULL:
                 fed.release(fed)
             _bd_fail_from_info(entry, append_err)
-            _bd_report(err, entry.err_text)
+            _bd_report(err, _bd_err_text(entry))
             return
         bdv2_add(&entry.converted_columns, fed_children)
         # Appended; the next lap's next_chunk drains it.
@@ -1337,7 +1346,7 @@ cdef void _bd_dispatch(
         # A failed import is an error, not a decline: declining would hide it behind "table does not exist".
         # Listed as consumed too, so the next query re-arms it and retries the import.
         _bd_mark_spent(reg, entry)
-        _bd_report(err, entry.err_text)
+        _bd_report(err, _bd_err_text(entry))
 
     bdv2_add(&entry.refs, -1)
 

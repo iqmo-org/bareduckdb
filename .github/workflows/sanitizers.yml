@@ -233,7 +233,7 @@ jobs:
                   'leak:init_sys_streams' > /tmp/lsan_suppressions.txt
 
                 # ASAN_OPTIONS without suppressions (leak suppressions go in LSAN_OPTIONS)
-                export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_string_checks=1:detect_invalid_pointer_pairs=2:symbolize=1:fast_unwind_on_malloc=0'
+                export ASAN_OPTIONS='allocator_may_return_null=1:halt_on_error=1:detect_leaks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_string_checks=1:detect_invalid_pointer_pairs=2:symbolize=1:fast_unwind_on_malloc=0:log_path=/workspace/asan.log:verbosity=1'
                 export LSAN_OPTIONS='suppressions=/tmp/lsan_suppressions.txt'
                 echo \"ASAN_OPTIONS: \$ASAN_OPTIONS\"
                 echo \"LSAN_OPTIONS: \$LSAN_OPTIONS\"
@@ -293,7 +293,7 @@ jobs:
                 # Their repeated coverage is dev_versions.yml's --count pass.
                 set +e
                 THREADS=\$(($(nproc) < 4 ? $(nproc) : 4))
-                python -m pytest tests/ \
+                python -X faulthandler -m pytest tests/ \
                   -o addopts= \
                   --parallel-threads=\$THREADS \
                   -n 0 \
@@ -307,8 +307,8 @@ jobs:
                   --ignore=tests/comparison \
                   --ignore=tests/benchmarks \
                   2>&1 | tee /workspace/${{ matrix.sanitizer }}_output.txt
-                exit_code=\$?
-                if [ \$exit_code -eq 139 ] || [ \$exit_code -eq 134 ]; then
+                exit_code=\${PIPESTATUS[0]}
+                if [ \$exit_code -ne 0 ]; then
                   print_crash_info \$exit_code
                 fi
                 exit \$exit_code
@@ -320,8 +320,9 @@ jobs:
                 # finding is the signal), and with --timeout raised to 1200s it no longer
                 # times out before it can reach one.
                 set +e
-                python -m pytest tests/ \
+                python -X faulthandler -m pytest tests/ \
                   -o addopts= \
+                  -p no:randomly \
                   -x \
                   -n 0 \
                   --tb=short \
@@ -332,8 +333,8 @@ jobs:
                   --ignore=tests/comparison \
                   --ignore=tests/benchmarks \
                   2>&1 | tee /workspace/${{ matrix.sanitizer }}_output.txt
-                exit_code=\$?
-                if [ \$exit_code -eq 139 ] || [ \$exit_code -eq 134 ]; then
+                exit_code=\${PIPESTATUS[0]}
+                if [ \$exit_code -ne 0 ]; then
                   print_crash_info \$exit_code
                 fi
                 exit \$exit_code
@@ -341,6 +342,7 @@ jobs:
             " && exec_status=0 || exec_status=$?
 
           # tee wrote the output inside the container; retrieve it before removal
+          docker exec "$CONTAINER_ID" sh -c 'tar -C /workspace -cf - asan.log* 2>/dev/null' | tar -xf - || true
           docker cp "$CONTAINER_ID:/workspace/${{ matrix.sanitizer }}_output.txt" . \
             || echo "No ${{ matrix.sanitizer }}_output.txt produced in container"
 
@@ -359,6 +361,7 @@ jobs:
           name: ${{ matrix.sanitizer }}-results
           path: |
             ${{ matrix.sanitizer }}_output.txt
+            asan.log*
           retention-days: 7
 
   ubsan:

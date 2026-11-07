@@ -335,19 +335,13 @@ def test_time_parameter_binds_as_time(make_conn):
 
 
 @pytest.mark.xfail(
-    reason="the time branch reads only hour/minute/second/microsecond (result.pyx:810-814), so a tz-aware time binds as plain TIME and the offset is discarded with no error",
+    reason="a timezone-aware time raises TypeError; there is no TIMETZ bind route yet",
     strict=True,
 )
 def test_aware_time_parameter_keeps_its_offset(make_conn):
     conn = make_conn()
     value = datetime.time(1, 2, 3, tzinfo=datetime.timezone.utc)
     assert _one(conn, "SELECT typeof($1)", [value]) == "TIME WITH TIME ZONE"
-
-
-def test_aware_time_parameter_silently_drops_the_offset_today(make_conn):
-    conn = make_conn()
-    value = datetime.time(1, 2, 3, tzinfo=datetime.timezone(datetime.timedelta(hours=5)))
-    assert _one(conn, "SELECT $1", [value]) == datetime.time(1, 2, 3)
 
 
 def test_decimal_parameters_round_trip(make_conn):

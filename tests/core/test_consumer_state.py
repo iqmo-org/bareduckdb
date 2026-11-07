@@ -203,3 +203,12 @@ def test_description_after_pl_does_not_import_pyarrow():
     done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120)
     assert done.returncode == 0, f"stdout: {done.stdout}\nstderr: {done.stderr}"
     assert done.stdout.strip() == "[('a', 'BIGINT'), ('b', 'INTEGER[]'), ('c', 'STRUCT(k VARCHAR)')]", done.stdout
+
+
+def test_failed_row_conversion_leaves_the_connection_usable():
+    """A fetch that raises during row conversion does not break the next statement (duckdb-python PR #712)."""
+    conn = bareduckdb.connect()
+    with pytest.raises(NotImplementedError):
+        conn.execute("select union_value(a := 1) u").fetchall()
+    got = conn.execute("select 42").fetchall()
+    assert got == [(42,)], f"got {got}"

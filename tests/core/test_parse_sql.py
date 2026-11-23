@@ -20,9 +20,9 @@ def test_multi_statement_string_yields_one_statement_each():
             StatementType.CREATE,
         ], [s.type for s in statements]
         assert [s.query for s in statements] == [
-            "SELECT 1; ",
-            "INSERT INTO t VALUES (2); ",
-            "CREATE TABLE t(i INTEGER)",
+            "SELECT 1;",
+            " INSERT INTO t VALUES (2);",
+            " CREATE TABLE t(i INTEGER)",
         ], [s.query for s in statements]
     finally:
         conn.close()
@@ -100,7 +100,7 @@ def test_query_is_the_statement_own_slice():
     conn = bareduckdb.connect()
     try:
         statements = parse(conn, "-- lead\n;select 21 ;;\t-- mid\nSELECT 3; -- tail")
-        assert [s.query for s in statements] == ["select 21 ;;\t-- mid\n", "SELECT 3; -- tail"]
+        assert [s.query for s in statements] == ["select 21 ;;", "\t-- mid\nSELECT 3; -- tail"]
     finally:
         conn.close()
 

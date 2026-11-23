@@ -69,7 +69,7 @@ def test_a_temporary_secret_survives_the_next_execute():
     with bareduckdb.connect() as conn:
         conn.execute("create temporary secret s1 (type http)")
         conn.execute("select 1").fetchall()
-        got = conn.execute("select name from duckdb_secrets()").fetchall()
+        got = conn.execute("select name from duckdb_secrets() where not persistent").fetchall()
         assert got == [("s1",)], got
 
 
@@ -115,7 +115,7 @@ def test_an_unread_arrow_returning_keeps_its_write(output_type):
 def test_an_arrow_temporary_secret_survives_the_next_execute(output_type):
     with bareduckdb.connect() as conn:
         conn.execute("create temporary secret s1 (type http)", output_type=output_type)
-        got = conn.execute("select name from duckdb_secrets()").fetchall()
+        got = conn.execute("select name from duckdb_secrets() where not persistent").fetchall()
         assert got == [("s1",)], f"{output_type}: {got!r}"
 
 

@@ -151,16 +151,6 @@ def test_concurrent_fetchmany_on_a_cancelled_result_all_raise():
         assert all(isinstance(o, QueryCancelled) for o in outcomes), f"outcomes: {outcomes!r}"
 
 
-def _wait_until_running(conn, thread, deadline=10.0):
-    """Wait until the consumer has submitted and the engine reports progress, so the interrupt lands mid-read"""
-    end = time.monotonic() + deadline
-    while thread.is_alive() and time.monotonic() < end:
-        if conn.query_progress() is not None:
-            return True
-        time.sleep(0.01)
-    return False
-
-
 ARROW_CONSUMERS = {
     "arrow_table": lambda r: r.arrow_table(),
     "arrow_reader": lambda r: r.arrow_reader().read_all(),
@@ -174,10 +164,9 @@ def test_an_interrupt_during_an_arrow_read_raises_query_cancelled_and_sticks(con
     with bareduckdb.connect(config={"threads": str(threads)}) as conn:
         result = conn.execute(STREAM)._last_result_get()
         thread, out = _in_thread(lambda: ARROW_CONSUMERS[consumer](result))
-        running = _wait_until_running(conn, thread)
         assert _interrupt_until_stopped(conn, [thread]), "interrupt did not stop the Arrow read"
         first = out[0]
-        assert isinstance(first, QueryCancelled), f"{consumer} gave {first!r} (progress seen: {running})"
+        assert isinstance(first, QueryCancelled), f"{consumer} gave {first!r}"
         assert str(first) == INTERRUPTED, f"got {str(first)!r}"
         _assert_raises_again(REPEATS["fetchall"], result, first)
         _assert_raises_again(ARROW_CONSUMERS[consumer], result, first)

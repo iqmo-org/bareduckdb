@@ -472,6 +472,7 @@ cdef extern from "duckdb_v2.h" nogil:
     duckdb_v2_error_t duckdb_v2_parse_sql(
         duckdb_v2_connection_handle conn,
         const char *sql,
+        bint apply_invalidation_policy,
         duckdb_v2_statement_iterator_handle *out_iterator,
         duckdb_v2_error_info_handle *err
     )
@@ -710,7 +711,19 @@ cdef extern from "duckdb_v2.h" nogil:
         duckdb_v2_value_handle *out_value,
         duckdb_v2_error_info_handle *err
     )
+    duckdb_v2_error_t duckdb_v2_value_create_time_tz(
+        duckdb_v2_factory_handle factory,
+        uint64_t in_value,
+        duckdb_v2_value_handle *out_value,
+        duckdb_v2_error_info_handle *err
+    )
     duckdb_v2_error_t duckdb_v2_value_create_timestamp(
+        duckdb_v2_factory_handle factory,
+        int64_t in_value,
+        duckdb_v2_value_handle *out_value,
+        duckdb_v2_error_info_handle *err
+    )
+    duckdb_v2_error_t duckdb_v2_value_create_timestamp_tz(
         duckdb_v2_factory_handle factory,
         int64_t in_value,
         duckdb_v2_value_handle *out_value,

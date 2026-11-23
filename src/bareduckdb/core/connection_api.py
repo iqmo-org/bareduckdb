@@ -99,9 +99,9 @@ class ConnectionAPI(ConnectionBase):
     def parse_sql(self, query: str) -> list[Statement]:
         """Parse a SQL string into its statements
 
-        Statements carry the parser's type, the statement's own text slice (leading
-        whitespace and comments before the first token excluded, a trailing terminator
-        and what follows it included) and the parameter names in binding order.
+        Statements carry the parser's type, the statement's own text slice (it ends at
+        its terminator; whitespace and comments after a terminator lead the next
+        statement, as DuckDB 2.0.1 slices them) and the parameter names in binding order.
 
         Args:
             query: SQL text, which may hold any number of statements

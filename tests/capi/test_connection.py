@@ -106,14 +106,14 @@ def test_parse_sql_surfaces_a_deferred_error_after_the_statements_before_it(env)
     result = conn.parse_sql("SELECT 1; SELEKT 2")
     assert result["error"] is True
     assert result["error_message"]
-    assert result["statements"] == [(1, "SELECT 1; ", ())], result["statements"]
+    assert result["statements"] == [(1, "SELECT 1;", ())], result["statements"]
     conn.close()
 
 
 def test_parse_sql_text_is_the_statement_own_slice(env):
     conn = env.connect()
     result = conn.parse_sql("-- lead\n;select 21 ;;\t-- mid\nSELECT 3; -- tail")
-    assert [text for _, text, _ in result["statements"]] == ["select 21 ;;\t-- mid\n", "SELECT 3; -- tail"]
+    assert [text for _, text, _ in result["statements"]] == ["select 21 ;;", "\t-- mid\nSELECT 3; -- tail"]
     conn.close()
 
 

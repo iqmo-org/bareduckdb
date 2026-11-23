@@ -314,13 +314,15 @@ jobs:
                 exit \$exit_code
               else
                 # ASAN: Run tests sequentially without --forked
-                # NOTE: --forked uses os.fork() which is incompatible with ASAN
-                # in multi-threaded Python 3.14t (causes CHECK failed in __cxa_throw)
+                # LD_PRELOAD libstdc++: the ASAN CPython is a C binary, so libstdc++ is not
+                # loaded when ASAN resolves its interceptors at startup and the __cxa_throw
+                # interceptor stays null. The first C++ exception libduckdb throws then aborts
+                # with 'CHECK failed ... real___cxa_throw != 0'.
                 # -x (stop on first failure) is kept: ASAN is exploratory here (first real
                 # finding is the signal), and with --timeout raised to 1200s it no longer
                 # times out before it can reach one.
                 set +e
-                python -X faulthandler -m pytest tests/ \
+                LD_PRELOAD=\$(g++ -print-file-name=libstdc++.so.6) python -X faulthandler -m pytest tests/ \
                   -o addopts= \
                   -p no:randomly \
                   -x \

@@ -156,7 +156,9 @@ from bareduckdb.capi.impl.duckdb_v2 cimport (
     duckdb_v2_value_create_map,
     duckdb_v2_value_create_null,
     duckdb_v2_value_create_time,
+    duckdb_v2_value_create_time_tz,
     duckdb_v2_value_create_timestamp,
+    duckdb_v2_value_create_timestamp_tz,
     duckdb_v2_value_create_uuid,
     duckdb_v2_value_create_varchar,
     duckdb_v2_value_destroy,
@@ -372,7 +374,7 @@ cdef object _execute_bound(
     cdef bint invalidates = False
 
     with nogil:
-        rc = duckdb_v2_parse_sql(c_conn, c_query, &iterator, &err)
+        rc = duckdb_v2_parse_sql(c_conn, c_query, True, &iterator, &err)
     check_v2(rc, err, "duckdb_v2_parse_sql")
 
     try:
@@ -1205,6 +1207,7 @@ cdef duckdb_v2_value_handle _python_to_value(
     cdef duckdb_v2_hugeint_t hv
     cdef int32_t days_val
     cdef int64_t micros_val
+    cdef uint64_t packed
     cdef object delta
     cdef duckdb_v2_bool_t bool_val
     cdef int64_t int64_val
@@ -1273,10 +1276,17 @@ cdef duckdb_v2_value_handle _python_to_value(
         return out_value
 
     if isinstance(val, datetime.datetime):
-        delta = val - _EPOCH_DATETIME
+        # An aware datetime binds as TIMESTAMPTZ, its instant in UTC, as duckdb-python does.
+        aware = val.utcoffset() is not None
+        delta = val - (_EPOCH_DATETIME_UTC if aware else _EPOCH_DATETIME)
         micros_val = <int64_t>(
             delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds
         )
+        if aware:
+            with nogil:
+                rc = duckdb_v2_value_create_timestamp_tz(factory, micros_val, &out_value, &err)
+            check_v2(rc, err, "duckdb_v2_value_create_timestamp_tz")
+            return out_value
         with nogil:
             rc = duckdb_v2_value_create_timestamp(factory, micros_val, &out_value, &err)
         check_v2(rc, err, "duckdb_v2_value_create_timestamp")
@@ -1290,14 +1300,19 @@ cdef duckdb_v2_value_handle _python_to_value(
         return out_value
 
     if isinstance(val, datetime.time):
-        if val.utcoffset() is not None:
-            raise TypeError(
-                "cannot bind a timezone-aware datetime.time as a query parameter; "
-                "its offset would be dropped. Pass a naive time or a string with the offset"
-            )
         micros_val = <int64_t>(
             (val.hour * 3600 + val.minute * 60 + val.second) * 1_000_000 + val.microsecond
         )
+        offset = val.utcoffset()
+        if offset is not None:
+            # An aware time binds as TIMETZ keeping its offset, packed as _timetz_from_packed reads it.
+            packed = (<uint64_t>micros_val << _TIME_TZ_OFFSET_BITS) | <uint64_t>(
+                _TIME_TZ_OFFSET_BIAS - int(offset.total_seconds())
+            )
+            with nogil:
+                rc = duckdb_v2_value_create_time_tz(factory, packed, &out_value, &err)
+            check_v2(rc, err, "duckdb_v2_value_create_time_tz")
+            return out_value
         with nogil:
             rc = duckdb_v2_value_create_time(factory, micros_val, &out_value, &err)
         check_v2(rc, err, "duckdb_v2_value_create_time")

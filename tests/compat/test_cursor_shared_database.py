@@ -167,4 +167,4 @@ def test_create_secret_keeps_its_row():
     result = conn.execute('CREATE SECRET kept (TYPE S3, KEY_ID "key", SECRET "secret")')
     assert [d[0] for d in result.description] == ["Success"]
     assert result.fetchall() == [(True,)]
-    assert conn.execute("SELECT name FROM duckdb_secrets()").fetchall() == [("kept",)]
+    assert conn.execute("SELECT name FROM duckdb_secrets() where not persistent").fetchall() == [("kept",)]

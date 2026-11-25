@@ -2111,7 +2111,7 @@ cdef class CApiConnectionImpl:
         cdef str message = ""
 
         with nogil:
-            rc = duckdb_v2_parse_sql(self._conn, c_query, &iterator, &err)
+            rc = duckdb_v2_parse_sql(self._conn, c_query, False, &iterator, &err)
         if rc != DUCKDB_V2_ERROR_NONE:
             return _parse_result_error(statements, last_error_text(err))
 

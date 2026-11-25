@@ -25,12 +25,6 @@ def test_core_named_parameters():
         assert(len(result) == 2)
         assert(result.to_pylist()[-1]["i"] == 6)
 
-_XF_TZ_AWARE_PARAM = pytest.mark.xfail(
-    reason="result.pyx:830 subtracts the naive epoch from a tz-aware datetime; _EPOCH_DATETIME_UTC exists and is used on the read path but not the write path",
-    strict=True,
-)
-
-
 def test_untyped_none_parameter_binds():
     """A bare `?` bound to None works, as it does in duckdb-python."""
     with ConnectionBase(database=":memory:") as conn:
@@ -59,7 +53,6 @@ def test_none_inside_a_list_parameter_binds():
         assert result.to_pylist() == [{"c": [1, None, 3]}]
 
 
-@_XF_TZ_AWARE_PARAM
 def test_timezone_aware_datetime_parameter_binds():
     """A tz-aware datetime binds; the write path must use the UTC epoch, as the read path does."""
     import datetime
@@ -90,14 +83,22 @@ def test_untyped_none_fetches_like_duckdb_python(parameters, expected):
     assert rows == expected, f"parameters={parameters!r} rows={rows!r}"
 
 
-def test_a_timezone_aware_time_parameter_raises_rather_than_dropping_its_offset():
-    """A time with tzinfo raises, since binding it as TIME would drop the offset silently."""
+def test_a_timezone_aware_time_parameter_keeps_its_offset():
+    """A time with tzinfo binds as TIMETZ with its offset, as duckdb-python 2.0.1 does"""
     conn = bareduckdb.connect()
     conn.execute("create table t(x timetz)")
-    aware = datetime.time(12, tzinfo=datetime.timezone(datetime.timedelta(hours=-3)))
-    with pytest.raises(TypeError, match="timezone-aware datetime.time"):
-        conn.execute("insert into t values (?)", [aware])
-    assert conn.execute("select count(*) from t").fetchall() == [(0,)]
+    aware = datetime.time(12, 0, 0, 4, tzinfo=datetime.timezone(datetime.timedelta(hours=-3)))
+    conn.execute("insert into t values (?)", [aware])
+    got = conn.execute("select x::varchar, x from t").fetchall()
+    assert got == [("12:00:00.000004-03", aware)], got
+
+
+def test_a_timezone_aware_datetime_parameter_is_its_utc_instant():
+    """duckdb-python 2.0.1 binds 03:04:05.000006+02 as TIMESTAMPTZ '2020-01-02 01:04:05.000006+00'"""
+    conn = bareduckdb.connect()
+    aware = datetime.datetime(2020, 1, 2, 3, 4, 5, 6, tzinfo=datetime.timezone(datetime.timedelta(hours=2)))
+    got = conn.execute("select typeof($1), $1::varchar, $1 = $2", [aware, aware]).fetchall()
+    assert got == [("TIMESTAMP WITH TIME ZONE", "2020-01-02 01:04:05.000006+00", True)], got
 
 
 def test_a_naive_time_parameter_still_binds():

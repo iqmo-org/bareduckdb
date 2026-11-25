@@ -22,8 +22,8 @@ VSWHERE = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswher
 VC_TOOLS_REQUIREMENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
 
 # Manifest of the pin; a partial re-pin fails here instead of at link time or runtime.
-EXPECTED_HEADER_SHA = "d54cbbe3df17e8e5ce68312f483b4155836112aa"
-EXPECTED_HEADER_FUNCTION_COUNT = 620
+EXPECTED_HEADER_SHA = "8d78114e90a53823803660bf821f6073ac87da8c"
+EXPECTED_HEADER_FUNCTION_COUNT = 641
 
 # Every duckdb_v2_* function is stamped unstable since duckdb/duckdb#27410, so a consumer that calls one must opt in.
 ALLOW_UNSTABLE = "DUCKDB_V2_API_ALLOW_UNSTABLE=1"

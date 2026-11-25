@@ -301,21 +301,11 @@ def test_datetime_parameter_before_the_epoch_round_trips(make_conn):
     assert _one(conn, "SELECT $1", [value]) == value
 
 
-@pytest.mark.xfail(
-    reason="a tz-aware datetime leaks 'can't subtract offset-naive and offset-aware datetimes' from the _EPOCH_DATETIME subtraction (result.pyx:796); it binds neither TIMESTAMPTZ nor a message naming the parameter",
-    strict=True,
-)
 def test_aware_datetime_parameter_binds_as_timestamptz(make_conn):
     conn = make_conn()
     value = datetime.datetime(2020, 1, 2, 3, 4, tzinfo=datetime.timezone.utc)
     assert _one(conn, "SELECT typeof($1)", [value]) == "TIMESTAMP WITH TIME ZONE"
-
-
-def test_aware_datetime_parameter_raises_today(make_conn):
-    """Pins the failure mode so the xfail above flips when the branch grows a tz case"""
-    conn = make_conn()
-    with pytest.raises(TypeError, match="offset-naive and offset-aware"):
-        _one(conn, "SELECT $1", [datetime.datetime(2020, 1, 2, tzinfo=datetime.timezone.utc)])
+    assert _one(conn, "SELECT $1", [value]) == value
 
 
 def test_date_parameter_binds_as_date(make_conn):
@@ -334,14 +324,11 @@ def test_time_parameter_binds_as_time(make_conn):
     assert _one(conn, "SELECT $1", [datetime.time(23, 59, 59, 999999)]) == datetime.time(23, 59, 59, 999999)
 
 
-@pytest.mark.xfail(
-    reason="a timezone-aware time raises TypeError; there is no TIMETZ bind route yet",
-    strict=True,
-)
 def test_aware_time_parameter_keeps_its_offset(make_conn):
     conn = make_conn()
     value = datetime.time(1, 2, 3, tzinfo=datetime.timezone.utc)
     assert _one(conn, "SELECT typeof($1)", [value]) == "TIME WITH TIME ZONE"
+    assert _one(conn, "SELECT $1", [value]) == value
 
 
 def test_decimal_parameters_round_trip(make_conn):
